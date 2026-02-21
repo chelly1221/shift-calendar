@@ -1,0 +1,94 @@
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider = "sqlite"
+}
+
+enum SyncState {
+  CLEAN
+  PENDING
+  ERROR
+}
+
+enum OutboxOperationType {
+  CREATE
+  PATCH
+  DELETE
+  RECUR_THIS
+  RECUR_ALL
+  RECUR_FUTURE
+}
+
+enum OutboxStatus {
+  QUEUED
+  RUNNING
+  DONE
+  FAILED
+  CANCELLED
+}
+
+model Setting {
+  id                 Int      @id @default(1)
+  syncToken          String?
+  syncWindowStartUtc DateTime
+  syncWindowEndUtc   DateTime
+  accountEmail       String?
+  selectedCalendarId String?
+  selectedCalendarSummary String?
+  shiftType          String   @default("DAY_NIGHT_OFF_OFF")
+  shiftTeamMode      String   @default("PAIR")
+  shiftTeamsJson     Json?
+  createdAt          DateTime @default(now())
+  updatedAt          DateTime @updatedAt
+}
+
+model Event {
+  localId             String      @id @default(cuid())
+  googleEventId       String?     @unique
+  eventType           String      @default("일반")
+  summary             String
+  description         String?
+  location            String?
+  startAtUtc          DateTime
+  endAtUtc            DateTime
+  timeZone            String
+  recurrenceJson      Json?
+  recurringEventId    String?
+  originalStartTimeUtc DateTime?
+  attendeesJson       Json?
+  organizerEmail      String?
+  hangoutLink         String?
+  googleUpdatedAtUtc  DateTime?
+  localEditedAtUtc    DateTime    @default(now())
+  syncState           SyncState    @default(CLEAN)
+  isDeleted           Boolean      @default(false)
+  createdAt           DateTime     @default(now())
+  updatedAt           DateTime     @updatedAt
+  outboxJobs          OutboxJob[]
+
+  @@index([startAtUtc])
+  @@index([syncState])
+  @@index([isDeleted, startAtUtc])
+}
+
+model OutboxJob {
+  id               String             @id @default(cuid())
+  eventLocalId     String?
+  operation        OutboxOperationType
+  payloadJson      Json
+  dependsOnOutboxId String?
+  status           OutboxStatus       @default(QUEUED)
+  attempts         Int                @default(0)
+  nextRetryAtUtc   DateTime           @default(now())
+  lastError        String?
+  createdAt        DateTime           @default(now())
+  updatedAt        DateTime           @updatedAt
+  event            Event?             @relation(fields: [eventLocalId], references: [localId], onDelete: SetNull)
+  dependsOn        OutboxJob?         @relation("OutboxDependency", fields: [dependsOnOutboxId], references: [id], onDelete: SetNull)
+  dependentJobs    OutboxJob[]        @relation("OutboxDependency")
+
+  @@index([status, nextRetryAtUtc])
+  @@index([eventLocalId, status])
+}

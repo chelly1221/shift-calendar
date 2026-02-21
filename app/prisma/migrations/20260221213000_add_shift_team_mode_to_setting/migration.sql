@@ -1,0 +1,1 @@
+ALTER TABLE "Setting" ADD COLUMN "shiftTeamMode" TEXT NOT NULL DEFAULT 'PAIR';
