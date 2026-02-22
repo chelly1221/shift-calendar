@@ -52,6 +52,24 @@ async function pullRemote(mode: 'FULL' | 'DELTA'): Promise<number> {
   return pulledEvents
 }
 
+async function pullHolidays(): Promise<number> {
+  const google = createGoogleCalendarService()
+  const timeMin = DateTime.local().minus({ months: 3 }).startOf('month').toUTC().toISO()
+  const timeMax = DateTime.local().plus({ months: 12 }).endOf('month').toUTC().toISO()
+  if (!timeMin || !timeMax) {
+    return 0
+  }
+
+  try {
+    const holidays = await google.pullHolidays(timeMin, timeMax)
+    await upsertRemoteEvents(holidays)
+    return holidays.length
+  } catch (error) {
+    console.error('Failed to pull Korean holidays:', error)
+    return 0
+  }
+}
+
 export async function runSyncNow(): Promise<SyncResult> {
   await ensureSetting()
 
@@ -77,6 +95,7 @@ export async function runSyncNow(): Promise<SyncResult> {
   const pushedOutboxJobs = await processOutboxNow()
   if (!setting.syncToken) {
     const pulledEvents = await pullRemote('FULL')
+    await pullHolidays()
     return {
       mode: 'FULL',
       pulledEvents,
@@ -87,6 +106,7 @@ export async function runSyncNow(): Promise<SyncResult> {
 
   try {
     const pulledEvents = await pullRemote('DELTA')
+    await pullHolidays()
     return {
       mode: 'DELTA',
       pulledEvents,
@@ -100,6 +120,7 @@ export async function runSyncNow(): Promise<SyncResult> {
 
     await setSyncToken(null)
     const pulledEvents = await pullRemote('FULL')
+    await pullHolidays()
     return {
       mode: 'FULL',
       pulledEvents,

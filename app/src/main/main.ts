@@ -11,8 +11,13 @@ import { runSyncNow } from './sync/syncEngine'
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url))
 
+app.disableHardwareAcceleration()
+app.commandLine.appendSwitch('disable-gpu')
+app.commandLine.appendSwitch('disable-gpu-compositing')
+app.commandLine.appendSwitch('force-color-profile', 'srgb')
+
 process.env.APP_ROOT = process.env.APP_ROOT ?? path.join(__dirname, '..')
-const VITE_DEV_SERVER_URL = process.env['VITE_DEV_SERVER_URL']
+const VITE_DEV_SERVER_URL = process.env.VITE_DEV_SERVER_URL
 const appRoot = process.env.APP_ROOT ?? path.join(__dirname, '..')
 const RENDERER_DIST = path.join(appRoot, 'dist')
 
@@ -116,7 +121,7 @@ function createMainWindow(): BrowserWindow {
     minHeight: 700,
     autoHideMenuBar: true,
     ...platformWindowOptions,
-    backgroundColor: '#f5f5f7',
+    backgroundColor: '#f8f4ec',
     webPreferences: {
       preload: path.join(__dirname, 'preload.mjs'),
       contextIsolation: true,
@@ -173,9 +178,10 @@ function createMainWindow(): BrowserWindow {
   return window
 }
 
-app.whenReady().then(() => {
+app.whenReady().then(async () => {
   app.setName('교대근무 일정관리')
-  void ensureSetting()
+  await ensureSetting()
+
   registerCalendarIpc()
 
   ipcMain.on(IPC_CHANNELS.windowMinimize, (event) => {

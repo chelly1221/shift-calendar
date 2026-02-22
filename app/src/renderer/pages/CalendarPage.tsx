@@ -4,11 +4,36 @@ import interactionPlugin from '@fullcalendar/interaction'
 import koLocale from '@fullcalendar/core/locales/ko'
 import { DateTime } from 'luxon'
 import { type WheelEvent as ReactWheelEvent, useCallback, useEffect, useMemo, useRef, useState } from 'react'
-import type { DateSelectArg, DatesSetArg, EventClickArg } from '@fullcalendar/core'
+import type { DatesSetArg, EventClickArg } from '@fullcalendar/core'
 import type { CalendarEvent, ShiftTeamAssignments, ShiftTeamMode } from '../../shared/calendar'
+import { isVirtualInstance, extractMasterLocalId } from '../../shared/expandRecurrence'
+import { isPublicHolidayName, FIXED_PUBLIC_HOLIDAY_MMDD } from '../../shared/koreanHolidays'
 import { EventModal, type EditableEvent } from '../components/EventModal'
+import { parseEducationTargets } from '../utils/parseEducationTargets'
+import { parseVacationInfo } from '../utils/parseVacationInfo'
 import { SettingsModal } from '../components/SettingsModal'
 import { useCalendarStore } from '../state/useCalendarStore'
+
+const ROUTINE_COMPLETIONS_KEY = 'routineCompletions'
+
+function loadCompletions(): Set<string> {
+  try {
+    const raw = localStorage.getItem(ROUTINE_COMPLETIONS_KEY)
+    return raw ? new Set(JSON.parse(raw) as string[]) : new Set()
+  } catch {
+    return new Set()
+  }
+}
+
+function saveCompletions(set: Set<string>): void {
+  localStorage.setItem(ROUTINE_COMPLETIONS_KEY, JSON.stringify([...set]))
+}
+
+function makeCompletionKey(localId: string, startAtUtc: string): string {
+  const masterLocalId = extractMasterLocalId(localId)
+  const dateKey = DateTime.fromISO(startAtUtc).toLocal().toISODate()
+  return `${masterLocalId}::${dateKey}`
+}
 
 function createDraft(startAtUtc?: string, endAtUtc?: string): EditableEvent {
   const zone = Intl.DateTimeFormat().resolvedOptions().timeZone || 'UTC'
@@ -34,6 +59,27 @@ function createDraft(startAtUtc?: string, endAtUtc?: string): EditableEvent {
 }
 
 function toEditableEvent(event: CalendarEvent): EditableEvent {
+  if (isVirtualInstance(event.localId)) {
+    const masterLocalId = extractMasterLocalId(event.localId)
+    return {
+      localId: masterLocalId,
+      googleEventId: event.googleEventId,
+      eventType: event.eventType,
+      summary: event.summary,
+      description: event.description,
+      location: event.location,
+      startAtUtc: event.startAtUtc,
+      endAtUtc: event.endAtUtc,
+      timeZone: event.timeZone,
+      attendees: event.attendees,
+      recurrenceRule: event.recurrenceRule,
+      recurringEventId: event.recurringEventId,
+      originalStartTimeUtc: event.startAtUtc,
+      sendUpdates: 'none',
+      recurrenceScope: 'THIS',
+    }
+  }
+
   return {
     localId: event.localId,
     googleEventId: event.googleEventId,
@@ -186,6 +232,7 @@ export function CalendarPage() {
     disconnectGoogle,
   } = useCalendarStore()
 
+  const [routineCompletions, setRoutineCompletions] = useState<Set<string>>(loadCompletions)
   const [editingEvent, setEditingEvent] = useState<EditableEvent | null>(null)
   const [editingTitleEventId, setEditingTitleEventId] = useState<string | null>(null)
   const [editingTitleDraft, setEditingTitleDraft] = useState('')
@@ -194,6 +241,7 @@ export function CalendarPage() {
   const [titlebarMonthLabel, setTitlebarMonthLabel] = useState(() =>
     DateTime.local().setLocale('ko').toFormat('yyyy년 M월'),
   )
+  const [visibleMonth, setVisibleMonth] = useState(() => DateTime.local().startOf('month'))
   const [shiftTeamDrafts, setShiftTeamDrafts] = useState<ShiftTeamAssignments>(() =>
     cloneShiftTeams(shiftSettings.teams),
   )
@@ -206,6 +254,21 @@ export function CalendarPage() {
     dayWorkers: string[]
   } | null>(null)
   const monthWheelLockRef = useRef<ReturnType<typeof setTimeout> | null>(null)
+  const editingTitleDraftRef = useRef('')
+  editingTitleDraftRef.current = editingTitleDraft
+
+  const toggleRoutineCompletion = useCallback((completionKey: string) => {
+    setRoutineCompletions((prev) => {
+      const next = new Set(prev)
+      if (next.has(completionKey)) {
+        next.delete(completionKey)
+      } else {
+        next.add(completionKey)
+      }
+      saveCompletions(next)
+      return next
+    })
+  }, [])
 
   useEffect(() => {
     void hydrate()
@@ -232,22 +295,56 @@ export function CalendarPage() {
     eventsRef.current = events
   }, [events])
 
+  useEffect(() => {
+    if (!editingTitleEventId) return
+    const handlePointerDown = (e: PointerEvent) => {
+      const target = e.target as HTMLElement
+      if (target.closest('.fc-event-title-inline-input')) return
+      const input = document.querySelector('.fc-event-title-inline-input') as HTMLInputElement | null
+      input?.blur()
+    }
+    document.addEventListener('pointerdown', handlePointerDown, true)
+    return () => document.removeEventListener('pointerdown', handlePointerDown, true)
+  }, [editingTitleEventId])
+
   const todayEvents = useMemo(() => {
     const today = DateTime.local().toISODate()
     return events
-      .filter((event) => DateTime.fromISO(event.startAtUtc).toLocal().toISODate() === today)
+      .filter((event) => event.eventType !== '근무' && event.eventType !== '휴가' && DateTime.fromISO(event.startAtUtc).toLocal().toISODate() === today)
       .sort((left, right) => left.startAtUtc.localeCompare(right.startAtUtc))
   }, [events])
   const todayCount = todayEvents.length
 
+  const publicHolidayMap = useMemo(() => {
+    const map = new Map<string, string>()
+
+    // Google 동기화 데이터 기반: 공휴일 이벤트 중 법정공휴일만 수집
+    for (const event of events) {
+      if (event.eventType !== '공휴일') continue
+      if (!isPublicHolidayName(event.summary)) continue
+      const isoDate = DateTime.fromISO(event.startAtUtc).toLocal().toISODate()
+      if (isoDate && !map.has(isoDate)) map.set(isoDate, event.summary)
+    }
+
+    // 오프라인 fallback: 현재 연도 기준 고정 날짜 공휴일
+    const year = DateTime.local().year
+    for (const mmdd of FIXED_PUBLIC_HOLIDAY_MMDD) {
+      const key = `${year}-${mmdd}`
+      if (!map.has(key)) map.set(key, '')
+    }
+
+    return map
+  }, [events])
+
   const todayShiftSummary = useMemo(() => {
+    const today = DateTime.local().toISODate()
+    const todayShiftEvents = events.filter(
+      (event) => event.eventType === '근무' && DateTime.fromISO(event.startAtUtc).toLocal().toISODate() === today,
+    )
     const dayTeams: ShiftTeamKey[] = []
     const nightTeams: ShiftTeamKey[] = []
 
-    for (const event of todayEvents) {
-      if (event.eventType !== '근무') {
-        continue
-      }
+    for (const event of todayShiftEvents) {
       const parsed = parseShiftTeamsFromSummary(event.summary)
       if (!parsed) {
         continue
@@ -260,25 +357,91 @@ export function CalendarPage() {
       }
     }
 
-    if (dayTeams.length === 0 && nightTeams.length === 0) {
+    // 오늘 휴가자 이름 수집
+    const todayVacationNames = new Set<string>()
+    for (const event of events) {
+      if (event.eventType !== '휴가') continue
+      const start = DateTime.fromISO(event.startAtUtc).toLocal()
+      const end = DateTime.fromISO(event.endAtUtc).toLocal()
+      const todayDtObj = DateTime.fromISO(today!)
+      if (start.startOf('day') <= todayDtObj && end > todayDtObj) {
+        const { targets } = parseVacationInfo(event.description ?? '')
+        for (const name of targets) todayVacationNames.add(name.trim())
+      }
+    }
+
+    const todayDt = DateTime.local()
+    const isWeekend = todayDt.weekday === 6 || todayDt.weekday === 7
+    const isHoliday = publicHolidayMap.has(today!)
+    const hideDayWorkers = isWeekend || isHoliday
+
+    const dayWorkerNames = dayWorkerDrafts.filter((name) => name.trim().length > 0 && !todayVacationNames.has(name.trim()))
+    const hasShiftTeams = dayTeams.length > 0 || nightTeams.length > 0
+
+    if (!hasShiftTeams && (hideDayWorkers || dayWorkerNames.length === 0)) {
       return null
     }
 
-    const dayMembers = collectShiftMembers(dayTeams, shiftTeamDrafts)
-    const nightMembers = collectShiftMembers(nightTeams, shiftTeamDrafts)
-    const dayText = dayMembers.length > 0 ? dayMembers.join(' · ') : `${dayTeams.join('·')}조 미지정`
-    const nightText = nightMembers.length > 0 ? nightMembers.join(' · ') : `${nightTeams.join('·')}조 미지정`
+    const dayMembers = collectShiftMembers(dayTeams, shiftTeamDrafts).filter((name) => !todayVacationNames.has(name.trim()))
+    const nightMembers = collectShiftMembers(nightTeams, shiftTeamDrafts).filter((name) => !todayVacationNames.has(name.trim()))
+    const dayText = hasShiftTeams
+      ? (dayMembers.length > 0 ? dayMembers.join(' · ') : `${dayTeams.join('·')}조 미지정`)
+      : null
+    const nightText = hasShiftTeams
+      ? (nightMembers.length > 0 ? nightMembers.join(' · ') : `${nightTeams.join('·')}조 미지정`)
+      : null
+    const dayWorkerText = !hideDayWorkers && dayWorkerNames.length > 0 ? dayWorkerNames.join(' · ') : null
 
-    return { dayText, nightText }
-  }, [shiftTeamDrafts, todayEvents])
+    return { dayText, nightText, dayWorkerText }
+  }, [events, shiftTeamDrafts, dayWorkerDrafts, publicHolidayMap])
 
-  const upcomingEvents = useMemo(() => {
+  const upcomingEventsByDate = useMemo(() => {
     const now = DateTime.now()
-    return events
-      .filter((event) => DateTime.fromISO(event.endAtUtc).toMillis() >= now.toMillis())
+    const filtered = events
+      .filter((event) => event.eventType !== '근무' && event.eventType !== '휴가' && event.eventType !== '반복업무' && event.eventType !== '공휴일' && event.eventType !== '기념일' && event.eventType !== '교육' && event.eventType !== '운용중지작업' && DateTime.fromISO(event.endAtUtc).toMillis() >= now.toMillis())
       .sort((left, right) => left.startAtUtc.localeCompare(right.startAtUtc))
-      .slice(0, 6)
+      .slice(0, 12)
+    const grouped: { dateKey: string; dateLabel: string; events: typeof filtered }[] = []
+    const seen = new Map<string, typeof filtered>()
+    for (const event of filtered) {
+      const dateKey = DateTime.fromISO(event.startAtUtc).toLocal().toISODate()!
+      if (!seen.has(dateKey)) {
+        const list: typeof filtered = []
+        seen.set(dateKey, list)
+        grouped.push({
+          dateKey,
+          dateLabel: DateTime.fromISO(event.startAtUtc).toLocal().setLocale('ko').toFormat('M월 d일 (EEE)'),
+          events: list,
+        })
+      }
+      seen.get(dateKey)!.push(event)
+    }
+    return grouped
   }, [events])
+
+  const monthVacationEvents = useMemo(() => {
+    const monthEnd = visibleMonth.endOf('month')
+    return events
+      .filter((event) => {
+        if (event.eventType !== '휴가') return false
+        const start = DateTime.fromISO(event.startAtUtc).toLocal()
+        const end = DateTime.fromISO(event.endAtUtc).toLocal()
+        return start <= monthEnd && end >= visibleMonth
+      })
+      .sort((left, right) => left.startAtUtc.localeCompare(right.startAtUtc))
+  }, [events, visibleMonth])
+
+  const monthEducationEvents = useMemo(() => {
+    const monthEnd = visibleMonth.endOf('month')
+    return events
+      .filter((event) => {
+        if (event.eventType !== '교육') return false
+        const start = DateTime.fromISO(event.startAtUtc).toLocal()
+        const end = DateTime.fromISO(event.endAtUtc).toLocal()
+        return start <= monthEnd && end >= visibleMonth
+      })
+      .sort((left, right) => left.startAtUtc.localeCompare(right.startAtUtc))
+  }, [events, visibleMonth])
 
   const shiftLabelByDate = useMemo(() => {
     const grouped = new Map<string, string[]>()
@@ -315,16 +478,88 @@ export function CalendarPage() {
   const calendarEvents = useMemo(
     () =>
       events
-        .filter((event) => event.eventType !== '근무')
-        .map((event) => ({
-        id: event.localId,
-        title: event.summary,
-        start: event.startAtUtc,
-        end: event.endAtUtc,
-        classNames: event.recurrenceRule ? ['is-recurring'] : [],
-      })),
+        .filter((event) => event.eventType !== '근무' && event.eventType !== '공휴일')
+        .map((event) => {
+          const isEducation = event.eventType === '교육'
+          const isVacation = event.eventType === '휴가'
+          let educationTargets: string[] = []
+          let endDateDisplay: string | null = null
+          let vacationTypeLabel: string | null = null
+
+          if (isVacation) {
+            const parsed = parseVacationInfo(event.description ?? '')
+            vacationTypeLabel = parsed.vacationType
+
+            if (vacationTypeLabel === '장기휴가') {
+              const startDt = DateTime.fromISO(event.startAtUtc).toLocal()
+              const endDt = DateTime.fromISO(event.endAtUtc).toLocal()
+              const inclusiveEnd = endDt.hour === 0 && endDt.minute === 0 && endDt.second === 0
+                ? endDt.minus({ days: 1 })
+                : endDt
+              if (inclusiveEnd.toISODate() !== startDt.toISODate()) {
+                endDateDisplay = `~${String(inclusiveEnd.month).padStart(2, '0')}/${String(inclusiveEnd.day).padStart(2, '0')}`
+              }
+            }
+          }
+
+          if (isEducation) {
+            const parsed = parseEducationTargets(event.description ?? '')
+            educationTargets = parsed.targets
+
+            const startDt = DateTime.fromISO(event.startAtUtc).toLocal()
+            const endDt = DateTime.fromISO(event.endAtUtc).toLocal()
+            const inclusiveEnd = endDt.hour === 0 && endDt.minute === 0 && endDt.second === 0
+              ? endDt.minus({ days: 1 })
+              : endDt
+            if (inclusiveEnd.toISODate() !== startDt.toISODate()) {
+              endDateDisplay = `~${String(inclusiveEnd.month).padStart(2, '0')}/${String(inclusiveEnd.day).padStart(2, '0')}`
+            }
+          }
+
+          return {
+            id: event.localId,
+            title: event.summary,
+            start: event.startAtUtc,
+            end: event.endAtUtc,
+            classNames: [
+              ...(event.recurrenceRule || event.recurringEventId ? ['is-recurring'] : []),
+              ...(event.eventType === '반복업무' ? ['is-routine'] : []),
+              ...(event.eventType === '운용중지작업' ? ['is-maintenance'] : []),
+              ...(event.eventType === '중요' ? ['is-important'] : []),
+              ...(isEducation ? ['is-education'] : []),
+              ...(isVacation ? ['is-vacation'] : []),
+            ],
+            extendedProps: {
+              sortOrder: event.eventType === '운용중지작업' ? -1 : event.eventType === '중요' ? -1 : isEducation ? 2 : isVacation ? 3 : event.eventType === '반복업무' ? 1 : 0,
+              isRoutine: event.eventType === '반복업무',
+              isEducation,
+              isVacation,
+              educationTargets,
+              endDateDisplay,
+              vacationTypeLabel,
+              completionKey: event.eventType === '반복업무'
+                ? makeCompletionKey(event.localId, event.startAtUtc)
+                : null,
+            },
+          }
+        }),
     [events],
   )
+
+  const allMemberNames = useMemo(() => {
+    const names: string[] = []
+    for (const worker of dayWorkerDrafts) {
+      const trimmed = worker.trim()
+      if (trimmed && !names.includes(trimmed)) names.push(trimmed)
+    }
+    for (const teamKey of shiftTeamKeys) {
+      for (const member of shiftTeamDrafts[teamKey]) {
+        const trimmed = member.trim()
+        if (trimmed && !names.includes(trimmed)) names.push(trimmed)
+      }
+    }
+    return names
+  }, [shiftTeamDrafts, dayWorkerDrafts])
 
   const useCustomTitlebar = window.windowApi.platform === 'win32' || window.windowApi.platform === 'linux'
   const visibleMemberCount = shiftSettings.shiftTeamMode === 'SINGLE' ? 1 : 2
@@ -347,10 +582,11 @@ export function CalendarPage() {
   }
 
   const handleDatesSet = (payload: DatesSetArg) => {
-    const monthLabel = DateTime.fromJSDate(payload.view.currentStart)
-      .setLocale('ko')
-      .toFormat('yyyy년 M월')
+    const current = DateTime.fromJSDate(payload.view.currentStart)
+    const monthLabel = current.setLocale('ko').toFormat('yyyy년 M월')
     setTitlebarMonthLabel(monthLabel)
+    const nextMonth = current.startOf('month')
+    setVisibleMonth((prev) => prev.toMillis() === nextMonth.toMillis() ? prev : nextMonth as DateTime<true>)
   }
 
   const startInlineTitleEdit = (event: CalendarEvent) => {
@@ -370,17 +606,33 @@ export function CalendarPage() {
       return
     }
 
-    const nextSummary = editingTitleDraft.trim()
+    const nextSummary = editingTitleDraftRef.current.trim()
     if (!nextSummary || nextSummary === targetEvent.summary) {
       cancelInlineTitleEdit()
       return
     }
 
-    // Reset edit UI first so quick consecutive edits do not race each other.
     cancelInlineTitleEdit()
 
+    // Optimistic update: immediately reflect the new title
+    const masterLocalId = isVirtualInstance(localId) ? extractMasterLocalId(localId) : localId
+    const calendarApi = calendarRef.current?.getApi()
+    if (calendarApi) {
+      for (const fcEvent of calendarApi.getEvents()) {
+        const fcMaster = isVirtualInstance(fcEvent.id) ? extractMasterLocalId(fcEvent.id) : fcEvent.id
+        if (fcMaster === masterLocalId) {
+          fcEvent.setProp('title', nextSummary)
+        }
+      }
+    }
+
+    const editable = toEditableEvent(targetEvent)
+    if (isVirtualInstance(localId)) {
+      editable.recurrenceScope = 'ALL'
+    }
+
     await saveEvent({
-      ...toEditableEvent(targetEvent),
+      ...editable,
       summary: nextSummary,
       sendUpdates: 'none',
     })
@@ -530,6 +782,30 @@ export function CalendarPage() {
 
       <div className="content-grid">
         <aside className="left-panel">
+          <div className="left-panel-cards">
+          {todayShiftSummary ? (
+            <section className="today-shift-card">
+              <p className="today-shift-card-label">오늘의 근무자</p>
+              {todayShiftSummary.dayWorkerText ? (
+                <p className="today-shift-row">
+                  <span className="today-shift-label">일근</span>
+                  <span className="today-shift-members">{todayShiftSummary.dayWorkerText}</span>
+                </p>
+              ) : null}
+              {todayShiftSummary.dayText ? (
+                <p className="today-shift-row">
+                  <span className="today-shift-label">주간</span>
+                  <span className="today-shift-members">{todayShiftSummary.dayText}</span>
+                </p>
+              ) : null}
+              {todayShiftSummary.nightText ? (
+                <p className="today-shift-row">
+                  <span className="today-shift-label">야간</span>
+                  <span className="today-shift-members">{todayShiftSummary.nightText}</span>
+                </p>
+              ) : null}
+            </section>
+          ) : null}
           <section className="stat-card">
             <div className="stat-value-row">
               <div>
@@ -539,18 +815,6 @@ export function CalendarPage() {
                   <small className="stat-value-unit">개 일정</small>
                 </p>
               </div>
-              {todayShiftSummary ? (
-                <div className="today-shift-summary">
-                  <p className="today-shift-row">
-                    <span className="today-shift-icon" aria-hidden="true">☀</span>
-                    <span className="today-shift-members">{todayShiftSummary.dayText}</span>
-                  </p>
-                  <p className="today-shift-row">
-                    <span className="today-shift-icon" aria-hidden="true">☾</span>
-                    <span className="today-shift-members">{todayShiftSummary.nightText}</span>
-                  </p>
-                </div>
-              ) : null}
             </div>
             <ul className="today-list">
               {todayEvents.length === 0 ? (
@@ -560,7 +824,12 @@ export function CalendarPage() {
                   <li key={event.localId} className="today-item">
                     <button type="button" onClick={() => setEditingEvent(toEditableEvent(event))}>
                       <span>{event.summary}</span>
-                      <small>{DateTime.fromISO(event.startAtUtc).toLocal().setLocale('ko').toFormat('HH:mm')}</small>
+                      {(() => {
+                        const local = DateTime.fromISO(event.startAtUtc).toLocal()
+                        return local.hour === 0 && local.minute === 0 ? null : (
+                          <small>{local.setLocale('ko').toFormat('HH:mm')}</small>
+                        )
+                      })()}
                     </button>
                   </li>
                 ))
@@ -573,24 +842,104 @@ export function CalendarPage() {
               <h2>다가오는 일정</h2>
               {loading ? <span className="status-chip">불러오는 중</span> : null}
             </div>
-            <ul className="upcoming-list">
-              {upcomingEvents.length === 0 ? (
-                <li className="empty-item">다가오는 일정이 없습니다</li>
+            <div className="upcoming-list">
+              {upcomingEventsByDate.length === 0 ? (
+                <p className="empty-item">다가오는 일정이 없습니다</p>
               ) : (
-                upcomingEvents.map((event) => (
-                  <li key={event.localId} className="upcoming-item">
-                    <button type="button" onClick={() => setEditingEvent(toEditableEvent(event))}>
-                      <span>{event.summary}</span>
-                      <small>
-                        {DateTime.fromISO(event.startAtUtc).toLocal().setLocale('ko').toFormat('M월 d일 HH:mm')}
-                      </small>
-                    </button>
-                  </li>
+                upcomingEventsByDate.map((group) => (
+                  <div key={group.dateKey} className="upcoming-date-group">
+                    <p className="upcoming-date-label">{group.dateLabel}</p>
+                    <ul className="upcoming-date-events">
+                      {group.events.map((event) => (
+                        <li key={event.localId} className="upcoming-item">
+                          <button type="button" onClick={() => setEditingEvent(toEditableEvent(event))}>
+                            <span>{event.summary}</span>
+                            {(() => {
+                              const local = DateTime.fromISO(event.startAtUtc).toLocal()
+                              return local.hour === 0 && local.minute === 0 ? null : (
+                                <small>{local.setLocale('ko').toFormat('HH:mm')}</small>
+                              )
+                            })()}
+                          </button>
+                        </li>
+                      ))}
+                    </ul>
+                  </div>
                 ))
+              )}
+            </div>
+          </section>
+
+          <section className="vacation-card">
+            <div className="card-row">
+              <h2>휴가</h2>
+              <span className="vacation-month-label">{visibleMonth.setLocale('ko').toFormat('M월')}</span>
+            </div>
+            <ul className="vacation-list">
+              {monthVacationEvents.length === 0 ? (
+                <li className="empty-item">이번 달 휴가가 없습니다</li>
+              ) : (
+                monthVacationEvents.map((event) => {
+                  const startDt = DateTime.fromISO(event.startAtUtc).toLocal()
+                  const endDt = DateTime.fromISO(event.endAtUtc).toLocal()
+                  const inclusiveEnd = endDt.hour === 0 && endDt.minute === 0 && endDt.second === 0
+                    ? endDt.minus({ days: 1 })
+                    : endDt
+                  const sameDay = startDt.toISODate() === inclusiveEnd.toISODate()
+                  const dateLabel = sameDay
+                    ? startDt.setLocale('ko').toFormat('M/d')
+                    : `${startDt.setLocale('ko').toFormat('M/d')}~${inclusiveEnd.setLocale('ko').toFormat('M/d')}`
+                  return (
+                    <li key={event.localId} className="vacation-item">
+                      <button type="button" onClick={() => setEditingEvent(toEditableEvent(event))}>
+                        <span>{event.summary}</span>
+                        <small>{dateLabel}</small>
+                      </button>
+                    </li>
+                  )
+                })
               )}
             </ul>
           </section>
 
+          {monthEducationEvents.length > 0 ? (
+            <section className="education-card">
+              <div className="card-row">
+                <h2>교육</h2>
+                <span className="vacation-month-label">{visibleMonth.setLocale('ko').toFormat('M월')}</span>
+              </div>
+              <ul className="education-list">
+                {monthEducationEvents.map((event) => {
+                  const startDt = DateTime.fromISO(event.startAtUtc).toLocal()
+                  const endDt = DateTime.fromISO(event.endAtUtc).toLocal()
+                  const inclusiveEnd = endDt.hour === 0 && endDt.minute === 0 && endDt.second === 0
+                    ? endDt.minus({ days: 1 })
+                    : endDt
+                  const sameDay = startDt.toISODate() === inclusiveEnd.toISODate()
+                  const dateLabel = sameDay
+                    ? startDt.setLocale('ko').toFormat('M/d')
+                    : `${startDt.setLocale('ko').toFormat('M/d')}~${inclusiveEnd.setLocale('ko').toFormat('M/d')}`
+                  const { targets } = parseEducationTargets(event.description ?? '')
+                  return (
+                    <li key={event.localId} className="education-item">
+                      <button type="button" onClick={() => setEditingEvent(toEditableEvent(event))}>
+                        <span className="education-item-content">
+                          {targets.length > 0 ? (
+                            <span className="education-item-names">{targets.join(', ')}</span>
+                          ) : null}
+                          <span>{event.summary}</span>
+                        </span>
+                        <small>{dateLabel}</small>
+                      </button>
+                    </li>
+                  )
+                })}
+              </ul>
+            </section>
+          ) : null}
+          </div>
+
+          <div className="left-panel-bottom">
           <section className="shift-card">
             {savingShiftSettings ? (
               <div className="card-row shift-card-row">
@@ -658,16 +1007,28 @@ export function CalendarPage() {
               </div>
             </div>
           </section>
+          </div>
         </aside>
 
-        <main className="calendar-panel" onWheel={handleCalendarWheel}>
+        <main className="calendar-panel" onWheel={handleCalendarWheel} onContextMenu={(e) => {
+          const target = e.target as HTMLElement
+          const dayCell = target.closest<HTMLElement>('[data-date]')
+          if (!dayCell) return
+          e.preventDefault()
+          if (editingTitleEventId) return
+          const dateStr = dayCell.getAttribute('data-date')
+          if (!dateStr) return
+          const startAtUtc = DateTime.fromISO(dateStr).toUTC().toISO() ?? new Date().toISOString()
+          const endAtUtc = DateTime.fromISO(dateStr).plus({ days: 1 }).toUTC().toISO() ?? new Date(Date.now() + 86400000).toISOString()
+          setEditingEvent(createDraft(startAtUtc, endAtUtc))
+        }}>
           <FullCalendar
             ref={calendarRef}
             plugins={[dayGridPlugin, interactionPlugin]}
             locales={[koLocale]}
             locale="ko"
             initialView="dayGridMonth"
-            selectable
+            selectable={false}
             editable={false}
             eventStartEditable={false}
             eventDurationEditable={false}
@@ -676,13 +1037,87 @@ export function CalendarPage() {
             fixedWeekCount={false}
             showNonCurrentDates
           dayMaxEvents
+          eventOrder="sortOrder"
           events={calendarEvents}
           eventContent={(arg) => {
             const isEditing = editingTitleEventId === arg.event.id
             if (!isEditing) {
+              const isRoutine = arg.event.extendedProps?.isRoutine === true
+              const isEducation = arg.event.extendedProps?.isEducation === true
+              const completionKey = arg.event.extendedProps?.completionKey as string | null
+              const isDone = completionKey ? routineCompletions.has(completionKey) : false
+
+              if (isEducation) {
+                const targets = (arg.event.extendedProps?.educationTargets as string[]) ?? []
+                const endLabel = arg.event.extendedProps?.endDateDisplay as string | null
+                return (
+                  <div className="fc-education-content">
+                    {targets.length > 0 && (
+                      <span className="fc-education-targets">
+                        {targets.map((t) => <span key={t} className="fc-education-target-pill">{t}</span>)}
+                      </span>
+                    )}
+                    <span className="fc-education-title">{arg.event.title}</span>
+                    {endLabel && <span className="fc-education-until">{endLabel}</span>}
+                  </div>
+                )
+              }
+
+              const isVacationEvent = arg.event.extendedProps?.isVacation === true
+              if (isVacationEvent) {
+                const typeLabel = arg.event.extendedProps?.vacationTypeLabel as string | null
+                const vacEndLabel = arg.event.extendedProps?.endDateDisplay as string | null
+                const displayTitle = typeLabel
+                  ? arg.event.title.replace(typeLabel, '').replace(/\s+/g, ' ').trim()
+                  : arg.event.title
+                const timeMatch = typeLabel?.match(/^(시간차)\((.+)\)$/)
+                return (
+                  <div className="fc-vacation-content">
+                    {typeLabel && (
+                      timeMatch ? (
+                        <span className="fc-vacation-type-pill">{timeMatch[1]}<span className="fc-vacation-time">{timeMatch[2]}</span></span>
+                      ) : (
+                        <span className="fc-vacation-type-pill">{typeLabel}</span>
+                      )
+                    )}
+                    <span className="fc-vacation-title">
+                      {displayTitle || arg.event.title}
+                      {vacEndLabel && <span className="fc-vacation-until">{vacEndLabel}</span>}
+                    </span>
+                  </div>
+                )
+              }
+
               return (
                 <div className="fc-event-title-inline-wrap">
-                  <span className="fc-event-title-inline-text">{arg.event.title}</span>
+                  {isRoutine ? (
+                    <span
+                      className={isDone ? 'fc-routine-check is-done' : 'fc-routine-check'}
+                      onMouseDown={(e) => {
+                        e.stopPropagation()
+                        e.preventDefault()
+                      }}
+                      onClick={(e) => {
+                        e.stopPropagation()
+                        e.preventDefault()
+                        if (completionKey) toggleRoutineCompletion(completionKey)
+                      }}
+                    >
+                      {isDone ? (
+                        <svg width="19" height="19" viewBox="0 0 16 16" fill="none">
+                          <rect x="1" y="1" width="14" height="14" rx="2" stroke="currentColor" strokeWidth="1.5" fill="currentColor" fillOpacity="0.15" />
+                          <path d="M4.5 8.5L7 11L11.5 5.5" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round" />
+                        </svg>
+                      ) : (
+                        <svg width="19" height="19" viewBox="0 0 16 16" fill="none">
+                          <rect x="1" y="1" width="14" height="14" rx="2" stroke="currentColor" strokeWidth="1.5" />
+                        </svg>
+                      )}
+                    </span>
+                  ) : null}
+                  <span className={isDone ? 'fc-event-title-inline-text is-routine-done' : 'fc-event-title-inline-text'}>
+                    {arg.event.title}
+                  </span>
                 </div>
               )
             }
@@ -713,10 +1148,51 @@ export function CalendarPage() {
             )
           }}
           eventDidMount={(arg) => {
-            arg.el.title = '우클릭으로 상세편집'
+
+            // Auto-fit font size: max 18px, scale down if text overflows
+            const textEl = arg.el.querySelector('.fc-event-title-inline-text, .fc-education-title, .fc-vacation-title') as HTMLElement | null
+            if (textEl) {
+              requestAnimationFrame(() => {
+                if (textEl.scrollWidth > textEl.clientWidth) {
+                  const ratio = textEl.clientWidth / textEl.scrollWidth
+                  const fitted = Math.max(11, Math.floor(18 * ratio))
+                  textEl.style.fontSize = `${fitted}px`
+                }
+              })
+            }
+
+            let tip: HTMLDivElement | null = null
+            const showTip = (e: MouseEvent) => {
+              if (!tip) {
+                tip = document.createElement('div')
+                tip.textContent = '우클릭으로 상세편집'
+                Object.assign(tip.style, {
+                  position: 'fixed',
+                  padding: '4px 8px',
+                  background: 'rgba(0,0,0,0.78)',
+                  color: '#fff',
+                  fontSize: '11px',
+                  fontWeight: '500',
+                  whiteSpace: 'nowrap',
+                  borderRadius: '4px',
+                  pointerEvents: 'none',
+                  zIndex: '99999',
+                })
+                document.body.appendChild(tip)
+              }
+              tip.style.left = `${e.clientX + 10}px`
+              tip.style.top = `${e.clientY + 10}px`
+            }
+            const hideTip = () => { tip?.remove(); tip = null }
+            const onEnter = (e: Event) => showTip(e as MouseEvent)
+            const onMove = (e: Event) => showTip(e as MouseEvent)
+            arg.el.addEventListener('pointerenter', onEnter)
+            arg.el.addEventListener('pointermove', onMove)
+            arg.el.addEventListener('pointerleave', hideTip)
             arg.el.oncontextmenu = (event) => {
               event.preventDefault()
               event.stopPropagation()
+              hideTip()
               const selected = eventsRef.current.find((item) => item.localId === arg.event.id)
               if (!selected) {
                 return
@@ -724,34 +1200,40 @@ export function CalendarPage() {
               cancelInlineTitleEdit()
               setEditingEvent(toEditableEvent(selected))
             }
+            ;(arg.el as any)._tipCleanup = () => {
+              hideTip()
+              arg.el.removeEventListener('pointerenter', onEnter)
+              arg.el.removeEventListener('pointermove', onMove)
+              arg.el.removeEventListener('pointerleave', hideTip)
+            }
           }}
           eventWillUnmount={(arg) => {
+            ;(arg.el as any)._tipCleanup?.()
             arg.el.oncontextmenu = null
           }}
           dayCellContent={(arg) => {
             const dateKey = DateTime.fromJSDate(arg.date).toISODate()
             const shiftLabel = dateKey ? shiftLabelByDate.get(dateKey) : null
+            const holidayName = dateKey ? publicHolidayMap.get(dateKey) : undefined
+            const isHoliday = holidayName !== undefined
             return (
               <>
-                <span className="fc-day-number-text">{arg.dayNumberText.replace('일', '')}</span>
+                <span className={isHoliday ? 'fc-day-number-text is-public-holiday' : 'fc-day-number-text'}>{arg.dayNumberText.replace('일', '')}</span>
                 {shiftLabel ? <span className="fc-day-shift-inline">{shiftLabel}</span> : null}
+                {holidayName ? <span className="fc-day-holiday-pill">{holidayName}</span> : null}
               </>
             )
           }}
           headerToolbar={false}
           datesSet={handleDatesSet}
-            select={(selection: DateSelectArg) => {
-              const startAtUtc =
-                DateTime.fromJSDate(selection.start).toUTC().toISO() ?? new Date().toISOString()
-              const endAtUtc =
-                DateTime.fromJSDate(selection.end).toUTC().toISO() ??
-                DateTime.fromJSDate(selection.start).plus({ hours: 1 }).toUTC().toISO() ??
-                new Date(Date.now() + 60 * 60 * 1000).toISOString()
-              setEditingEvent(createDraft(startAtUtc, endAtUtc))
-            }}
             eventClick={(info: EventClickArg) => {
               info.jsEvent.preventDefault()
               info.jsEvent.stopPropagation()
+              // Ignore clicks on routine checkbox
+              const target = info.jsEvent.target as HTMLElement
+              if (target.closest('.fc-routine-check')) {
+                return
+              }
               const selected = eventsRef.current.find((event) => event.localId === info.event.id)
               if (!selected) {
                 return
@@ -765,13 +1247,14 @@ export function CalendarPage() {
       <EventModal
         open={Boolean(editingEvent)}
         value={editingEvent}
+        memberNames={allMemberNames}
         onClose={() => setEditingEvent(null)}
         onSave={async (event) => {
           await saveEvent(event)
           setEditingEvent(null)
         }}
-        onDelete={async (localId, sendUpdates) => {
-          await deleteEvent(localId, sendUpdates)
+        onDelete={async (localId, sendUpdates, recurrenceScope) => {
+          await deleteEvent(localId, sendUpdates, recurrenceScope)
           setEditingEvent(null)
         }}
       />

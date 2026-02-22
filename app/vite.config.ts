@@ -4,7 +4,13 @@ import electron from 'vite-plugin-electron/simple'
 import react from '@vitejs/plugin-react'
 
 // https://vitejs.dev/config/
-export default defineConfig({
+export default defineConfig(({ command }) => ({
+  server: {
+    watch: {
+      usePolling: true,
+      interval: 300,
+    },
+  },
   plugins: [
     react(),
     electron({
@@ -12,6 +18,9 @@ export default defineConfig({
         // Shortcut of `build.lib.entry`.
         entry: 'src/main/main.ts',
         vite: {
+          define: command === 'serve'
+            ? { 'process.env.VITE_DEV_SERVER_URL': JSON.stringify('http://localhost:5173') }
+            : undefined,
           build: {
             rollupOptions: {
               external: [
@@ -38,4 +47,4 @@ export default defineConfig({
         : {},
     }),
   ],
-})
+}))

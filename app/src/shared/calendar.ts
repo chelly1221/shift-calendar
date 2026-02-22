@@ -35,7 +35,7 @@ export const calendarEventSchema = z.object({
   recurrenceRule: z.string().nullable(),
   recurringEventId: z.string().min(1).nullable(),
   originalStartTimeUtc: z.string().datetime().nullable(),
-  organizerEmail: z.string().email().nullable(),
+  organizerEmail: z.string().nullable(),
   hangoutLink: z.string().url().nullable(),
   googleUpdatedAtUtc: z.string().datetime().nullable(),
   localEditedAtUtc: z.string().datetime(),
@@ -71,6 +71,7 @@ export type ListEventsInput = z.infer<typeof listEventsInputSchema>
 export const deleteCalendarEventSchema = z.object({
   localId: z.string().min(1),
   sendUpdates: sendUpdatesSchema.default('none'),
+  recurrenceScope: recurrenceEditScopeSchema.default('ALL'),
 })
 export type DeleteCalendarEventInput = z.infer<typeof deleteCalendarEventSchema>
 

@@ -1,6 +1,6 @@
 import { Prisma, SyncState } from '@prisma/client'
 import type { CalendarEvent, ListEventsInput, UpsertCalendarEventInput } from '../../shared/calendar'
-import { splitRRuleForFuture } from '../../shared/rrule'
+import { splitRRuleForFuture, withoutRRuleEnd } from '../../shared/rrule'
 import { prisma } from './prisma'
 
 export interface RemoteEventSnapshot {
@@ -261,7 +261,8 @@ export async function applyFutureSplitEdit(input: UpsertCalendarEventInput): Pro
   }
 
   const splitRule = splitRRuleForFuture(sourceRule, input.startAtUtc)
-  const futureRule = input.recurrenceRule ?? sourceRule
+  const rawFutureRule = input.recurrenceRule ?? sourceRule
+  const futureRule = withoutRRuleEnd(rawFutureRule)
   const nextEndAtUtc = ensureEndAfterStart(input.startAtUtc, input.endAtUtc)
   const now = new Date()
 
@@ -299,6 +300,55 @@ export async function applyFutureSplitEdit(input: UpsertCalendarEventInput): Pro
       splitSourceEvent: toCalendarEvent(splitSourceEvent),
       futureEvent: toCalendarEvent(futureEvent),
     }
+  })
+
+  return result
+}
+
+export async function applyFutureSplitForDelete(
+  localId: string,
+  splitStartUtc: string,
+): Promise<{ splitSourceEvent: CalendarEvent }> {
+  const source = await prisma.event.findUnique({
+    where: { localId },
+  })
+  if (!source) {
+    throw new Error(`Event not found for FUTURE delete split: ${localId}`)
+  }
+
+  const sourceRule = parseRecurrenceRule(source.recurrenceJson)
+  if (!sourceRule) {
+    throw new Error('FUTURE delete split requires recurring master event with RRULE.')
+  }
+
+  const splitRule = splitRRuleForFuture(sourceRule, splitStartUtc)
+  const now = new Date()
+  const splitStart = new Date(splitStartUtc)
+
+  const result = await prisma.$transaction(async (tx) => {
+    const splitSourceEvent = await tx.event.update({
+      where: { localId: source.localId },
+      data: {
+        recurrenceJson: toRecurrenceJson(splitRule),
+        localEditedAtUtc: now,
+        syncState: SyncState.PENDING,
+      },
+    })
+
+    await tx.event.updateMany({
+      where: {
+        recurringEventId: source.googleEventId,
+        startAtUtc: { gte: splitStart },
+        isDeleted: false,
+      },
+      data: {
+        isDeleted: true,
+        localEditedAtUtc: now,
+        syncState: SyncState.PENDING,
+      },
+    })
+
+    return { splitSourceEvent: toCalendarEvent(splitSourceEvent) }
   })
 
   return result
@@ -356,8 +406,24 @@ export async function upsertRemoteEvent(snapshot: RemoteEventSnapshot): Promise<
   }
 
   const googleUpdatedAt = normalizeDate(snapshot.googleUpdatedAtUtc)
-  const writeData = {
-    eventType: normalizeEventType(snapshot.eventType),
+
+  const existing = await prisma.event.findUnique({
+    where: { googleEventId: snapshot.googleEventId },
+    select: { eventType: true, syncState: true, isDeleted: true, localEditedAtUtc: true },
+  })
+
+  // Skip if local event has pending changes (e.g. pending deletion) that haven't synced yet
+  if (existing?.syncState === SyncState.PENDING) {
+    const remoteMs = googleUpdatedAt.getTime()
+    const localMs = existing.localEditedAtUtc.getTime()
+    if (localMs > remoteMs) {
+      return
+    }
+  }
+
+  const preservedEventType = existing?.eventType ?? normalizeEventType(snapshot.eventType)
+
+  const baseData = {
     summary: snapshot.summary,
     description: snapshot.description || null,
     location: snapshot.location || null,
@@ -382,9 +448,13 @@ export async function upsertRemoteEvent(snapshot: RemoteEventSnapshot): Promise<
     where: { googleEventId: snapshot.googleEventId },
     create: {
       googleEventId: snapshot.googleEventId,
-      ...writeData,
+      eventType: normalizeEventType(snapshot.eventType),
+      ...baseData,
     },
-    update: writeData,
+    update: {
+      eventType: preservedEventType,
+      ...baseData,
+    },
   })
 }
 

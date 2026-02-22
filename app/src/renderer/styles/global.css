@@ -3,7 +3,7 @@
   --ink-900: #1d1d1f;
   --ink-700: #3a3a3c;
   --ink-500: #86868b;
-  --surface: #f5f5f7;
+  --surface: #f8f4ec;
   --surface-raised: #ffffff;
   --line: rgba(0, 0, 0, 0.06);
   --line-strong: rgba(0, 0, 0, 0.12);
@@ -25,6 +25,10 @@
   --font-display: 'Noto Sans KR', 'Noto Sans JP', 'Malgun Gothic', 'Apple SD Gothic Neo', 'Nanum Gothic',
     -apple-system, BlinkMacSystemFont, 'Segoe UI', 'Apple Color Emoji', 'Segoe UI Emoji', sans-serif;
   --titlebar-height: 52px;
+  --education: #0d9488;
+  --education-bg: #ccfbf1;
+  --education-text: #134e4a;
+  --education-arrow: 10px;
 }
 
 * {
@@ -56,6 +60,9 @@ body {
   font-size: 13px;
   line-height: 1.5;
   background: var(--surface);
+  -webkit-font-smoothing: antialiased;
+  -moz-osx-font-smoothing: grayscale;
+  text-rendering: optimizeLegibility;
 }
 
 #root {
@@ -83,10 +90,10 @@ body {
   display: flex;
   align-items: center;
   justify-content: center;
-  background: rgba(245, 245, 247, 0.9);
+  background: rgba(248, 244, 236, 0.9);
   backdrop-filter: blur(20px) saturate(180%);
   -webkit-backdrop-filter: blur(20px) saturate(180%);
-  border-bottom: 0.5px solid var(--line);
+  border-bottom: 0.5px solid rgba(0, 0, 0, 0.06);
   -webkit-app-region: drag;
   app-region: drag;
   user-select: none;
@@ -306,13 +313,27 @@ body {
 .left-panel {
   display: flex;
   flex-direction: column;
-  gap: 0;
-  padding: 12px;
-  background: rgba(245, 245, 247, 0.8);
+  padding: 0;
+  background: rgba(248, 244, 236, 0.8);
   backdrop-filter: blur(20px) saturate(180%);
   -webkit-backdrop-filter: blur(20px) saturate(180%);
-  border-right: 0.5px solid var(--line);
-  overflow-y: auto;
+  border-right: 0.5px solid rgba(0, 0, 0, 0.06);
+  overflow: hidden;
+}
+
+.left-panel-cards {
+  flex: 1;
+  min-height: 0;
+  overflow: hidden;
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  padding: 12px;
+}
+
+.left-panel-bottom {
+  flex-shrink: 0;
+  padding: 0 12px 12px;
 }
 
 /* ── Stat Card ── */
@@ -322,7 +343,9 @@ body {
   background: var(--surface-raised);
   box-shadow: var(--shadow-sm);
   border: 0.5px solid var(--line);
-  margin-bottom: 8px;
+  flex-shrink: 0;
+  display: flex;
+  flex-direction: column;
 }
 
 .stat-label {
@@ -337,6 +360,7 @@ body {
   align-items: flex-start;
   justify-content: space-between;
   gap: 10px;
+  flex-shrink: 0;
 }
 
 .stat-value {
@@ -359,39 +383,55 @@ body {
   margin-bottom: 2px;
 }
 
-.today-shift-summary {
+.today-shift-card {
+  background: var(--surface, #fff);
+  border-radius: 14px;
+  padding: 14px 16px;
+  margin-top: -4px;
+  margin-bottom: -4px;
   display: grid;
-  gap: 2px;
-  margin-top: 1px;
-  min-width: 0;
+  flex-shrink: 0;
+  gap: 6px;
+}
+
+.today-shift-card-label {
+  margin: 0 0 4px;
+  display: inline-block;
+  font-size: 13px;
+  font-weight: 700;
+  color: var(--accent, #007aff);
+  background: color-mix(in srgb, var(--accent, #007aff) 10%, transparent);
+  padding: 3px 10px;
+  border-radius: 999px;
+  letter-spacing: 0.02em;
+  width: fit-content;
 }
 
 .today-shift-row {
   margin: 0;
-  display: inline-flex;
+  display: flex;
   align-items: center;
-  justify-content: flex-end;
-  gap: 4px;
+  gap: 8px;
   min-width: 0;
 }
 
-.today-shift-icon {
-  color: var(--accent);
-  font-size: 12px;
-  line-height: 1;
+.today-shift-label {
+  color: var(--ink-500, #8e8e93);
+  font-size: 14px;
+  font-weight: 600;
   flex: 0 0 auto;
+  min-width: 30px;
 }
 
 .today-shift-members {
   color: var(--ink-900);
-  font-size: 12px;
-  font-weight: 500;
-  line-height: 1.1;
-  max-width: 145px;
+  font-size: 22px;
+  font-weight: 600;
+  line-height: 24px;
+  max-width: 220px;
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
-  text-align: right;
 }
 
 .today-list {
@@ -400,6 +440,9 @@ body {
   list-style: none;
   display: grid;
   gap: 2px;
+  overflow-y: auto;
+  flex: 1;
+  min-height: 0;
 }
 
 .today-item button {
@@ -448,6 +491,196 @@ body {
   box-shadow: var(--shadow-sm);
   border: 0.5px solid var(--line);
   flex: 1;
+  min-height: 0;
+  display: flex;
+  flex-direction: column;
+}
+
+.upcoming-list {
+  margin: 8px 0 0;
+  display: flex;
+  flex-direction: column;
+  gap: 0;
+  overflow-y: auto;
+  flex: 1;
+  min-height: 0;
+  padding-left: 10px;
+}
+
+.upcoming-date-group {
+  position: relative;
+  padding-left: 16px;
+  padding-bottom: 8px;
+}
+
+/* 세로 점선 */
+.upcoming-date-group::before {
+  content: '';
+  position: absolute;
+  left: 3px;
+  top: 8px;
+  bottom: 0;
+  width: 0;
+  border-left: 1.5px dashed var(--ink-500, #8e8e93);
+  opacity: 0.3;
+}
+
+/* 마지막 그룹은 점선 숨김 */
+.upcoming-date-group:last-child::before {
+  display: none;
+}
+
+/* 날짜 점 */
+.upcoming-date-group::after {
+  content: '';
+  position: absolute;
+  left: 0;
+  top: 5px;
+  width: 7px;
+  height: 7px;
+  border-radius: 50%;
+  background: var(--accent, #007aff);
+}
+
+.upcoming-date-label {
+  margin: 0;
+  font-size: 11px;
+  font-weight: 700;
+  color: var(--ink-700);
+  padding: 0;
+  line-height: 1.4;
+}
+
+.upcoming-date-events {
+  margin: 2px 0 0;
+  padding: 0;
+  list-style: none;
+  display: flex;
+  flex-direction: column;
+  gap: 0;
+}
+
+/* ── Vacation Card ── */
+.vacation-card {
+  padding: 12px;
+  border-radius: var(--radius-md);
+  background: var(--surface-raised);
+  box-shadow: var(--shadow-sm);
+  border: 0.5px solid var(--line);
+  flex-shrink: 0;
+  display: flex;
+  flex-direction: column;
+}
+
+.vacation-month-label {
+  color: var(--ink-500);
+  font-size: 11px;
+  font-weight: 600;
+}
+
+.vacation-list {
+  margin: 6px 0 0;
+  padding: 0;
+  list-style: none;
+  display: flex;
+  flex-direction: column;
+  gap: 0;
+  overflow-y: auto;
+  flex: 1;
+  min-height: 0;
+}
+
+.vacation-item button {
+  width: 100%;
+  border: none;
+  border-radius: var(--radius-sm);
+  background: transparent;
+  padding: 0 6px;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 6px;
+  cursor: pointer;
+  color: inherit;
+  text-align: left;
+  font-size: 12px;
+  font-weight: 500;
+  line-height: 1.6;
+  transition: background-color 0.15s ease;
+}
+
+.vacation-item button:hover {
+  background: rgba(0, 0, 0, 0.04);
+}
+
+.vacation-item small {
+  color: var(--ink-500);
+  font-size: 11px;
+  white-space: nowrap;
+}
+
+/* ── Education Card ── */
+.education-card {
+  padding: 12px;
+  border-radius: var(--radius-md);
+  background: var(--surface-raised);
+  box-shadow: var(--shadow-sm);
+  border: 0.5px solid var(--line);
+  flex-shrink: 0;
+  display: flex;
+  flex-direction: column;
+}
+
+.education-list {
+  margin: 6px 0 0;
+  padding: 0;
+  list-style: none;
+  display: flex;
+  flex-direction: column;
+  gap: 0;
+}
+
+.education-item button {
+  width: 100%;
+  border: none;
+  border-radius: var(--radius-sm);
+  background: transparent;
+  padding: 2px 6px;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 6px;
+  cursor: pointer;
+  color: inherit;
+  text-align: left;
+  font-size: 12px;
+  line-height: 1.6;
+  transition: background-color 0.15s ease;
+}
+
+.education-item button:hover {
+  background: rgba(0, 0, 0, 0.04);
+}
+
+.education-item-content {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  min-width: 0;
+  overflow: hidden;
+}
+
+.education-item-names {
+  flex-shrink: 0;
+  font-size: 12px;
+  font-weight: 500;
+  color: inherit;
+}
+
+.education-item small {
+  color: var(--ink-500);
+  font-size: 11px;
+  white-space: nowrap;
 }
 
 .shift-card {
@@ -510,21 +743,21 @@ body {
   border-radius: 0;
   background: transparent;
   color: inherit;
-  padding: 4px 2px;
+  padding: 5px 2px;
   display: flex;
   align-items: baseline;
   justify-content: flex-start;
-  gap: 14px;
+  gap: 10px;
   text-align: left;
 }
 
 .shift-display-label {
   color: var(--ink-700);
-  font-size: 17px;
+  font-size: 14px;
   font-weight: 700;
   line-height: 1.1;
   white-space: nowrap;
-  min-width: 30px;
+  min-width: 26px;
 }
 
 .shift-display-value {
@@ -541,9 +774,16 @@ body {
 
 .shift-inline-role-text {
   color: var(--accent);
-  font-size: 13px;
+  font-size: 10px;
   font-weight: 600;
-  line-height: 1.1;
+  line-height: 1;
+  background: color-mix(in srgb, var(--accent, #007aff) 12%, transparent);
+  padding: 2px 6px;
+  border-radius: 999px;
+  white-space: nowrap;
+  vertical-align: baseline;
+  position: relative;
+  top: -1px;
 }
 
 .shift-inline-editor {
@@ -559,7 +799,7 @@ body {
 .shift-inline-field {
   display: inline-flex;
   align-items: baseline;
-  gap: 4px;
+  gap: 3px;
   min-width: 0;
   flex: 0 0 auto;
 }
@@ -572,9 +812,9 @@ body {
   border-bottom: 1px solid transparent;
   border-radius: 0;
   background: transparent;
-  padding: 0 0 1px;
+  padding: 0 0 2px;
   color: var(--ink-900);
-  font-size: 15px;
+  font-size: 14px;
   font-weight: 450;
   line-height: 1.1;
   text-align: left;
@@ -600,6 +840,7 @@ body {
   justify-content: space-between;
   align-items: center;
   gap: 8px;
+  flex-shrink: 0;
 }
 
 .card-row h2 {
@@ -620,23 +861,15 @@ body {
   border: none;
 }
 
-.upcoming-list {
-  margin: 8px 0 0;
-  padding: 0;
-  list-style: none;
-  display: grid;
-  gap: 2px;
-}
-
 .upcoming-item button {
   width: 100%;
   border: none;
   border-radius: var(--radius-sm);
   background: transparent;
-  padding: 6px 8px;
+  padding: 2px 6px;
   display: flex;
-  flex-direction: column;
-  align-items: flex-start;
+  align-items: center;
+  justify-content: space-between;
   gap: 1px;
   cursor: pointer;
   color: inherit;
@@ -940,6 +1173,80 @@ textarea {
   color: #fff;
 }
 
+.education-targets {
+  display: grid;
+  gap: 6px;
+}
+
+.education-pill-grid {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+}
+
+.education-pill {
+  border: 1px solid var(--line-strong);
+  border-radius: 999px;
+  background: var(--surface-raised);
+  color: var(--ink-700);
+  padding: 4px 14px;
+  font-size: 13px;
+  font-weight: 500;
+  cursor: pointer;
+  transition: background-color 0.15s ease, border-color 0.15s ease, color 0.15s ease;
+}
+
+.education-pill:hover {
+  background: rgba(13, 148, 136, 0.08);
+  border-color: var(--education);
+}
+
+.education-pill.is-selected {
+  background: var(--education);
+  border-color: var(--education);
+  color: #fff;
+  font-weight: 600;
+}
+
+.education-pill.is-selected:hover {
+  background: #0f766e;
+  border-color: #0f766e;
+}
+
+.vacation-targets {
+  display: grid;
+  gap: 6px;
+}
+
+.vacation-pill {
+  border: 1px solid var(--line-strong);
+  border-radius: 999px;
+  background: var(--surface-raised);
+  color: var(--ink-700);
+  padding: 4px 14px;
+  font-size: 13px;
+  font-weight: 500;
+  cursor: pointer;
+  transition: background-color 0.15s ease, border-color 0.15s ease, color 0.15s ease;
+}
+
+.vacation-pill:hover {
+  background: rgba(0, 0, 0, 0.06);
+  border-color: #616161;
+}
+
+.vacation-pill.is-selected {
+  background: #616161;
+  border-color: #616161;
+  color: #fff;
+  font-weight: 600;
+}
+
+.vacation-pill.is-selected:hover {
+  background: #424242;
+  border-color: #424242;
+}
+
 .inline-note {
   align-self: center;
   color: var(--ink-500);
@@ -967,7 +1274,7 @@ textarea {
   --fc-button-active-border-color: var(--accent);
   --fc-now-indicator-color: var(--danger);
   --fc-page-bg-color: transparent;
-  --fc-today-bg-color: rgba(0, 122, 255, 0.04);
+  --fc-today-bg-color: rgba(167, 6, 56, 0.06);
   font-size: 13px;
 }
 
@@ -990,21 +1297,33 @@ textarea {
 .fc .fc-daygrid-day-number {
   display: flex;
   align-items: baseline;
-  justify-content: space-between;
+  justify-content: flex-start;
   width: 100%;
   margin-right: 0;
   padding: 4px 6px;
-  font-size: 18px;
+  font-size: 22px;
   font-weight: 600;
   gap: 6px;
 }
 
 .fc .fc-day-number-text {
-  margin-right: auto;
+}
+
+.fc .fc-day-today .fc-day-number-text {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  background: var(--accent);
+  color: #fff !important;
+  border-radius: 50%;
+  width: 30px;
+  height: 30px;
+  font-size: 17px;
+  font-weight: 700;
+  line-height: 1;
 }
 
 .fc .fc-day-shift-inline {
-  margin-left: auto;
   max-width: calc(100% - 28px);
   overflow: hidden;
   text-overflow: ellipsis;
@@ -1016,8 +1335,23 @@ textarea {
   line-height: 1.1;
 }
 
-.fc .fc-col-header-cell-cushion {
+.fc .fc-day-holiday-pill {
+  margin-left: auto;
+  padding: 2px 8px;
+  border-radius: 10px;
+  background: #ffe0e0;
+  color: #c62828;
   font-size: 16px;
+  font-weight: 600;
+  line-height: 1.3;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  max-width: 50%;
+}
+
+.fc .fc-col-header-cell-cushion {
+  font-size: 22px;
   font-weight: 600;
   padding: 6px 4px;
 }
@@ -1032,6 +1366,20 @@ textarea {
 .fc .fc-day-sun .fc-day-number-text,
 .fc .fc-day-sat .fc-day-number-text {
   color: #d12b2b;
+}
+
+.fc .fc-day-today .fc-day-number-text,
+.fc .fc-day-today.fc-day-sun .fc-day-number-text,
+.fc .fc-day-today.fc-day-sat .fc-day-number-text {
+  color: #fff;
+}
+
+.fc .fc-day-number-text.is-public-holiday {
+  color: #d12b2b;
+}
+
+.fc .fc-day-today .fc-day-number-text.is-public-holiday {
+  color: #fff;
 }
 
 /* Segment control style for view buttons */
@@ -1091,19 +1439,357 @@ textarea {
   font-weight: 500;
 }
 
+
 /* Events */
 .fc .fc-daygrid-event,
 .fc .fc-timegrid-event {
   border: 0;
-  background: var(--accent);
+  background: #bbdefb;
+  color: #0d47a1;
   box-shadow: none;
   border-radius: 3px;
-  font-size: 12px;
+  font-size: 22px;
 }
 
 .fc .fc-timegrid-event.is-recurring,
 .fc .fc-daygrid-event.is-recurring {
   background: var(--purple);
+}
+
+.fc .fc-timegrid-event.is-routine,
+.fc .fc-daygrid-event.is-routine {
+  background: transparent;
+  color: var(--ink-700);
+  box-shadow: none;
+  font-size: 22px;
+  margin-top: 0;
+  padding-top: 0;
+  padding-bottom: 0;
+  line-height: 1.2;
+}
+
+.fc .fc-daygrid-event.is-routine .fc-event-title-inline-text,
+.fc .fc-timegrid-event.is-routine .fc-event-title-inline-text {
+  color: var(--ink-700);
+}
+
+.fc .fc-timegrid-event.is-maintenance,
+.fc .fc-daygrid-event.is-maintenance {
+  background: #fff3cd;
+  color: #664d03;
+}
+
+.fc-day:has(.is-maintenance) {
+  animation: maintenance-glow 4s cubic-bezier(0.4, 0, 0.2, 1) infinite;
+}
+
+@keyframes maintenance-glow {
+  0%, 100% {
+    box-shadow:
+      inset 0 0 0 1.5px rgba(255, 193, 7, 0.15),
+      inset 0 0 12px rgba(255, 193, 7, 0.04);
+  }
+  50% {
+    box-shadow:
+      inset 0 0 0 2px rgba(255, 183, 0, 0.55),
+      inset 0 0 20px rgba(255, 193, 7, 0.08);
+  }
+}
+
+.fc .fc-daygrid-event.is-maintenance .fc-event-title-inline-text,
+.fc .fc-timegrid-event.is-maintenance .fc-event-title-inline-text {
+  color: #664d03;
+}
+
+.fc .fc-timegrid-event.is-important,
+.fc .fc-daygrid-event.is-important {
+  background: #fff0f0;
+  color: #c62828;
+  border-left: 3px solid #e53935;
+}
+
+.fc .fc-daygrid-event.is-important .fc-event-title-inline-text,
+.fc .fc-timegrid-event.is-important .fc-event-title-inline-text {
+  color: #c62828;
+  font-weight: 700;
+}
+
+.fc-day:has(.is-important):not(:has(.is-maintenance)) {
+  animation: important-glow 4s cubic-bezier(0.4, 0, 0.2, 1) infinite;
+}
+
+.fc-day:has(.is-important):has(.is-maintenance) {
+  animation: important-maintenance-glow 5s cubic-bezier(0.4, 0, 0.2, 1) infinite;
+}
+
+@keyframes important-maintenance-glow {
+  0%, 100% {
+    box-shadow:
+      inset 0 0 0 1.5px rgba(229, 57, 53, 0.15),
+      inset 0 0 12px rgba(229, 57, 53, 0.04);
+  }
+  50% {
+    box-shadow:
+      inset 0 0 0 2px rgba(255, 183, 0, 0.55),
+      inset 0 0 20px rgba(255, 193, 7, 0.08);
+  }
+}
+
+@keyframes important-glow {
+  0%, 100% {
+    box-shadow:
+      inset 0 0 0 1.5px rgba(229, 57, 53, 0.15),
+      inset 0 0 12px rgba(229, 57, 53, 0.04);
+  }
+  50% {
+    box-shadow:
+      inset 0 0 0 2px rgba(229, 57, 53, 0.55),
+      inset 0 0 20px rgba(229, 57, 53, 0.08);
+  }
+}
+
+.fc .fc-timegrid-event.is-holiday,
+.fc .fc-daygrid-event.is-holiday {
+  background: #ffe0e0;
+  color: #c62828;
+}
+
+.fc .fc-daygrid-event.is-holiday .fc-event-title-inline-text,
+.fc .fc-timegrid-event.is-holiday .fc-event-title-inline-text {
+  color: #c62828;
+}
+
+/* ── Vacation Events ── */
+.fc .fc-timegrid-event.is-vacation,
+.fc .fc-daygrid-event.is-vacation {
+  background: #eeeeee;
+  color: #424242;
+  font-size: 22px;
+}
+
+.fc .fc-daygrid-event.is-vacation:hover {
+  background: #e0e0e0;
+}
+
+.fc-vacation-content {
+  width: 100%;
+  min-width: 0;
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  line-height: 1;
+  padding: 0 4px;
+}
+
+.fc-vacation-type-pill {
+  display: inline-flex;
+  align-items: baseline;
+  gap: 3px;
+  padding: 1px 6px;
+  border-radius: 4px;
+  background: #616161;
+  color: #fff;
+  font-size: 12px;
+  font-weight: 600;
+  line-height: 1.4;
+  white-space: nowrap;
+  flex-shrink: 0;
+}
+
+.fc-vacation-time {
+  font-size: 9px;
+  font-weight: 500;
+  opacity: 0.85;
+}
+
+.fc-vacation-title {
+  display: block;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font-weight: 500;
+  font-size: 18px;
+  color: #424242;
+}
+
+.fc-vacation-until {
+  margin-left: 4px;
+  font-size: 11px;
+  font-weight: 400;
+  color: rgba(66, 66, 66, 0.6);
+  white-space: nowrap;
+}
+
+/* ── Education Arrow Events ── */
+.fc .fc-timegrid-event.is-education,
+.fc .fc-daygrid-event.is-education {
+  background: var(--education-bg);
+  color: var(--education-text);
+  border: none;
+  border-radius: 0;
+  font-size: 22px;
+  margin-left: 0;
+  margin-right: 0;
+}
+
+.fc .fc-daygrid-event.is-education:hover {
+  background: #b2f5ea;
+}
+
+.fc-education-content {
+  width: 100%;
+  min-width: 0;
+  display: flex;
+  align-items: center;
+  line-height: 1;
+  padding: 0 4px;
+  gap: 4px;
+}
+
+.fc-education-targets {
+  display: flex;
+  flex-wrap: nowrap;
+  gap: 3px;
+  flex-shrink: 0;
+}
+
+.fc-education-target-pill {
+  display: inline-block;
+  padding: 1px 7px;
+  border-radius: 4px;
+  background: var(--education);
+  color: #fff;
+  font-size: 13px;
+  font-weight: 600;
+  line-height: 1.5;
+  white-space: nowrap;
+}
+
+.fc-education-title {
+  display: block;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font-weight: 600;
+  font-size: 16px;
+  color: var(--education-text);
+}
+
+.fc-education-until {
+  margin-left: 6px;
+  font-size: 11px;
+  font-weight: 400;
+  color: rgba(19, 78, 74, 0.7);
+  white-space: nowrap;
+}
+
+/* Single segment (same week): arrows both sides ◀────▶ */
+.fc .fc-daygrid-event.is-education.fc-event-start.fc-event-end {
+  clip-path: polygon(
+    var(--education-arrow) 0,
+    calc(100% - var(--education-arrow)) 0,
+    100% 50%,
+    calc(100% - var(--education-arrow)) 100%,
+    var(--education-arrow) 100%,
+    0 50%
+  );
+  padding-left: calc(var(--education-arrow) + 2px);
+  padding-right: calc(var(--education-arrow) + 2px);
+}
+
+/* Start segment (continues to next week): arrow left, jagged right ◀────||| */
+.fc .fc-daygrid-event.is-education.fc-event-start:not(.fc-event-end) {
+  clip-path: polygon(
+    var(--education-arrow) 0,
+    calc(100% - 24px) 0,
+    100% 12.5%,
+    calc(100% - 24px) 25%,
+    100% 37.5%,
+    calc(100% - 24px) 50%,
+    100% 62.5%,
+    calc(100% - 24px) 75%,
+    100% 87.5%,
+    calc(100% - 24px) 100%,
+    var(--education-arrow) 100%,
+    0 50%
+  );
+  padding-left: calc(var(--education-arrow) + 2px);
+  padding-right: 28px;
+}
+
+/* End segment (from previous week): jagged left, arrow right |||────▶ */
+.fc .fc-daygrid-event.is-education.fc-event-end:not(.fc-event-start) {
+  clip-path: polygon(
+    24px 0,
+    calc(100% - var(--education-arrow)) 0,
+    100% 50%,
+    calc(100% - var(--education-arrow)) 100%,
+    24px 100%,
+    0 87.5%,
+    24px 75%,
+    0 62.5%,
+    24px 50%,
+    0 37.5%,
+    24px 25%,
+    0 12.5%
+  );
+  padding-left: 28px;
+  padding-right: calc(var(--education-arrow) + 2px);
+}
+
+/* Middle segment (full week): jagged both sides |||────||| */
+.fc .fc-daygrid-event.is-education:not(.fc-event-start):not(.fc-event-end) {
+  clip-path: polygon(
+    24px 0,
+    calc(100% - 24px) 0,
+    100% 12.5%,
+    calc(100% - 24px) 25%,
+    100% 37.5%,
+    calc(100% - 24px) 50%,
+    100% 62.5%,
+    calc(100% - 24px) 75%,
+    100% 87.5%,
+    calc(100% - 24px) 100%,
+    24px 100%,
+    0 87.5%,
+    24px 75%,
+    0 62.5%,
+    24px 50%,
+    0 37.5%,
+    24px 25%,
+    0 12.5%
+  );
+  padding-left: 28px;
+  padding-right: 28px;
+}
+
+/* Ensure education segments extend to cell edges for continuity */
+.fc .fc-daygrid-event.is-education.fc-event-start:not(.fc-event-end) {
+  margin-right: 0 !important;
+}
+
+.fc .fc-daygrid-event.is-education.fc-event-end:not(.fc-event-start) {
+  margin-left: 0 !important;
+}
+
+.fc .fc-daygrid-event.is-education:not(.fc-event-start):not(.fc-event-end) {
+  margin-left: 0 !important;
+  margin-right: 0 !important;
+}
+
+.cursor-tooltip {
+  position: fixed;
+  padding: 4px 8px;
+  background: rgba(0, 0, 0, 0.78);
+  color: #fff;
+  font-size: 11px;
+  font-weight: 500;
+  white-space: nowrap;
+  border-radius: 4px;
+  pointer-events: none;
+  z-index: 9999;
 }
 
 .fc .fc-event-main {
@@ -1113,6 +1799,37 @@ textarea {
 .fc .fc-event-title-inline-wrap {
   width: 100%;
   min-width: 0;
+  display: flex;
+  align-items: center;
+  gap: 2px;
+  line-height: 1;
+}
+
+.fc .fc-routine-check {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  flex-shrink: 0;
+  width: 22px;
+  height: 19px;
+  cursor: pointer;
+  opacity: 0.8;
+  user-select: none;
+  position: relative;
+  top: 2px;
+}
+
+.fc .fc-routine-check svg {
+  display: block;
+  flex-shrink: 0;
+}
+
+.fc .fc-routine-check:hover {
+  opacity: 1;
+}
+
+.fc .fc-routine-check.is-done {
+  opacity: 0.6;
 }
 
 .fc .fc-event-title-inline-text {
@@ -1121,6 +1838,11 @@ textarea {
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
+}
+
+.fc .fc-event-title-inline-text.is-routine-done {
+  text-decoration: line-through;
+  opacity: 0.5;
 }
 
 .fc .fc-event-title-inline-input {
@@ -1209,6 +1931,17 @@ textarea {
     min-height: auto;
     border-right: none;
     border-bottom: 0.5px solid var(--line);
+    overflow: visible;
+    padding: 12px;
+    gap: 10px;
+  }
+
+  .left-panel-cards {
+    display: contents;
+  }
+
+  .left-panel-bottom {
+    display: contents;
   }
 
   .stat-card {

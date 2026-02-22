@@ -188,56 +188,6 @@ export function RecurrencePicker({ value, onChange }: RecurrencePickerProps) {
         </>
       ) : null}
 
-      {value.preset !== 'NONE' ? (
-        <>
-          <label className="field-label" htmlFor="endMode">
-            종료 조건
-          </label>
-          <select
-            id="endMode"
-            value={value.endMode}
-            onChange={(event) =>
-              onChange({
-                ...value,
-                endMode: event.target.value as RecurrenceEndMode,
-              })
-            }
-          >
-            <option value="NEVER">없음</option>
-            <option value="UNTIL">날짜까지</option>
-            <option value="COUNT">횟수</option>
-          </select>
-
-          {value.endMode === 'UNTIL' ? (
-            <input
-              type="date"
-              value={value.untilDate}
-              onChange={(event) =>
-                onChange({
-                  ...value,
-                  untilDate: event.target.value,
-                })
-              }
-            />
-          ) : null}
-
-          {value.endMode === 'COUNT' ? (
-            <input
-              type="number"
-              min={1}
-              max={999}
-              value={value.count}
-              onChange={(event) => {
-                const count = Number.parseInt(event.target.value, 10)
-                onChange({
-                  ...value,
-                  count: Number.isNaN(count) ? 1 : Math.max(1, count),
-                })
-              }}
-            />
-          ) : null}
-        </>
-      ) : null}
     </div>
   )
 }

@@ -58,7 +58,7 @@ function fromGoogleEventDateTime(
   }
 
   if (dateInput.date) {
-    const zone = dateInput.timeZone || 'UTC'
+    const zone = dateInput.timeZone || Intl.DateTimeFormat().resolvedOptions().timeZone || 'Asia/Seoul'
     const parsed = DateTime.fromISO(dateInput.date, { zone })
     if (!parsed.isValid) {
       return null
@@ -83,13 +83,13 @@ function extractRecurrenceRule(recurrence: string[] | null | undefined): string 
   return rrule.replace(/^RRULE:/, '')
 }
 
-function extractEventType(event: calendar_v3.Schema$Event): string {
+export function extractEventType(event: calendar_v3.Schema$Event): string {
   const value = event.extendedProperties?.private?.[EVENT_TYPE_PRIVATE_KEY]
   const trimmed = typeof value === 'string' ? value.trim() : ''
   return trimmed || '일반'
 }
 
-function toRemoteSnapshot(event: calendar_v3.Schema$Event): RemoteEventSnapshot | null {
+export function toRemoteSnapshot(event: calendar_v3.Schema$Event): RemoteEventSnapshot | null {
   const googleEventId = event.id
   if (!googleEventId) {
     return null
@@ -151,7 +151,7 @@ function toRemoteSnapshot(event: calendar_v3.Schema$Event): RemoteEventSnapshot 
   }
 }
 
-function toGoogleEventRequest(event: CalendarEvent): calendar_v3.Schema$Event {
+export function toGoogleEventRequest(event: CalendarEvent): calendar_v3.Schema$Event {
   return {
     summary: event.summary,
     description: event.description || undefined,
@@ -190,9 +190,12 @@ function toPushResult(event: calendar_v3.Schema$Event | undefined): PushResult {
   }
 }
 
+const KOREAN_HOLIDAYS_CALENDAR_ID = 'ko.south_korea#holiday@group.v.calendar.google.com'
+
 export interface GoogleCalendarService {
   listCalendars: () => Promise<GoogleCalendarItem[]>
   pullRemoteEvents: (query: SyncQuery) => Promise<SyncPage>
+  pullHolidays: (timeMin: string, timeMax: string) => Promise<RemoteEventSnapshot[]>
   fetchRemoteEvent: (googleEventId: string) => Promise<RemoteEventSnapshot | null>
   pushLocalChange: (
     operation: OutboxOperation,
@@ -320,11 +323,68 @@ export function createGoogleCalendarService(): GoogleCalendarService {
         .map(toRemoteSnapshot)
         .filter((item): item is RemoteEventSnapshot => Boolean(item))
 
+      // Fetch RRULE from master events for recurring instances
+      const masterRuleCache = new Map<string, string | null>()
+      for (const event of events) {
+        if (!event.recurringEventId || event.recurrenceRule || event.isDeleted) {
+          continue
+        }
+        if (!masterRuleCache.has(event.recurringEventId)) {
+          try {
+            const master = await calendar.events.get({
+              calendarId,
+              eventId: event.recurringEventId,
+            })
+            masterRuleCache.set(
+              event.recurringEventId,
+              extractRecurrenceRule(master.data.recurrence),
+            )
+          } catch {
+            masterRuleCache.set(event.recurringEventId, null)
+          }
+        }
+        const masterRule = masterRuleCache.get(event.recurringEventId) ?? null
+        if (masterRule) {
+          event.recurrenceRule = masterRule
+        }
+      }
+
       return {
         events,
         nextPageToken: response.data.nextPageToken ?? null,
         nextSyncToken: response.data.nextSyncToken ?? null,
       }
+    },
+
+    async pullHolidays(timeMin, timeMax) {
+      const auth = await getAuthorizedGoogleClient()
+      const calendar = google.calendar({ version: 'v3', auth })
+      const holidays: RemoteEventSnapshot[] = []
+      let pageToken: string | undefined
+
+      do {
+        const response = await calendar.events.list({
+          calendarId: KOREAN_HOLIDAYS_CALENDAR_ID,
+          timeMin,
+          timeMax,
+          singleEvents: true,
+          showDeleted: false,
+          maxResults: 250,
+          pageToken,
+        })
+
+        for (const item of response.data.items ?? []) {
+          const snapshot = toRemoteSnapshot(item)
+          if (snapshot && !snapshot.isDeleted) {
+            snapshot.eventType = '공휴일'
+            holidays.push(snapshot)
+          }
+        }
+
+        pageToken = response.data.nextPageToken ?? undefined
+      } while (pageToken)
+
+      return holidays
     },
 
     async fetchRemoteEvent(googleEventId) {
@@ -383,7 +443,7 @@ export function createGoogleCalendarService(): GoogleCalendarService {
 
       if (operation === 'RECUR_FUTURE') {
         if (!googleEventId) {
-          throw new Error('RECUR_FUTURE requires source google event id.')
+          return { googleEventId: null, googleUpdatedAtUtc: null }
         }
         if (!payload.splitStartUtc) {
           throw new Error('RECUR_FUTURE requires splitStartUtc payload.')

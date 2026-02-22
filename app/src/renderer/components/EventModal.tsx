@@ -1,32 +1,71 @@
 import { DateTime } from 'luxon'
-import { useEffect, useState } from 'react'
-import type { SendUpdates, UpsertCalendarEventInput } from '../../shared/calendar'
+import { useEffect, useRef, useState } from 'react'
+import type { RecurrenceEditScope, SendUpdates, UpsertCalendarEventInput } from '../../shared/calendar'
 import { RecurrencePicker } from './RecurrencePicker'
 import { parseRRule, recurrenceToRRule, type RecurrenceValue } from './recurrenceRule'
+import { parseEducationTargets } from '../utils/parseEducationTargets'
+import { parseVacationInfo, serializeVacationInfo, VACATION_TYPES, isPresetVacationType } from '../utils/parseVacationInfo'
 
 export type EditableEvent = UpsertCalendarEventInput
 
 interface EventModalProps {
   open: boolean
   value: EditableEvent | null
+  memberNames: string[]
   onClose: () => void
   onSave: (event: EditableEvent) => Promise<void>
-  onDelete: (localId: string, sendUpdates: SendUpdates) => Promise<void>
+  onDelete: (localId: string, sendUpdates: SendUpdates, recurrenceScope?: RecurrenceEditScope) => Promise<void>
 }
 
-const LOCAL_INPUT_FORMAT = "yyyy-LL-dd'T'HH:mm"
+const EDUCATION_TARGET_PREFIX = '교육대상: '
+const TIME_MEMO_PREFIX = '시각: '
 
-function toLocalInput(utcIso: string): string {
-  const parsed = DateTime.fromISO(utcIso, { zone: 'utc' }).toLocal()
-  return parsed.isValid ? parsed.toFormat(LOCAL_INPUT_FORMAT) : ''
+function serializeEducationTargets(targets: string[], description: string): string {
+  if (targets.length === 0) return description
+  const line = `${EDUCATION_TARGET_PREFIX}${targets.join(', ')}`
+  return description ? `${line}\n${description}` : line
 }
 
-function toUtcIso(localValue: string, timeZone: string): string {
-  const parsed = DateTime.fromISO(localValue, { zone: timeZone })
-  if (!parsed.isValid) {
-    return new Date().toISOString()
+function parseTimeMemo(description: string): { timeMemo: string; cleanDescription: string } {
+  const lines = description.split('\n')
+  if (lines.length > 0 && lines[0].startsWith(TIME_MEMO_PREFIX)) {
+    const timeMemo = lines[0].slice(TIME_MEMO_PREFIX.length).trim()
+    const cleanDescription = lines.slice(1).join('\n').trimStart()
+    return { timeMemo, cleanDescription }
   }
-  return parsed.toUTC().toISO() ?? new Date().toISOString()
+  return { timeMemo: '', cleanDescription: description }
+}
+
+function serializeTimeMemo(timeMemo: string, description: string): string {
+  if (!timeMemo.trim()) return description
+  const line = `${TIME_MEMO_PREFIX}${timeMemo.trim()}`
+  return description ? `${line}\n${description}` : line
+}
+
+function toDateInput(utcIso: string): string {
+  const parsed = DateTime.fromISO(utcIso, { zone: 'utc' }).toLocal()
+  return parsed.isValid ? parsed.toFormat('yyyy-MM-dd') : ''
+}
+
+function toEndDateInput(utcIso: string): string {
+  const parsed = DateTime.fromISO(utcIso, { zone: 'utc' }).toLocal()
+  if (!parsed.isValid) return ''
+  if (parsed.hour === 0 && parsed.minute === 0 && parsed.second === 0) {
+    return parsed.minus({ days: 1 }).toFormat('yyyy-MM-dd')
+  }
+  return parsed.toFormat('yyyy-MM-dd')
+}
+
+function dateToStartUtc(dateStr: string, tz: string): string {
+  const parsed = DateTime.fromISO(dateStr, { zone: tz })
+  if (!parsed.isValid) return new Date().toISOString()
+  return parsed.startOf('day').toUTC().toISO() ?? new Date().toISOString()
+}
+
+function dateToEndUtc(dateStr: string, tz: string): string {
+  const parsed = DateTime.fromISO(dateStr, { zone: tz })
+  if (!parsed.isValid) return new Date().toISOString()
+  return parsed.startOf('day').plus({ days: 1 }).toUTC().toISO() ?? new Date().toISOString()
 }
 
 function defaultEventDraft(): EditableEvent {
@@ -49,7 +88,7 @@ function defaultEventDraft(): EditableEvent {
   }
 }
 
-export function EventModal({ open, value, onClose, onSave, onDelete }: EventModalProps) {
+export function EventModal({ open, value, memberNames, onClose, onSave, onDelete }: EventModalProps) {
   const [localId, setLocalId] = useState<string | undefined>(undefined)
   const [googleEventId, setGoogleEventId] = useState<string | null | undefined>(undefined)
   const [recurringEventId, setRecurringEventId] = useState<string | null | undefined>(undefined)
@@ -58,13 +97,22 @@ export function EventModal({ open, value, onClose, onSave, onDelete }: EventModa
   const [summary, setSummary] = useState('')
   const [description, setDescription] = useState('')
   const [location, setLocation] = useState('')
-  const [startLocal, setStartLocal] = useState('')
-  const [endLocal, setEndLocal] = useState('')
+  const [startDate, setStartDate] = useState('')
+  const [endDate, setEndDate] = useState('')
+  const [timeMemo, setTimeMemo] = useState('')
   const [timeZone, setTimeZone] = useState('UTC')
   const [attendees, setAttendees] = useState('')
+  const [educationTargets, setEducationTargets] = useState<Set<string>>(new Set())
+  const [vacationTargets, setVacationTargets] = useState<Set<string>>(new Set())
+  const [vacationType, setVacationType] = useState<string | null>(null)
+  const [isCustomVacationType, setIsCustomVacationType] = useState(false)
+  const [customVacationTypeText, setCustomVacationTypeText] = useState('')
+  const [vacationTimeStart, setVacationTimeStart] = useState('')
+  const [vacationTimeEnd, setVacationTimeEnd] = useState('')
   const [recurrence, setRecurrence] = useState<RecurrenceValue>(parseRRule(null))
   const [sendUpdates, setSendUpdates] = useState<SendUpdates>('none')
   const [recurrenceScope, setRecurrenceScope] = useState<'THIS' | 'ALL' | 'FUTURE'>('ALL')
+  const mouseDownTarget = useRef<EventTarget | null>(null)
 
   useEffect(() => {
     if (!open) {
@@ -78,10 +126,54 @@ export function EventModal({ open, value, onClose, onSave, onDelete }: EventModa
     setOriginalStartTimeUtc(source.originalStartTimeUtc)
     setEventType(source.eventType ?? '일반')
     setSummary(source.summary)
-    setDescription(source.description ?? '')
+    const rawDescription = source.description ?? ''
+    let cleanDesc = rawDescription
+    const sourceType = source.eventType ?? '일반'
+    if (sourceType === '교육') {
+      const parsed = parseEducationTargets(cleanDesc)
+      cleanDesc = parsed.cleanDescription
+      setEducationTargets(new Set(parsed.targets))
+    } else {
+      setEducationTargets(new Set())
+    }
+    if (sourceType === '휴가') {
+      const parsed = parseVacationInfo(cleanDesc)
+      cleanDesc = parsed.cleanDescription
+      setVacationTargets(new Set(parsed.targets))
+      if (parsed.vacationType && !isPresetVacationType(parsed.vacationType)) {
+        setVacationType(parsed.vacationType)
+        setIsCustomVacationType(true)
+        setCustomVacationTypeText(parsed.vacationType)
+      } else {
+        setVacationType(parsed.vacationType)
+        setIsCustomVacationType(false)
+        setCustomVacationTypeText('')
+      }
+    } else {
+      setVacationTargets(new Set())
+      setVacationType(null)
+      setIsCustomVacationType(false)
+      setCustomVacationTypeText('')
+    }
+    const timeParsed = parseTimeMemo(cleanDesc)
+    setTimeMemo(timeParsed.timeMemo)
+    setDescription(timeParsed.cleanDescription)
+    if (sourceType === '휴가') {
+      const rangeParts = timeParsed.timeMemo.split('~').map((s) => s.trim())
+      if (rangeParts.length === 2 && rangeParts[0] && rangeParts[1]) {
+        setVacationTimeStart(rangeParts[0])
+        setVacationTimeEnd(rangeParts[1])
+      } else {
+        setVacationTimeStart('')
+        setVacationTimeEnd('')
+      }
+    } else {
+      setVacationTimeStart('')
+      setVacationTimeEnd('')
+    }
     setLocation(source.location ?? '')
-    setStartLocal(toLocalInput(source.startAtUtc))
-    setEndLocal(toLocalInput(source.endAtUtc))
+    setStartDate(toDateInput(source.startAtUtc))
+    setEndDate(toEndDateInput(source.endAtUtc))
     setTimeZone(source.timeZone)
     setAttendees(source.attendees.join(', '))
     setRecurrence(parseRRule(source.recurrenceRule))
@@ -100,8 +192,12 @@ export function EventModal({ open, value, onClose, onSave, onDelete }: EventModa
     || Boolean(value?.recurringEventId)
 
   return (
-    <div className="modal-backdrop" onClick={onClose}>
-      <div className="event-modal" onClick={(event) => event.stopPropagation()}>
+    <div
+      className="modal-backdrop"
+      onMouseDown={(e) => { mouseDownTarget.current = e.target }}
+      onClick={(e) => { if (e.target === e.currentTarget && mouseDownTarget.current === e.currentTarget) onClose() }}
+    >
+      <div className="event-modal">
         <div className="modal-header">
           <h2>{hasExistingEvent ? '일정 수정' : '일정 만들기'}</h2>
           <button type="button" className="ghost-button" onClick={onClose}>
@@ -114,12 +210,12 @@ export function EventModal({ open, value, onClose, onSave, onDelete }: EventModa
           onSubmit={async (event) => {
             event.preventDefault()
 
-            const startAtUtc = toUtcIso(startLocal, timeZone)
-            let endAtUtc = toUtcIso(endLocal, timeZone)
+            const startAtUtc = dateToStartUtc(startDate, timeZone)
+            let endAtUtc = dateToEndUtc(endDate, timeZone)
             const startMillis = DateTime.fromISO(startAtUtc).toMillis()
             const endMillis = DateTime.fromISO(endAtUtc).toMillis()
             if (Number.isFinite(startMillis) && Number.isFinite(endMillis) && endMillis <= startMillis) {
-              endAtUtc = DateTime.fromISO(startAtUtc).plus({ hours: 1 }).toISO() ?? startAtUtc
+              endAtUtc = DateTime.fromISO(startAtUtc).plus({ days: 1 }).toISO() ?? startAtUtc
             }
 
             const normalizedEventType = eventType.trim() || '일반'
@@ -129,12 +225,45 @@ export function EventModal({ open, value, onClose, onSave, onDelete }: EventModa
               && hasRecurringContext
               && normalizedEventType !== normalizedOriginalType
 
+            const resolvedVacationType = isCustomVacationType
+              ? (customVacationTypeText.trim() || null)
+              : vacationType
+
+            const effectiveTimeMemo =
+              normalizedEventType === '휴가'
+                ? (resolvedVacationType === '시간차' && vacationTimeStart && vacationTimeEnd
+                    ? `${vacationTimeStart}~${vacationTimeEnd}`
+                    : '')
+                : timeMemo
+
+            let finalDescription = serializeTimeMemo(effectiveTimeMemo, description.trim())
+            if (normalizedEventType === '교육') {
+              finalDescription = serializeEducationTargets([...educationTargets], finalDescription)
+            }
+            if (normalizedEventType === '휴가') {
+              finalDescription = serializeVacationInfo([...vacationTargets], resolvedVacationType, finalDescription)
+            }
+
+            let effectiveSummary = summary.trim()
+            if (normalizedEventType === '휴가') {
+              const parts: string[] = []
+              if (vacationTargets.size > 0) parts.push([...vacationTargets].join(', '))
+              if (resolvedVacationType) {
+                if (resolvedVacationType === '시간차' && vacationTimeStart && vacationTimeEnd) {
+                  parts.push(`시간차(${vacationTimeStart}~${vacationTimeEnd})`)
+                } else {
+                  parts.push(resolvedVacationType)
+                }
+              }
+              effectiveSummary = parts.length > 0 ? parts.join(' ') : '휴가'
+            }
+
             await onSave({
               localId,
               googleEventId,
               eventType: normalizedEventType,
-              summary: summary.trim(),
-              description: description.trim(),
+              summary: effectiveSummary,
+              description: finalDescription,
               location: location.trim(),
               startAtUtc,
               endAtUtc,
@@ -155,18 +284,6 @@ export function EventModal({ open, value, onClose, onSave, onDelete }: EventModa
             })
           }}
         >
-          <label className="field-label" htmlFor="eventSummary">
-            제목
-          </label>
-          <input
-            id="eventSummary"
-            type="text"
-            value={summary}
-            onChange={(event) => setSummary(event.target.value)}
-            placeholder="팀 미팅"
-            required
-          />
-
           <label className="field-label" htmlFor="eventType">
             타입
           </label>
@@ -178,81 +295,200 @@ export function EventModal({ open, value, onClose, onSave, onDelete }: EventModa
           >
             <option value="일반">일반</option>
             <option value="근무">근무</option>
+            <option value="반복업무">반복업무</option>
+            <option value="운용중지작업">운용중지작업</option>
+            <option value="중요">중요</option>
+            <option value="휴가">휴가</option>
+            <option value="교육">교육</option>
           </select>
 
-          <label className="field-label" htmlFor="eventDescription">
-            설명
-          </label>
-          <textarea
-            id="eventDescription"
-            value={description}
-            onChange={(event) => setDescription(event.target.value)}
-            placeholder="메모, 안건, 링크..."
-            rows={3}
-          />
+          {eventType !== '휴가' ? (
+            <>
+              <label className="field-label" htmlFor="eventSummary">
+                {eventType === '교육' ? '교육명' : '제목'}
+              </label>
+              <input
+                id="eventSummary"
+                type="text"
+                value={summary}
+                onChange={(event) => setSummary(event.target.value)}
+                placeholder="팀 미팅"
+                required
+              />
+            </>
+          ) : null}
 
-          <label className="field-label" htmlFor="eventLocation">
-            장소
-          </label>
-          <input
-            id="eventLocation"
-            type="text"
-            value={location}
-            onChange={(event) => setLocation(event.target.value)}
-            placeholder="회의실 또는 주소"
-          />
+          {eventType === '교육' && memberNames.length > 0 ? (
+            <div className="education-targets">
+              <label className="field-label">교육 대상</label>
+              <div className="education-pill-grid">
+                {memberNames.map((name) => (
+                  <button
+                    key={name}
+                    type="button"
+                    className={educationTargets.has(name) ? 'education-pill is-selected' : 'education-pill'}
+                    onClick={() => {
+                      setEducationTargets((prev) => {
+                        const next = new Set(prev)
+                        if (next.has(name)) {
+                          next.delete(name)
+                        } else {
+                          next.add(name)
+                        }
+                        return next
+                      })
+                    }}
+                  >
+                    {name}
+                  </button>
+                ))}
+              </div>
+            </div>
+          ) : null}
+
+          {eventType === '휴가' && memberNames.length > 0 ? (
+            <div className="vacation-targets">
+              <label className="field-label">대상자</label>
+              <div className="education-pill-grid">
+                {memberNames.map((name) => (
+                  <button
+                    key={name}
+                    type="button"
+                    className={vacationTargets.has(name) ? 'vacation-pill is-selected' : 'vacation-pill'}
+                    onClick={() => {
+                      setVacationTargets((prev) => {
+                        const next = new Set(prev)
+                        if (next.has(name)) {
+                          next.delete(name)
+                        } else {
+                          next.add(name)
+                        }
+                        return next
+                      })
+                    }}
+                  >
+                    {name}
+                  </button>
+                ))}
+              </div>
+            </div>
+          ) : null}
+
+          {eventType === '휴가' ? (
+            <div className="vacation-targets">
+              <label className="field-label">휴가 종류</label>
+              <div className="education-pill-grid">
+                {VACATION_TYPES.map((type) => (
+                  <button
+                    key={type}
+                    type="button"
+                    className={!isCustomVacationType && vacationType === type ? 'vacation-pill is-selected' : 'vacation-pill'}
+                    onClick={() => {
+                      if (!isCustomVacationType && vacationType === type) {
+                        setVacationType(null)
+                      } else {
+                        setVacationType(type)
+                        setIsCustomVacationType(false)
+                        setCustomVacationTypeText('')
+                      }
+                    }}
+                  >
+                    {type}
+                  </button>
+                ))}
+                <button
+                  type="button"
+                  className={isCustomVacationType ? 'vacation-pill is-selected' : 'vacation-pill'}
+                  onClick={() => {
+                    if (isCustomVacationType) {
+                      setIsCustomVacationType(false)
+                      setCustomVacationTypeText('')
+                      setVacationType(null)
+                    } else {
+                      setIsCustomVacationType(true)
+                      setVacationType(null)
+                    }
+                  }}
+                >
+                  기타
+                </button>
+              </div>
+              {isCustomVacationType ? (
+                <input
+                  type="text"
+                  value={customVacationTypeText}
+                  onChange={(event) => setCustomVacationTypeText(event.target.value)}
+                  placeholder="휴가 종류 입력"
+                  autoFocus
+                />
+              ) : null}
+            </div>
+          ) : null}
 
           <div className="form-grid">
             <div>
               <label className="field-label" htmlFor="startAt">
-                시작
+                시작일
               </label>
               <input
                 id="startAt"
-                type="datetime-local"
-                value={startLocal}
-                onChange={(event) => setStartLocal(event.target.value)}
+                type="date"
+                value={startDate}
+                onChange={(event) => setStartDate(event.target.value)}
                 required
               />
             </div>
             <div>
               <label className="field-label" htmlFor="endAt">
-                종료
+                종료일
               </label>
               <input
                 id="endAt"
-                type="datetime-local"
-                value={endLocal}
-                onChange={(event) => setEndLocal(event.target.value)}
+                type="date"
+                value={endDate}
+                onChange={(event) => setEndDate(event.target.value)}
                 required
               />
             </div>
           </div>
 
-          <label className="field-label" htmlFor="timeZone">
-            시간대
-          </label>
-          <input
-            id="timeZone"
-            type="text"
-            value={timeZone}
-            onChange={(event) => setTimeZone(event.target.value)}
-            placeholder="Asia/Seoul"
-            required
-          />
+          {eventType === '휴가' && vacationType === '시간차' ? (
+            <div className="form-grid">
+              <div>
+                <label className="field-label" htmlFor="vacationTimeStart">시작 시각</label>
+                <input
+                  id="vacationTimeStart"
+                  type="time"
+                  value={vacationTimeStart}
+                  onChange={(event) => setVacationTimeStart(event.target.value)}
+                />
+              </div>
+              <div>
+                <label className="field-label" htmlFor="vacationTimeEnd">종료 시각</label>
+                <input
+                  id="vacationTimeEnd"
+                  type="time"
+                  value={vacationTimeEnd}
+                  onChange={(event) => setVacationTimeEnd(event.target.value)}
+                />
+              </div>
+            </div>
+          ) : eventType !== '휴가' ? (
+            <>
+              <label className="field-label" htmlFor="timeMemo">시각 (선택)</label>
+              <input
+                id="timeMemo"
+                type="text"
+                value={timeMemo}
+                onChange={(event) => setTimeMemo(event.target.value)}
+                placeholder="예: 14:00"
+              />
+            </>
+          ) : null}
 
-          <label className="field-label" htmlFor="attendees">
-            참석자 (쉼표로 구분된 이메일)
-          </label>
-          <input
-            id="attendees"
-            type="text"
-            value={attendees}
-            onChange={(event) => setAttendees(event.target.value)}
-            placeholder="hong@company.com, kim@company.com"
-          />
-
-          <RecurrencePicker value={recurrence} onChange={setRecurrence} />
+          {eventType !== '교육' && eventType !== '휴가' && eventType !== '중요' && eventType !== '일반' ? (
+            <RecurrencePicker value={recurrence} onChange={setRecurrence} />
+          ) : null}
 
           {hasExistingEvent && hasRecurringContext ? (
             <>
@@ -273,17 +509,7 @@ export function EventModal({ open, value, onClose, onSave, onDelete }: EventModa
             </>
           ) : null}
 
-          <label className="checkbox-row" htmlFor="sendUpdates">
-            <input
-              id="sendUpdates"
-              type="checkbox"
-              checked={sendUpdates === 'all'}
-              onChange={(event) => setSendUpdates(event.target.checked ? 'all' : 'none')}
-            />
-            <span>참석자에게 업데이트 이메일 보내기</span>
-          </label>
-
-          <div className="modal-actions">
+<div className="modal-actions">
             {hasExistingEvent ? (
               <button
                 type="button"
@@ -292,7 +518,11 @@ export function EventModal({ open, value, onClose, onSave, onDelete }: EventModa
                   if (!localId) {
                     return
                   }
-                  await onDelete(localId, sendUpdates)
+                  await onDelete(
+                    localId,
+                    sendUpdates,
+                    hasRecurringContext ? recurrenceScope : undefined,
+                  )
                 }}
               >
                 삭제

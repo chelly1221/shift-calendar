@@ -6,6 +6,7 @@ import type {
   DayWorkerCount,
   GoogleCalendarItem,
   GoogleConnectionStatus,
+  RecurrenceEditScope,
   SelectedCalendar,
   ShiftSettings,
   ShiftTeamAssignments,
@@ -15,6 +16,7 @@ import type {
   UpsertCalendarEventInput,
 } from '../../shared/calendar'
 import { defaultShiftSettings as defaultShiftSettingsValue } from '../../shared/calendar'
+import { expandRecurringEvents } from '../../shared/expandRecurrence'
 
 interface CalendarState {
   events: CalendarEvent[]
@@ -32,7 +34,7 @@ interface CalendarState {
   savingShiftSettings: boolean
   hydrate: () => Promise<void>
   saveEvent: (payload: UpsertCalendarEventInput) => Promise<CalendarEvent>
-  deleteEvent: (localId: string, sendUpdates?: 'all' | 'none') => Promise<void>
+  deleteEvent: (localId: string, sendUpdates?: 'all' | 'none', recurrenceScope?: RecurrenceEditScope) => Promise<void>
   syncNow: () => Promise<void>
   connectGoogle: () => Promise<void>
   disconnectGoogle: () => Promise<void>
@@ -191,8 +193,15 @@ export const useCalendarStore = create<CalendarState>((set, get) => ({
         calendars = await api.listGoogleCalendars().catch(() => [])
       }
 
+      const { rangeStartUtc, rangeEndUtc } = defaultRange()
+      const expanded = expandRecurringEvents(
+        events,
+        rangeStartUtc ?? DateTime.utc().minus({ months: 3 }).toISO()!,
+        rangeEndUtc ?? DateTime.utc().plus({ months: 3 }).toISO()!,
+      )
+
       set({
-        events: sortByStart(events),
+        events: sortByStart(expanded),
         outboxCount,
         googleConnected: googleStatus.connected,
         accountEmail: googleStatus.accountEmail,
@@ -213,15 +222,24 @@ export const useCalendarStore = create<CalendarState>((set, get) => ({
     return saved
   },
 
-  deleteEvent: async (localId, sendUpdates = 'none') => {
+  deleteEvent: async (localId, sendUpdates = 'none', recurrenceScope) => {
     const api = getCalendarApi()
-    const deleted = await api.deleteEvent({ localId, sendUpdates })
+    const deleted = await api.deleteEvent({
+      localId,
+      sendUpdates,
+      recurrenceScope: recurrenceScope ?? 'ALL',
+    })
     if (!deleted) {
       return
     }
-    const events = get().events.filter((event) => event.localId !== localId)
-    const outboxCount = await api.getOutboxCount()
-    set({ events, outboxCount })
+    // For FUTURE/ALL scopes, multiple events may be affected — re-fetch the full list
+    if (recurrenceScope === 'FUTURE' || recurrenceScope === 'ALL') {
+      await get().hydrate()
+    } else {
+      const events = get().events.filter((event) => event.localId !== localId)
+      const outboxCount = await api.getOutboxCount()
+      set({ events, outboxCount })
+    }
   },
 
   syncNow: async () => {
