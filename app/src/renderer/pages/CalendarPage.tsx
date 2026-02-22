@@ -889,10 +889,26 @@ export function CalendarPage() {
                   const dateLabel = sameDay
                     ? startDt.setLocale('ko').toFormat('M/d')
                     : `${startDt.setLocale('ko').toFormat('M/d')}~${inclusiveEnd.setLocale('ko').toFormat('M/d')}`
+                  const vacInfo = parseVacationInfo(event.description ?? '')
+                  const vType = vacInfo.vacationType
+                  const timeMatch = vType ? vType.match(/^(시간차)\((.+)\)$/) : null
+                  const typeInSummary = vType
+                    ? (timeMatch ? `시간차(${timeMatch[2]})` : vType)
+                    : null
+                  const nameOnly = typeInSummary
+                    ? event.summary.replace(typeInSummary, '').trim()
+                    : event.summary
                   return (
                     <li key={event.localId} className="vacation-item">
                       <button type="button" onClick={() => setEditingEvent(toEditableEvent(event))}>
-                        <span>{event.summary}</span>
+                        <span>
+                          {nameOnly}
+                          {vType && (
+                            <>
+                              {' '}<span className="vacation-type-text">{timeMatch ? `${timeMatch[1]} (${timeMatch[2]})` : vType}</span>
+                            </>
+                          )}
+                        </span>
                         <small>{dateLabel}</small>
                       </button>
                     </li>
@@ -1018,6 +1034,18 @@ export function CalendarPage() {
           if (editingTitleEventId) return
           const dateStr = dayCell.getAttribute('data-date')
           if (!dateStr) return
+
+          // Right-click on shift label → open existing 근무 event for editing
+          if (target.closest('.fc-day-shift-inline')) {
+            const shiftEvent = events.find(
+              (ev) => ev.eventType === '근무' && DateTime.fromISO(ev.startAtUtc).toLocal().toISODate() === dateStr,
+            )
+            if (shiftEvent) {
+              setEditingEvent(toEditableEvent(shiftEvent))
+              return
+            }
+          }
+
           const startAtUtc = DateTime.fromISO(dateStr).toUTC().toISO() ?? new Date().toISOString()
           const endAtUtc = DateTime.fromISO(dateStr).plus({ days: 1 }).toUTC().toISO() ?? new Date(Date.now() + 86400000).toISOString()
           setEditingEvent(createDraft(startAtUtc, endAtUtc))
