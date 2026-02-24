@@ -304,8 +304,8 @@ export function SyncModal({
               </section>
             </div>
 
-            <div className="sync-layout-column">
-              <section className="settings-section">
+            <div className="sync-layout-column sync-layout-column-jobs">
+              <section className="settings-section sync-jobs-section">
                 <div className="sync-jobs-header">
                   <div className="settings-row">
                     <p className="settings-label">작업별 상태</p>
