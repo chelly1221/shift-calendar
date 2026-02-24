@@ -10,11 +10,14 @@ function debugLog(message: string): void {
   }
 }
 import {
+  cancelOutboxJobInputSchema,
   calendarEventSchema,
   deleteCalendarEventSchema,
   googleCalendarItemSchema,
   googleConnectionStatusSchema,
+  listOutboxJobsInputSchema,
   listEventsInputSchema,
+  outboxJobItemSchema,
   selectedCalendarSchema,
   setShiftSettingsInputSchema,
   setSelectedCalendarInputSchema,
@@ -48,7 +51,7 @@ import {
   isGoogleConnected,
   isGoogleOAuthConfigured,
 } from '../google/oauthClient'
-import { enqueueOutboxOperation, getOutboxCount } from '../sync/outboxWorker'
+import { cancelOutboxJob, enqueueOutboxOperation, getOutboxCount } from '../sync/outboxWorker'
 import { runSyncNow } from '../sync/syncEngine'
 import { IPC_CHANNELS } from './channels'
 
@@ -59,6 +62,8 @@ export function registerCalendarIpc(): void {
   ipcMain.removeHandler(IPC_CHANNELS.upsertEvent)
   ipcMain.removeHandler(IPC_CHANNELS.deleteEvent)
   ipcMain.removeHandler(IPC_CHANNELS.getOutboxCount)
+  ipcMain.removeHandler(IPC_CHANNELS.listOutboxJobs)
+  ipcMain.removeHandler(IPC_CHANNELS.cancelOutboxJob)
   ipcMain.removeHandler(IPC_CHANNELS.syncNow)
   ipcMain.removeHandler(IPC_CHANNELS.connectGoogle)
   ipcMain.removeHandler(IPC_CHANNELS.disconnectGoogle)
@@ -463,6 +468,62 @@ export function registerCalendarIpc(): void {
   })
 
   ipcMain.handle(IPC_CHANNELS.getOutboxCount, () => getOutboxCount())
+
+  ipcMain.handle(IPC_CHANNELS.listOutboxJobs, async (_event, payload?: unknown) => {
+    const input =
+      payload === undefined
+        ? listOutboxJobsInputSchema.parse({})
+        : listOutboxJobsInputSchema.parse(payload)
+
+    const jobs = await prisma.outboxJob.findMany({
+      where: input.includeCompleted
+        ? undefined
+        : {
+            status: {
+              in: ['QUEUED', 'RUNNING', 'FAILED'],
+            },
+          },
+      include: {
+        event: {
+          select: {
+            summary: true,
+            eventType: true,
+          },
+        },
+      },
+      orderBy: input.includeCompleted
+        ? [
+            { updatedAt: 'desc' },
+            { createdAt: 'desc' },
+          ]
+        : [
+            { nextRetryAtUtc: 'asc' },
+            { createdAt: 'asc' },
+          ],
+      take: input.limit,
+    })
+
+    return jobs.map((job) =>
+      outboxJobItemSchema.parse({
+        id: job.id,
+        operation: job.operation,
+        status: job.status,
+        attempts: job.attempts,
+        nextRetryAtUtc: job.nextRetryAtUtc.toISOString(),
+        lastError: job.lastError,
+        eventLocalId: job.eventLocalId,
+        eventSummary: job.event?.summary ?? null,
+        eventType: job.event?.eventType ?? null,
+        createdAtUtc: job.createdAt.toISOString(),
+        updatedAtUtc: job.updatedAt.toISOString(),
+      }),
+    )
+  })
+
+  ipcMain.handle(IPC_CHANNELS.cancelOutboxJob, async (_event, payload: unknown) => {
+    const input = cancelOutboxJobInputSchema.parse(payload)
+    return cancelOutboxJob(input.jobId)
+  })
 
   ipcMain.handle(IPC_CHANNELS.syncNow, async () => {
     const result = await runSyncNow()

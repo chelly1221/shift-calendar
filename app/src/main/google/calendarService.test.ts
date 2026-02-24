@@ -93,6 +93,21 @@ describe('eventType 동기화 - Push (로컬 → Google)', () => {
     expect(request.start?.dateTime).toBe(event.startAtUtc)
     expect(request.end?.dateTime).toBe(event.endAtUtc)
   })
+
+  it('종일 일정은 date 필드로 전송된다', () => {
+    const event = makeCalendarEvent({
+      startAtUtc: '2026-03-01T15:00:00.000Z',
+      endAtUtc: '2026-03-02T15:00:00.000Z',
+      timeZone: 'Asia/Seoul',
+    })
+
+    const request = toGoogleEventRequest(event)
+
+    expect(request.start?.date).toBe('2026-03-02')
+    expect(request.end?.date).toBe('2026-03-03')
+    expect(request.start?.dateTime).toBeUndefined()
+    expect(request.end?.dateTime).toBeUndefined()
+  })
 })
 
 describe('eventType 동기화 - Pull (Google → 로컬)', () => {

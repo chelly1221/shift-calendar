@@ -3,6 +3,8 @@ export const IPC_CHANNELS = {
   upsertEvent: 'calendar:upsert-event',
   deleteEvent: 'calendar:delete-event',
   getOutboxCount: 'calendar:get-outbox-count',
+  listOutboxJobs: 'calendar:list-outbox-jobs',
+  cancelOutboxJob: 'calendar:cancel-outbox-job',
   syncNow: 'calendar:sync-now',
   connectGoogle: 'calendar:connect-google',
   disconnectGoogle: 'calendar:disconnect-google',

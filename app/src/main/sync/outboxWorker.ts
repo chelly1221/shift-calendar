@@ -16,6 +16,15 @@ interface OutboxPayload {
 const RETRY_DELAYS_MS = [60_000, 5 * 60_000, 15 * 60_000, 60 * 60_000]
 let timer: NodeJS.Timeout | null = null
 let isRunning = false
+let pendingFlushRequested = false
+
+function requestOutboxFlush(): void {
+  if (isRunning) {
+    pendingFlushRequested = true
+    return
+  }
+  void processOutboxNow()
+}
 
 function toOutboxOperationType(operation: OutboxOperation): OutboxOperationType {
   return operation as OutboxOperationType
@@ -77,6 +86,15 @@ async function findNextDueJob() {
 }
 
 async function cancelJob(jobId: string, reason: string): Promise<void> {
+  const currentJob = await prisma.outboxJob.findUnique({
+    where: { id: jobId },
+    select: { eventLocalId: true },
+  })
+  const affectedEventLocalIds = new Set<string>()
+  if (currentJob?.eventLocalId) {
+    affectedEventLocalIds.add(currentJob.eventLocalId)
+  }
+
   await prisma.outboxJob.update({
     where: { id: jobId },
     data: {
@@ -116,6 +134,7 @@ async function cancelJob(jobId: string, reason: string): Promise<void> {
     if (!dependent.eventLocalId) {
       continue
     }
+    affectedEventLocalIds.add(dependent.eventLocalId)
     if (dependent.operation === OutboxOperationType.CREATE) {
       await prisma.event.updateMany({
         where: { localId: dependent.eventLocalId },
@@ -132,6 +151,23 @@ async function cancelJob(jobId: string, reason: string): Promise<void> {
         syncState: SyncState.ERROR,
       },
     })
+  }
+
+  for (const eventLocalId of affectedEventLocalIds) {
+    const activeJobs = await prisma.outboxJob.count({
+      where: {
+        eventLocalId,
+        status: {
+          in: [OutboxStatus.QUEUED, OutboxStatus.RUNNING, OutboxStatus.FAILED],
+        },
+      },
+    })
+    if (activeJobs === 0) {
+      await prisma.event.updateMany({
+        where: { localId: eventLocalId },
+        data: { syncState: SyncState.CLEAN },
+      })
+    }
   }
 }
 
@@ -216,7 +252,7 @@ export async function enqueueOutboxOperation(input: {
           lastError: null,
         },
       })
-      void processOutboxNow()
+      requestOutboxFlush()
       return existing.id
     }
   }
@@ -238,7 +274,7 @@ export async function enqueueOutboxOperation(input: {
     })
   }
 
-  void processOutboxNow()
+  requestOutboxFlush()
   return created.id
 }
 
@@ -252,6 +288,21 @@ export async function getOutboxCount(): Promise<number> {
   })
 }
 
+export async function cancelOutboxJob(jobId: string): Promise<boolean> {
+  const job = await prisma.outboxJob.findUnique({
+    where: { id: jobId },
+    select: { status: true },
+  })
+  if (!job) {
+    return false
+  }
+  if (job.status === OutboxStatus.DONE || job.status === OutboxStatus.CANCELLED || job.status === OutboxStatus.RUNNING) {
+    return false
+  }
+  await cancelJob(jobId, 'Cancelled by user.')
+  return true
+}
+
 export async function processOutboxNow(): Promise<number> {
   const selectedCalendar = await getSelectedCalendar()
   if (!selectedCalendar.selectedCalendarId) {
@@ -259,6 +310,7 @@ export async function processOutboxNow(): Promise<number> {
   }
 
   if (isRunning) {
+    pendingFlushRequested = true
     return 0
   }
   isRunning = true
@@ -318,6 +370,11 @@ export async function processOutboxNow(): Promise<number> {
     }
   } finally {
     isRunning = false
+  }
+
+  if (pendingFlushRequested) {
+    pendingFlushRequested = false
+    void processOutboxNow()
   }
 
   return processedCount

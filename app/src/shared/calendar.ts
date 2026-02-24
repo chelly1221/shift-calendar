@@ -13,6 +13,35 @@ export const outboxOperationSchema = z.enum([
 ])
 export type OutboxOperation = z.infer<typeof outboxOperationSchema>
 
+export const outboxStatusSchema = z.enum(['QUEUED', 'RUNNING', 'DONE', 'FAILED', 'CANCELLED'])
+export type OutboxStatus = z.infer<typeof outboxStatusSchema>
+
+export const outboxJobItemSchema = z.object({
+  id: z.string().min(1),
+  operation: outboxOperationSchema,
+  status: outboxStatusSchema,
+  attempts: z.number().int().min(0),
+  nextRetryAtUtc: z.string().datetime(),
+  lastError: z.string().nullable(),
+  eventLocalId: z.string().nullable(),
+  eventSummary: z.string().nullable(),
+  eventType: z.string().nullable(),
+  createdAtUtc: z.string().datetime(),
+  updatedAtUtc: z.string().datetime(),
+})
+export type OutboxJobItem = z.infer<typeof outboxJobItemSchema>
+
+export const listOutboxJobsInputSchema = z.object({
+  limit: z.number().int().min(1).max(200).default(80),
+  includeCompleted: z.boolean().default(false),
+})
+export type ListOutboxJobsInput = z.infer<typeof listOutboxJobsInputSchema>
+
+export const cancelOutboxJobInputSchema = z.object({
+  jobId: z.string().min(1),
+})
+export type CancelOutboxJobInput = z.infer<typeof cancelOutboxJobInputSchema>
+
 export const sendUpdatesSchema = z.enum(['all', 'none'])
 export type SendUpdates = z.infer<typeof sendUpdatesSchema>
 
@@ -156,6 +185,8 @@ export interface CalendarApi {
   upsertEvent: (payload: UpsertCalendarEventInput) => Promise<CalendarEvent>
   deleteEvent: (payload: DeleteCalendarEventInput) => Promise<boolean>
   getOutboxCount: () => Promise<number>
+  listOutboxJobs: (input?: ListOutboxJobsInput) => Promise<OutboxJobItem[]>
+  cancelOutboxJob: (input: CancelOutboxJobInput) => Promise<boolean>
   syncNow: () => Promise<SyncResult>
   connectGoogle: () => Promise<GoogleConnectionStatus>
   disconnectGoogle: () => Promise<GoogleConnectionStatus>

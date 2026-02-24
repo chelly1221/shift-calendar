@@ -13,6 +13,21 @@ interface RecurrencePickerProps {
   onChange: (nextValue: RecurrenceValue) => void
 }
 
+const PRESET_OPTIONS: { value: RecurrencePreset; label: string }[] = [
+  { value: 'NONE', label: '반복 안 함' },
+  { value: 'DAILY', label: '매일' },
+  { value: 'WEEKLY', label: '매주' },
+  { value: 'MONTHLY', label: '매월' },
+  { value: 'YEARLY', label: '매년' },
+]
+
+const FREQ_UNIT: Record<string, string> = {
+  DAILY: '일',
+  WEEKLY: '주',
+  MONTHLY: '개월',
+  YEARLY: '년',
+}
+
 const SET_POS_OPTIONS: { value: number; label: string }[] = [
   { value: 1, label: '첫째' },
   { value: 2, label: '둘째' },
@@ -32,15 +47,13 @@ const MONTHLY_BY_DAY_OPTIONS: { value: MonthlyByDay; label: string }[] = [
   { value: 'WEEKDAY', label: '평일' },
 ]
 
-function updatePreset(value: RecurrenceValue, preset: RecurrencePreset): RecurrenceValue {
-  if (preset !== 'WEEKLY') {
-    return {
-      ...value,
-      preset,
-      weeklyDays: value.weeklyDays.length > 0 ? value.weeklyDays : ['MO'],
-    }
-  }
+const END_MODE_OPTIONS: { value: RecurrenceEndMode; label: string }[] = [
+  { value: 'NEVER', label: '계속 반복' },
+  { value: 'UNTIL', label: '날짜까지' },
+  { value: 'COUNT', label: '횟수 지정' },
+]
 
+function updatePreset(value: RecurrenceValue, preset: RecurrencePreset): RecurrenceValue {
   return {
     ...value,
     preset,
@@ -63,131 +76,181 @@ function toggleWeeklyDay(value: RecurrenceValue, day: WeekdayCode): RecurrenceVa
 }
 
 export function RecurrencePicker({ value, onChange }: RecurrencePickerProps) {
-  return (
-    <div className="recurrence-group">
-      <label className="field-label" htmlFor="recurrencePreset">
-        반복
-      </label>
+  const isActive = value.preset !== 'NONE'
 
-      <div className="recurrence-row">
-        <select
-          id="recurrencePreset"
-          value={value.preset}
-          onChange={(event) => onChange(updatePreset(value, event.target.value as RecurrencePreset))}
-        >
-          <option value="NONE">반복 안 함</option>
-          <option value="DAILY">매일</option>
-          <option value="WEEKLY">매주</option>
-          <option value="MONTHLY">매월</option>
-          <option value="YEARLY">매년</option>
-        </select>
-        <input
-          type="number"
-          min={1}
-          max={99}
-          value={value.interval}
-          disabled={value.preset === 'NONE'}
-          onChange={(event) => {
-            const interval = Number.parseInt(event.target.value, 10)
-            onChange({
-              ...value,
-              interval: Number.isNaN(interval) ? 1 : Math.max(1, interval),
-            })
-          }}
-        />
+  return (
+    <div className="recurrence-picker">
+      <label className="field-label">반복 설정</label>
+
+      {/* ── Preset pills ── */}
+      <div className="recurrence-preset-pills">
+        {PRESET_OPTIONS.map((opt) => (
+          <button
+            key={opt.value}
+            type="button"
+            className={value.preset === opt.value ? 'recurrence-pill is-selected' : 'recurrence-pill'}
+            onClick={() => onChange(updatePreset(value, opt.value))}
+          >
+            {opt.label}
+          </button>
+        ))}
       </div>
 
-      {value.preset === 'WEEKLY' ? (
-        <div className="weekly-day-grid">
-          {WEEKDAY_OPTIONS.map((day) => {
-            const selected = value.weeklyDays.includes(day.code)
-            return (
-              <button
-                key={day.code}
-                type="button"
-                className={selected ? 'weekday-button is-active' : 'weekday-button'}
-                onClick={() => onChange(toggleWeeklyDay(value, day.code))}
-              >
-                {day.label}
-              </button>
-            )
-          })}
+      {isActive ? (
+        <div className="recurrence-detail-box">
+          {/* ── Interval ── */}
+          <div className="recurrence-interval-row">
+            <span className="recurrence-interval-label">매</span>
+            <input
+              type="number"
+              className="recurrence-interval-input"
+              min={1}
+              max={99}
+              value={value.interval}
+              onChange={(event) => {
+                const interval = Number.parseInt(event.target.value, 10)
+                onChange({
+                  ...value,
+                  interval: Number.isNaN(interval) ? 1 : Math.max(1, interval),
+                })
+              }}
+            />
+            <span className="recurrence-interval-label">{FREQ_UNIT[value.preset]}마다</span>
+          </div>
+
+          {/* ── Weekly: day buttons ── */}
+          {value.preset === 'WEEKLY' ? (
+            <div className="recurrence-section">
+              <span className="recurrence-section-label">반복 요일</span>
+              <div className="weekly-day-grid">
+                {WEEKDAY_OPTIONS.map((day) => {
+                  const selected = value.weeklyDays.includes(day.code)
+                  return (
+                    <button
+                      key={day.code}
+                      type="button"
+                      className={selected ? 'weekday-button is-active' : 'weekday-button'}
+                      onClick={() => onChange(toggleWeeklyDay(value, day.code))}
+                    >
+                      {day.label}
+                    </button>
+                  )
+                })}
+              </div>
+            </div>
+          ) : null}
+
+          {/* ── Monthly: pattern ── */}
+          {value.preset === 'MONTHLY' ? (
+            <div className="recurrence-section">
+              <span className="recurrence-section-label">월간 패턴</span>
+              <div className="recurrence-monthly-toggle">
+                <button
+                  type="button"
+                  className={value.monthlyPattern === 'BY_MONTH_DAY' ? 'recurrence-pill is-selected' : 'recurrence-pill'}
+                  onClick={() => onChange({ ...value, monthlyPattern: 'BY_MONTH_DAY' as MonthlyPattern })}
+                >
+                  날짜 기준
+                </button>
+                <button
+                  type="button"
+                  className={value.monthlyPattern === 'BY_NTH_WEEKDAY' ? 'recurrence-pill is-selected' : 'recurrence-pill'}
+                  onClick={() => onChange({ ...value, monthlyPattern: 'BY_NTH_WEEKDAY' as MonthlyPattern })}
+                >
+                  N번째 요일
+                </button>
+              </div>
+
+              {value.monthlyPattern !== 'BY_MONTH_DAY' ? (
+                <div className="recurrence-interval-row">
+                  <span className="recurrence-interval-label">매월</span>
+                  <select
+                    className="recurrence-inline-select"
+                    value={value.bySetPos}
+                    onChange={(event) =>
+                      onChange({
+                        ...value,
+                        bySetPos: Number.parseInt(event.target.value, 10),
+                      })
+                    }
+                  >
+                    {SET_POS_OPTIONS.map((option) => (
+                      <option key={option.value} value={option.value}>
+                        {option.label}
+                      </option>
+                    ))}
+                  </select>
+                  <select
+                    className="recurrence-inline-select"
+                    value={value.monthlyByDay}
+                    onChange={(event) =>
+                      onChange({
+                        ...value,
+                        monthlyByDay: event.target.value as MonthlyByDay,
+                      })
+                    }
+                  >
+                    {MONTHLY_BY_DAY_OPTIONS.map((option) => (
+                      <option key={option.value} value={option.value}>
+                        {option.label}
+                      </option>
+                    ))}
+                  </select>
+                </div>
+              ) : null}
+            </div>
+          ) : null}
+
+          {/* ── End condition ── */}
+          <div className="recurrence-section">
+            <span className="recurrence-section-label">종료 조건</span>
+            <div className="recurrence-end-pills">
+              {END_MODE_OPTIONS.map((opt) => (
+                <button
+                  key={opt.value}
+                  type="button"
+                  className={value.endMode === opt.value ? 'recurrence-pill is-selected' : 'recurrence-pill'}
+                  onClick={() => onChange({ ...value, endMode: opt.value })}
+                >
+                  {opt.label}
+                </button>
+              ))}
+            </div>
+
+            {value.endMode === 'UNTIL' ? (
+              <div className="recurrence-interval-row">
+                <span className="recurrence-interval-label">종료일</span>
+                <input
+                  type="date"
+                  className="recurrence-date-input"
+                  value={value.untilDate}
+                  onChange={(event) => onChange({ ...value, untilDate: event.target.value })}
+                />
+              </div>
+            ) : null}
+
+            {value.endMode === 'COUNT' ? (
+              <div className="recurrence-interval-row">
+                <input
+                  type="number"
+                  className="recurrence-interval-input"
+                  min={1}
+                  max={999}
+                  value={value.count}
+                  onChange={(event) => {
+                    const count = Number.parseInt(event.target.value, 10)
+                    onChange({
+                      ...value,
+                      count: Number.isNaN(count) ? 1 : Math.max(1, count),
+                    })
+                  }}
+                />
+                <span className="recurrence-interval-label">회 반복</span>
+              </div>
+            ) : null}
+          </div>
         </div>
       ) : null}
-
-      {value.preset === 'MONTHLY' ? (
-        <>
-          <label className="field-label" htmlFor="monthlyPattern">
-            월간 패턴
-          </label>
-          <select
-            id="monthlyPattern"
-            value={value.monthlyPattern}
-            onChange={(event) =>
-              onChange({
-                ...value,
-                monthlyPattern: event.target.value as MonthlyPattern,
-              })
-            }
-          >
-            <option value="BY_MONTH_DAY">날짜 기준</option>
-            <option value="BY_NTH_WEEKDAY">N번째 요일</option>
-          </select>
-
-          {value.monthlyPattern === 'BY_MONTH_DAY' ? (
-            <div className="recurrence-row">
-              <input
-                type="number"
-                min={1}
-                max={31}
-                value={value.monthDay}
-                onChange={(event) => {
-                  const monthDay = Number.parseInt(event.target.value, 10)
-                  onChange({
-                    ...value,
-                    monthDay: Number.isNaN(monthDay) ? 1 : Math.min(31, Math.max(1, monthDay)),
-                  })
-                }}
-              />
-              <span className="inline-note">일</span>
-            </div>
-          ) : (
-            <div className="recurrence-row recurrence-row-wide">
-              <select
-                value={value.bySetPos}
-                onChange={(event) =>
-                  onChange({
-                    ...value,
-                    bySetPos: Number.parseInt(event.target.value, 10),
-                  })
-                }
-              >
-                {SET_POS_OPTIONS.map((option) => (
-                  <option key={option.value} value={option.value}>
-                    {option.label}
-                  </option>
-                ))}
-              </select>
-              <select
-                value={value.monthlyByDay}
-                onChange={(event) =>
-                  onChange({
-                    ...value,
-                    monthlyByDay: event.target.value as MonthlyByDay,
-                  })
-                }
-              >
-                {MONTHLY_BY_DAY_OPTIONS.map((option) => (
-                  <option key={option.value} value={option.value}>
-                    {option.label}
-                  </option>
-                ))}
-              </select>
-            </div>
-          )}
-        </>
-      ) : null}
-
     </div>
   )
 }

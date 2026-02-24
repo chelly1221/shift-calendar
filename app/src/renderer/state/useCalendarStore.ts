@@ -6,6 +6,7 @@ import type {
   DayWorkerCount,
   GoogleCalendarItem,
   GoogleConnectionStatus,
+  OutboxJobItem,
   RecurrenceEditScope,
   SelectedCalendar,
   ShiftSettings,
@@ -21,6 +22,8 @@ import { expandRecurringEvents } from '../../shared/expandRecurrence'
 interface CalendarState {
   events: CalendarEvent[]
   outboxCount: number
+  outboxJobs: OutboxJobItem[]
+  loadingOutboxJobs: boolean
   loading: boolean
   syncing: boolean
   googleConnected: boolean
@@ -33,6 +36,8 @@ interface CalendarState {
   shiftSettings: ShiftSettings
   savingShiftSettings: boolean
   hydrate: () => Promise<void>
+  refreshOutboxJobs: () => Promise<void>
+  cancelOutboxJob: (jobId: string) => Promise<boolean>
   saveEvent: (payload: UpsertCalendarEventInput) => Promise<CalendarEvent>
   deleteEvent: (localId: string, sendUpdates?: 'all' | 'none', recurrenceScope?: RecurrenceEditScope) => Promise<void>
   syncNow: () => Promise<void>
@@ -105,6 +110,12 @@ const fallbackApi: CalendarApi = {
   async getOutboxCount() {
     return 0
   },
+  async listOutboxJobs() {
+    return []
+  },
+  async cancelOutboxJob() {
+    return false
+  },
   async syncNow() {
     return {
       mode: 'SKIPPED',
@@ -153,6 +164,12 @@ function sortByStart(events: CalendarEvent[]): CalendarEvent[] {
   return [...events].sort((left, right) => left.startAtUtc.localeCompare(right.startAtUtc))
 }
 
+function upsertEventInMemory(events: CalendarEvent[], saved: CalendarEvent): CalendarEvent[] {
+  const next = events.filter((event) => event.localId !== saved.localId)
+  next.push(saved)
+  return sortByStart(next)
+}
+
 function defaultRange() {
   const now = DateTime.utc()
   return {
@@ -164,6 +181,8 @@ function defaultRange() {
 export const useCalendarStore = create<CalendarState>((set, get) => ({
   events: [],
   outboxCount: 0,
+  outboxJobs: [],
+  loadingOutboxJobs: false,
   loading: false,
   syncing: false,
   googleConnected: false,
@@ -180,9 +199,10 @@ export const useCalendarStore = create<CalendarState>((set, get) => ({
     const api = getCalendarApi()
     set({ loading: true })
     try {
-      const [events, outboxCount, googleStatus, selectedCalendar, shiftSettings] = await Promise.all([
+      const [events, outboxCount, outboxJobs, googleStatus, selectedCalendar, shiftSettings] = await Promise.all([
         api.listEvents(defaultRange()),
         api.getOutboxCount(),
+        api.listOutboxJobs({ limit: 80, includeCompleted: false }).catch(() => []),
         api.getGoogleConnectionStatus(),
         api.getSelectedCalendar(),
         api.getShiftSettings(),
@@ -203,6 +223,7 @@ export const useCalendarStore = create<CalendarState>((set, get) => ({
       set({
         events: sortByStart(expanded),
         outboxCount,
+        outboxJobs,
         googleConnected: googleStatus.connected,
         accountEmail: googleStatus.accountEmail,
         calendars,
@@ -215,10 +236,50 @@ export const useCalendarStore = create<CalendarState>((set, get) => ({
     }
   },
 
+  refreshOutboxJobs: async () => {
+    const api = getCalendarApi()
+    set({ loadingOutboxJobs: true })
+    try {
+      const [outboxCount, outboxJobs] = await Promise.all([
+        api.getOutboxCount().catch(() => get().outboxCount),
+        api.listOutboxJobs({ limit: 80, includeCompleted: false }).catch(() => get().outboxJobs),
+      ])
+      set({ outboxCount, outboxJobs })
+    } finally {
+      set({ loadingOutboxJobs: false })
+    }
+  },
+
+  cancelOutboxJob: async (jobId) => {
+    const api = getCalendarApi()
+    const cancelled = await api.cancelOutboxJob({ jobId })
+    await get().refreshOutboxJobs()
+    return cancelled
+  },
+
   saveEvent: async (payload) => {
     const api = getCalendarApi()
     const saved = await api.upsertEvent(payload)
-    await get().hydrate()
+    set((state) => ({
+      events: upsertEventInMemory(state.events, saved),
+    }))
+
+    void Promise.all([
+      api.getOutboxCount(),
+      api.listOutboxJobs({ limit: 80, includeCompleted: false }).catch(() => []),
+    ])
+      .then(([outboxCount, outboxJobs]) => set({ outboxCount, outboxJobs }))
+      .catch(() => {})
+
+    const shouldRefreshInBackground =
+      payload.recurrenceScope === 'FUTURE'
+      || Boolean(payload.recurrenceRule)
+      || Boolean(payload.recurringEventId)
+
+    if (shouldRefreshInBackground) {
+      void get().hydrate().catch(() => {})
+    }
+
     return saved
   },
 
@@ -237,8 +298,11 @@ export const useCalendarStore = create<CalendarState>((set, get) => ({
       await get().hydrate()
     } else {
       const events = get().events.filter((event) => event.localId !== localId)
-      const outboxCount = await api.getOutboxCount()
-      set({ events, outboxCount })
+      const [outboxCount, outboxJobs] = await Promise.all([
+        api.getOutboxCount(),
+        api.listOutboxJobs({ limit: 80, includeCompleted: false }).catch(() => []),
+      ])
+      set({ events, outboxCount, outboxJobs })
     }
   },
 

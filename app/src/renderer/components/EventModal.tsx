@@ -5,6 +5,7 @@ import { RecurrencePicker } from './RecurrencePicker'
 import { parseRRule, recurrenceToRRule, type RecurrenceValue } from './recurrenceRule'
 import { parseEducationTargets } from '../utils/parseEducationTargets'
 import { parseVacationInfo, serializeVacationInfo, VACATION_TYPES, isPresetVacationType } from '../utils/parseVacationInfo'
+import { parseRoutineCompletions, serializeRoutineCompletions } from '../utils/parseRoutineCompletions'
 
 export type EditableEvent = UpsertCalendarEventInput
 
@@ -68,6 +69,42 @@ function dateToEndUtc(dateStr: string, tz: string): string {
   return parsed.startOf('day').plus({ days: 1 }).toUTC().toISO() ?? new Date().toISOString()
 }
 
+function formatTimeText(raw: string): string {
+  const digits = raw.replace(/\D/g, '').slice(0, 4)
+  if (digits.length <= 2) return digits
+  return `${digits.slice(0, 2)}:${digits.slice(2)}`
+}
+
+function formatDateText(raw: string): string {
+  const digits = raw.replace(/\D/g, '').slice(0, 8)
+  if (digits.length <= 4) return digits
+  if (digits.length <= 6) return `${digits.slice(0, 4)}-${digits.slice(4)}`
+  return `${digits.slice(0, 4)}-${digits.slice(4, 6)}-${digits.slice(6)}`
+}
+
+function normalizeDateText(raw: string): string {
+  const digits = raw.replace(/\D/g, '')
+  const now = DateTime.local()
+  let year: number, month: number, day: number
+  if (digits.length === 4) {
+    year = now.year
+    month = parseInt(digits.slice(0, 2), 10)
+    day = parseInt(digits.slice(2, 4), 10)
+  } else if (digits.length === 6) {
+    year = 2000 + parseInt(digits.slice(0, 2), 10)
+    month = parseInt(digits.slice(2, 4), 10)
+    day = parseInt(digits.slice(4, 6), 10)
+  } else if (digits.length === 8) {
+    year = parseInt(digits.slice(0, 4), 10)
+    month = parseInt(digits.slice(4, 6), 10)
+    day = parseInt(digits.slice(6, 8), 10)
+  } else {
+    return raw
+  }
+  const dt = DateTime.local(year, month, day)
+  return dt.isValid ? dt.toFormat('yyyy-MM-dd') : raw
+}
+
 function defaultEventDraft(): EditableEvent {
   const zone = Intl.DateTimeFormat().resolvedOptions().timeZone || 'UTC'
   const start = DateTime.local().startOf('hour')
@@ -109,6 +146,7 @@ export function EventModal({ open, value, memberNames, onClose, onSave, onDelete
   const [customVacationTypeText, setCustomVacationTypeText] = useState('')
   const [vacationTimeStart, setVacationTimeStart] = useState('')
   const [vacationTimeEnd, setVacationTimeEnd] = useState('')
+  const [routineCompletedDates, setRoutineCompletedDates] = useState<string[]>([])
   const [recurrence, setRecurrence] = useState<RecurrenceValue>(parseRRule(null))
   const [sendUpdates, setSendUpdates] = useState<SendUpdates>('none')
   const [recurrenceScope, setRecurrenceScope] = useState<'THIS' | 'ALL' | 'FUTURE'>('ALL')
@@ -128,6 +166,9 @@ export function EventModal({ open, value, memberNames, onClose, onSave, onDelete
     setSummary(source.summary)
     const rawDescription = source.description ?? ''
     let cleanDesc = rawDescription
+    const routineParsed = parseRoutineCompletions(cleanDesc)
+    cleanDesc = routineParsed.cleanDescription
+    setRoutineCompletedDates(routineParsed.completedDates)
     const sourceType = source.eventType ?? '일반'
     if (sourceType === '교육') {
       const parsed = parseEducationTargets(cleanDesc)
@@ -243,6 +284,9 @@ export function EventModal({ open, value, memberNames, onClose, onSave, onDelete
             if (normalizedEventType === '휴가') {
               finalDescription = serializeVacationInfo([...vacationTargets], resolvedVacationType, finalDescription)
             }
+            if (normalizedEventType === '반복업무') {
+              finalDescription = serializeRoutineCompletions(routineCompletedDates, finalDescription)
+            }
 
             let effectiveSummary = summary.trim()
             if (normalizedEventType === '휴가') {
@@ -272,7 +316,11 @@ export function EventModal({ open, value, memberNames, onClose, onSave, onDelete
                 .split(',')
                 .map((email) => email.trim())
                 .filter((email) => email.length > 0),
-              recurrenceRule: recurrenceToRRule(recurrence),
+              recurrenceRule: recurrenceToRRule(
+                recurrence.preset === 'MONTHLY' && recurrence.monthlyPattern === 'BY_MONTH_DAY'
+                  ? { ...recurrence, monthDay: DateTime.fromISO(startAtUtc).toLocal().day }
+                  : recurrence,
+              ),
               recurringEventId,
               originalStartTimeUtc,
               sendUpdates,
@@ -432,9 +480,16 @@ export function EventModal({ open, value, memberNames, onClose, onSave, onDelete
               </label>
               <input
                 id="startAt"
-                type="date"
+                type="text"
+                inputMode="numeric"
                 value={startDate}
-                onChange={(event) => setStartDate(event.target.value)}
+                onChange={(event) => setStartDate(formatDateText(event.target.value))}
+                onBlur={() => {
+                  const normalized = normalizeDateText(startDate)
+                  setStartDate(normalized)
+                  if (endDate && normalized > endDate) setEndDate(normalized)
+                }}
+                placeholder="YYYY-MM-DD"
                 required
               />
             </div>
@@ -444,9 +499,12 @@ export function EventModal({ open, value, memberNames, onClose, onSave, onDelete
               </label>
               <input
                 id="endAt"
-                type="date"
+                type="text"
+                inputMode="numeric"
                 value={endDate}
-                onChange={(event) => setEndDate(event.target.value)}
+                onChange={(event) => setEndDate(formatDateText(event.target.value))}
+                onBlur={() => setEndDate(normalizeDateText(endDate))}
+                placeholder="YYYY-MM-DD"
                 required
               />
             </div>
@@ -458,22 +516,24 @@ export function EventModal({ open, value, memberNames, onClose, onSave, onDelete
                 <label className="field-label" htmlFor="vacationTimeStart">시작 시각</label>
                 <input
                   id="vacationTimeStart"
-                  type="time"
+                  type="text"
                   value={vacationTimeStart}
-                  onChange={(event) => setVacationTimeStart(event.target.value)}
+                  onChange={(event) => setVacationTimeStart(formatTimeText(event.target.value))}
+                  placeholder="예: 09:00"
                 />
               </div>
               <div>
                 <label className="field-label" htmlFor="vacationTimeEnd">종료 시각</label>
                 <input
                   id="vacationTimeEnd"
-                  type="time"
+                  type="text"
                   value={vacationTimeEnd}
-                  onChange={(event) => setVacationTimeEnd(event.target.value)}
+                  onChange={(event) => setVacationTimeEnd(formatTimeText(event.target.value))}
+                  placeholder="예: 13:00"
                 />
               </div>
             </div>
-          ) : eventType !== '휴가' ? (
+          ) : eventType !== '휴가' && eventType !== '근무' && eventType !== '운용중지작업' ? (
             <>
               <label className="field-label" htmlFor="timeMemo">시각 (선택)</label>
               <input

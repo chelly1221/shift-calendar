@@ -13,6 +13,20 @@ interface SyncQuery {
   pageToken?: string
 }
 
+interface GoogleApiErrorShape {
+  code?: number
+  status?: number
+  message?: string
+  response?: {
+    status?: number
+    data?: {
+      error?: {
+        message?: string
+      }
+    }
+  }
+}
+
 const EVENT_TYPE_PRIVATE_KEY = 'shiftCalendarEventType'
 
 export interface SyncPage {
@@ -29,6 +43,20 @@ export interface PushResult {
 async function getCalendarId(): Promise<string> {
   const selected = await getSelectedCalendar()
   return selected.selectedCalendarId?.trim() || process.env.GOOGLE_CALENDAR_ID?.trim() || 'primary'
+}
+
+function isGoogleResourceMissingError(error: unknown): boolean {
+  const candidate = error as GoogleApiErrorShape
+  const status = candidate.code ?? candidate.status ?? candidate.response?.status
+  if (status === 404) {
+    return true
+  }
+  const message = candidate.message ?? candidate.response?.data?.error?.message
+  if (typeof message !== 'string') {
+    return false
+  }
+  const normalized = message.toLowerCase()
+  return normalized.includes('resource has been deleted') || normalized.includes('not found')
 }
 
 function normalizeRRule(recurrenceRule: string): string {
@@ -81,6 +109,26 @@ function extractRecurrenceRule(recurrence: string[] | null | undefined): string 
     return null
   }
   return rrule.replace(/^RRULE:/, '')
+}
+
+function isWholeDayEvent(event: CalendarEvent): boolean {
+  const zone = event.timeZone?.trim() || 'UTC'
+  const start = DateTime.fromISO(event.startAtUtc, { setZone: true }).setZone(zone)
+  const end = DateTime.fromISO(event.endAtUtc, { setZone: true }).setZone(zone)
+
+  if (!start.isValid || !end.isValid || end <= start) {
+    return false
+  }
+
+  const isMidnight = (value: DateTime) =>
+    value.hour === 0 && value.minute === 0 && value.second === 0 && value.millisecond === 0
+
+  if (!isMidnight(start) || !isMidnight(end)) {
+    return false
+  }
+
+  const dayDiff = end.diff(start, 'days').days
+  return Number.isInteger(dayDiff) && dayDiff >= 1
 }
 
 export function extractEventType(event: calendar_v3.Schema$Event): string {
@@ -152,18 +200,27 @@ export function toRemoteSnapshot(event: calendar_v3.Schema$Event): RemoteEventSn
 }
 
 export function toGoogleEventRequest(event: CalendarEvent): calendar_v3.Schema$Event {
+  const wholeDayEvent = isWholeDayEvent(event)
+  const zone = event.timeZone?.trim() || 'UTC'
+  const startLocal = DateTime.fromISO(event.startAtUtc, { setZone: true }).setZone(zone)
+  const endLocal = DateTime.fromISO(event.endAtUtc, { setZone: true }).setZone(zone)
+
   return {
     summary: event.summary,
     description: event.description || undefined,
     location: event.location || undefined,
-    start: {
-      dateTime: event.startAtUtc,
-      timeZone: event.timeZone,
-    },
-    end: {
-      dateTime: event.endAtUtc,
-      timeZone: event.timeZone,
-    },
+    start: wholeDayEvent
+      ? { date: startLocal.toISODate() ?? undefined }
+      : {
+          dateTime: event.startAtUtc,
+          timeZone: zone,
+        },
+    end: wholeDayEvent
+      ? { date: endLocal.toISODate() ?? undefined }
+      : {
+          dateTime: event.endAtUtc,
+          timeZone: zone,
+        },
     attendees: event.attendees.map((email) => ({ email })),
     recurrence: event.recurrenceRule ? [normalizeRRule(event.recurrenceRule)] : undefined,
     extendedProperties: {
@@ -433,11 +490,17 @@ export function createGoogleCalendarService(): GoogleCalendarService {
         if (!googleEventId) {
           return { googleEventId: null, googleUpdatedAtUtc: null }
         }
-        await calendar.events.delete({
-          calendarId,
-          eventId: googleEventId,
-          sendUpdates,
-        })
+        try {
+          await calendar.events.delete({
+            calendarId,
+            eventId: googleEventId,
+            sendUpdates,
+          })
+        } catch (error) {
+          if (!isGoogleResourceMissingError(error)) {
+            throw error
+          }
+        }
         return { googleEventId, googleUpdatedAtUtc: new Date().toISOString() }
       }
 

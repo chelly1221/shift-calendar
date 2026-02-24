@@ -9,30 +9,75 @@ import type { CalendarEvent, ShiftTeamAssignments, ShiftTeamMode } from '../../s
 import { isVirtualInstance, extractMasterLocalId } from '../../shared/expandRecurrence'
 import { isPublicHolidayName, FIXED_PUBLIC_HOLIDAY_MMDD } from '../../shared/koreanHolidays'
 import { EventModal, type EditableEvent } from '../components/EventModal'
+import { RadialMenu } from '../components/RadialMenu'
+import { SubstitutionFlow } from '../components/SubstitutionFlow'
 import { parseEducationTargets } from '../utils/parseEducationTargets'
+import { parseRoutineCompletions, serializeRoutineCompletions } from '../utils/parseRoutineCompletions'
 import { parseVacationInfo } from '../utils/parseVacationInfo'
 import { SettingsModal } from '../components/SettingsModal'
+import { SyncModal } from '../components/SyncModal'
 import { useCalendarStore } from '../state/useCalendarStore'
 
-const ROUTINE_COMPLETIONS_KEY = 'routineCompletions'
+const LEGACY_ROUTINE_COMPLETIONS_KEY = 'routineCompletions'
+const LEGACY_ROUTINE_COMPLETION_KEY_PATTERN = /^(.+)::(\d{4}-\d{2}-\d{2})$/
 
-function loadCompletions(): Set<string> {
+function loadLegacyRoutineCompletionKeys(): string[] {
   try {
-    const raw = localStorage.getItem(ROUTINE_COMPLETIONS_KEY)
-    return raw ? new Set(JSON.parse(raw) as string[]) : new Set()
+    const raw = localStorage.getItem(LEGACY_ROUTINE_COMPLETIONS_KEY)
+    if (!raw) {
+      return []
+    }
+    const parsed = JSON.parse(raw)
+    if (!Array.isArray(parsed)) {
+      return []
+    }
+    return parsed.filter((value): value is string => typeof value === 'string' && value.includes('::'))
   } catch {
-    return new Set()
+    return []
   }
 }
 
-function saveCompletions(set: Set<string>): void {
-  localStorage.setItem(ROUTINE_COMPLETIONS_KEY, JSON.stringify([...set]))
+function saveLegacyRoutineCompletionKeys(keys: string[]): void {
+  if (keys.length === 0) {
+    localStorage.removeItem(LEGACY_ROUTINE_COMPLETIONS_KEY)
+    return
+  }
+  localStorage.setItem(LEGACY_ROUTINE_COMPLETIONS_KEY, JSON.stringify(keys))
 }
 
-function makeCompletionKey(localId: string, startAtUtc: string): string {
-  const masterLocalId = extractMasterLocalId(localId)
-  const dateKey = DateTime.fromISO(startAtUtc).toLocal().toISODate()
-  return `${masterLocalId}::${dateKey}`
+function parseLegacyRoutineCompletionKey(rawKey: string): { localId: string; completionDate: string } | null {
+  const match = rawKey.match(LEGACY_ROUTINE_COMPLETION_KEY_PATTERN)
+  if (!match) {
+    return null
+  }
+  return {
+    localId: match[1],
+    completionDate: match[2],
+  }
+}
+
+function resolveRoutineSourceEvent(targetEvent: CalendarEvent, events: CalendarEvent[]): CalendarEvent {
+  if (isVirtualInstance(targetEvent.localId)) {
+    const master = events.find((event) => event.localId === extractMasterLocalId(targetEvent.localId))
+    if (master) {
+      return master
+    }
+  }
+
+  if (targetEvent.recurringEventId) {
+    const master = events.find(
+      (event) =>
+        event.googleEventId != null
+        && event.googleEventId === targetEvent.recurringEventId
+        && event.recurrenceRule != null
+        && event.recurringEventId == null,
+    )
+    if (master) {
+      return master
+    }
+  }
+
+  return targetEvent
 }
 
 function createDraft(startAtUtc?: string, endAtUtc?: string): EditableEvent {
@@ -219,7 +264,13 @@ export function CalendarPage() {
     selectedCalendarSummary,
     shiftSettings,
     savingShiftSettings,
+    lastSyncResult,
+    outboxCount,
+    outboxJobs,
+    loadingOutboxJobs,
     hydrate,
+    refreshOutboxJobs,
+    cancelOutboxJob,
     saveEvent,
     deleteEvent,
     syncNow,
@@ -232,11 +283,18 @@ export function CalendarPage() {
     disconnectGoogle,
   } = useCalendarStore()
 
-  const [routineCompletions, setRoutineCompletions] = useState<Set<string>>(loadCompletions)
+  const [routineDoneOverrides, setRoutineDoneOverrides] = useState<Map<string, boolean>>(new Map())
   const [editingEvent, setEditingEvent] = useState<EditableEvent | null>(null)
+  const [radialMenu, setRadialMenu] = useState<{ anchor: { x: number; y: number }; dateStr: string } | null>(null)
+  const [substitutionFlow, setSubstitutionFlow] = useState<{
+    anchor: { x: number; y: number }
+    dateStr: string
+    shiftEvent: CalendarEvent
+  } | null>(null)
   const [editingTitleEventId, setEditingTitleEventId] = useState<string | null>(null)
   const [editingTitleDraft, setEditingTitleDraft] = useState('')
   const [settingsOpen, setSettingsOpen] = useState(false)
+  const [syncOpen, setSyncOpen] = useState(false)
   const [isMaximized, setIsMaximized] = useState(false)
   const [titlebarMonthLabel, setTitlebarMonthLabel] = useState(() =>
     DateTime.local().setLocale('ko').toFormat('yyyy년 M월'),
@@ -248,6 +306,7 @@ export function CalendarPage() {
   const [dayWorkerDrafts, setDayWorkerDrafts] = useState<string[]>(() => [...shiftSettings.dayWorkers])
   const calendarRef = useRef<FullCalendar | null>(null)
   const eventsRef = useRef<CalendarEvent[]>(events)
+  const legacyRoutineMigrationRunningRef = useRef(false)
   const shiftSaveTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null)
   const pendingShiftSaveRef = useRef<{
     teams: ShiftTeamAssignments
@@ -256,19 +315,6 @@ export function CalendarPage() {
   const monthWheelLockRef = useRef<ReturnType<typeof setTimeout> | null>(null)
   const editingTitleDraftRef = useRef('')
   editingTitleDraftRef.current = editingTitleDraft
-
-  const toggleRoutineCompletion = useCallback((completionKey: string) => {
-    setRoutineCompletions((prev) => {
-      const next = new Set(prev)
-      if (next.has(completionKey)) {
-        next.delete(completionKey)
-      } else {
-        next.add(completionKey)
-      }
-      saveCompletions(next)
-      return next
-    })
-  }, [])
 
   useEffect(() => {
     void hydrate()
@@ -294,6 +340,121 @@ export function CalendarPage() {
   useEffect(() => {
     eventsRef.current = events
   }, [events])
+
+  useEffect(() => {
+    if (loading || legacyRoutineMigrationRunningRef.current) {
+      return
+    }
+
+    const legacyKeys = loadLegacyRoutineCompletionKeys()
+    if (legacyKeys.length === 0) {
+      return
+    }
+
+    legacyRoutineMigrationRunningRef.current = true
+
+    void (async () => {
+      type LegacyGroup = {
+        sourceEvent: CalendarEvent
+        completionDates: Set<string>
+        rawKeys: Set<string>
+      }
+
+      const currentEvents = eventsRef.current
+      const groupedBySourceId = new Map<string, LegacyGroup>()
+      const remainingKeys = new Set<string>()
+
+      try {
+        for (const rawKey of legacyKeys) {
+          const parsedKey = parseLegacyRoutineCompletionKey(rawKey)
+          if (!parsedKey) {
+            continue
+          }
+
+          const keyLocalId = isVirtualInstance(parsedKey.localId)
+            ? extractMasterLocalId(parsedKey.localId)
+            : parsedKey.localId
+          const keyEvent = currentEvents.find((event) => event.localId === keyLocalId)
+          if (!keyEvent) {
+            remainingKeys.add(rawKey)
+            continue
+          }
+
+          const sourceEvent = resolveRoutineSourceEvent(keyEvent, currentEvents)
+          const group = groupedBySourceId.get(sourceEvent.localId) ?? {
+            sourceEvent,
+            completionDates: new Set<string>(),
+            rawKeys: new Set<string>(),
+          }
+          group.completionDates.add(parsedKey.completionDate)
+          group.rawKeys.add(rawKey)
+          groupedBySourceId.set(sourceEvent.localId, group)
+        }
+
+        for (const group of groupedBySourceId.values()) {
+          if (group.sourceEvent.eventType !== '반복업무') {
+            continue
+          }
+
+          const parsedDescription = parseRoutineCompletions(group.sourceEvent.description ?? '')
+          const mergedDates = new Set(parsedDescription.completedDates)
+          for (const date of group.completionDates) {
+            mergedDates.add(date)
+          }
+
+          const nextDescription = serializeRoutineCompletions([...mergedDates], parsedDescription.cleanDescription)
+          if (nextDescription === (group.sourceEvent.description ?? '')) {
+            continue
+          }
+
+          try {
+            await saveEvent({
+              ...toEditableEvent(group.sourceEvent),
+              description: nextDescription,
+              sendUpdates: 'none',
+              recurrenceScope: 'ALL',
+            })
+          } catch {
+            for (const rawKey of group.rawKeys) {
+              remainingKeys.add(rawKey)
+            }
+          }
+        }
+      } finally {
+        saveLegacyRoutineCompletionKeys([...remainingKeys])
+        legacyRoutineMigrationRunningRef.current = false
+      }
+    })()
+  }, [events, loading, saveEvent])
+
+  useEffect(() => {
+    if (routineDoneOverrides.size === 0) {
+      return
+    }
+
+    setRoutineDoneOverrides((prev) => {
+      if (prev.size === 0) {
+        return prev
+      }
+
+      const next = new Map(prev)
+      for (const [localId, overrideDone] of prev.entries()) {
+        const event = events.find((item) => item.localId === localId)
+        if (!event) {
+          next.delete(localId)
+          continue
+        }
+        const parsed = parseRoutineCompletions(event.description ?? '')
+        const completionDate = DateTime.fromISO(event.startAtUtc).toLocal().toISODate()
+        const persistedDone = Boolean(completionDate && parsed.completedDates.includes(completionDate))
+        if (persistedDone === overrideDone) {
+          next.delete(localId)
+        }
+      }
+
+      return next.size === prev.size ? prev : next
+    })
+  }, [events, routineDoneOverrides.size])
 
   useEffect(() => {
     if (!editingTitleEventId) return
@@ -357,16 +518,34 @@ export function CalendarPage() {
       }
     }
 
-    // 오늘 휴가자 이름 수집
-    const todayVacationNames = new Set<string>()
+    // 오늘 근무 제외 대상(휴가/교육) 이름 수집
+    const todayUnavailableNames = new Set<string>()
     for (const event of events) {
       if (event.eventType !== '휴가') continue
       const start = DateTime.fromISO(event.startAtUtc).toLocal()
       const end = DateTime.fromISO(event.endAtUtc).toLocal()
       const todayDtObj = DateTime.fromISO(today!)
       if (start.startOf('day') <= todayDtObj && end > todayDtObj) {
-        const { targets } = parseVacationInfo(event.description ?? '')
-        for (const name of targets) todayVacationNames.add(name.trim())
+        const { targets, vacationType } = parseVacationInfo(event.description ?? '')
+        if (vacationType && vacationType.startsWith('시간차')) continue
+        for (const name of targets) {
+          const trimmed = name.trim()
+          if (trimmed) todayUnavailableNames.add(trimmed)
+        }
+      }
+    }
+
+    for (const event of events) {
+      if (event.eventType !== '교육') continue
+      const start = DateTime.fromISO(event.startAtUtc).toLocal()
+      const end = DateTime.fromISO(event.endAtUtc).toLocal()
+      const todayDtObj = DateTime.fromISO(today!)
+      if (start.startOf('day') <= todayDtObj && end > todayDtObj) {
+        const { targets } = parseEducationTargets(event.description ?? '')
+        for (const name of targets) {
+          const trimmed = name.trim()
+          if (trimmed) todayUnavailableNames.add(trimmed)
+        }
       }
     }
 
@@ -375,15 +554,21 @@ export function CalendarPage() {
     const isHoliday = publicHolidayMap.has(today!)
     const hideDayWorkers = isWeekend || isHoliday
 
-    const dayWorkerNames = dayWorkerDrafts.filter((name) => name.trim().length > 0 && !todayVacationNames.has(name.trim()))
+    const dayWorkerNames = dayWorkerDrafts.filter(
+      (name) => name.trim().length > 0 && !todayUnavailableNames.has(name.trim()),
+    )
     const hasShiftTeams = dayTeams.length > 0 || nightTeams.length > 0
 
     if (!hasShiftTeams && (hideDayWorkers || dayWorkerNames.length === 0)) {
       return null
     }
 
-    const dayMembers = collectShiftMembers(dayTeams, shiftTeamDrafts).filter((name) => !todayVacationNames.has(name.trim()))
-    const nightMembers = collectShiftMembers(nightTeams, shiftTeamDrafts).filter((name) => !todayVacationNames.has(name.trim()))
+    const dayMembers = collectShiftMembers(dayTeams, shiftTeamDrafts).filter(
+      (name) => !todayUnavailableNames.has(name.trim()),
+    )
+    const nightMembers = collectShiftMembers(nightTeams, shiftTeamDrafts).filter(
+      (name) => !todayUnavailableNames.has(name.trim()),
+    )
     const dayText = hasShiftTeams
       ? (dayMembers.length > 0 ? dayMembers.join(' · ') : `${dayTeams.join('·')}조 미지정`)
       : null
@@ -482,9 +667,12 @@ export function CalendarPage() {
         .map((event) => {
           const isEducation = event.eventType === '교육'
           const isVacation = event.eventType === '휴가'
+          const isBasic = event.eventType === '일반'
+          const isRoutine = event.eventType === '반복업무'
           let educationTargets: string[] = []
           let endDateDisplay: string | null = null
           let vacationTypeLabel: string | null = null
+          let isRoutineDone = false
 
           if (isVacation) {
             const parsed = parseVacationInfo(event.description ?? '')
@@ -516,6 +704,12 @@ export function CalendarPage() {
             }
           }
 
+          if (isRoutine) {
+            const parsed = parseRoutineCompletions(event.description ?? '')
+            const completionDate = DateTime.fromISO(event.startAtUtc).toLocal().toISODate()
+            isRoutineDone = Boolean(completionDate && parsed.completedDates.includes(completionDate))
+          }
+
           return {
             id: event.localId,
             title: event.summary,
@@ -528,18 +722,17 @@ export function CalendarPage() {
               ...(event.eventType === '중요' ? ['is-important'] : []),
               ...(isEducation ? ['is-education'] : []),
               ...(isVacation ? ['is-vacation'] : []),
+              ...(isBasic ? ['is-basic'] : []),
             ],
             extendedProps: {
               sortOrder: event.eventType === '운용중지작업' ? -1 : event.eventType === '중요' ? -1 : isEducation ? 2 : isVacation ? 3 : event.eventType === '반복업무' ? 1 : 0,
-              isRoutine: event.eventType === '반복업무',
+              isRoutine,
+              isRoutineDone,
               isEducation,
               isVacation,
               educationTargets,
               endDateDisplay,
               vacationTypeLabel,
-              completionKey: event.eventType === '반복업무'
-                ? makeCompletionKey(event.localId, event.startAtUtc)
-                : null,
             },
           }
         }),
@@ -638,6 +831,53 @@ export function CalendarPage() {
     })
   }
 
+  const toggleRoutineCompletion = useCallback(async (eventLocalId: string, nextDone: boolean) => {
+    const clickedEvent = eventsRef.current.find((event) => event.localId === eventLocalId)
+    if (!clickedEvent) {
+      return
+    }
+
+    const completionDate = DateTime.fromISO(clickedEvent.startAtUtc).toLocal().toISODate()
+    if (!completionDate) {
+      return
+    }
+
+    const sourceEvent = resolveRoutineSourceEvent(clickedEvent, eventsRef.current)
+
+    const parsed = parseRoutineCompletions(sourceEvent.description ?? '')
+    const nextDoneDates = new Set(parsed.completedDates)
+    if (nextDone) {
+      nextDoneDates.add(completionDate)
+    } else {
+      nextDoneDates.delete(completionDate)
+    }
+
+    const nextDescription = serializeRoutineCompletions([...nextDoneDates], parsed.cleanDescription)
+
+    setRoutineDoneOverrides((prev) => {
+      const next = new Map(prev)
+      next.set(eventLocalId, nextDone)
+      return next
+    })
+
+    try {
+      await saveEvent({
+        ...toEditableEvent(sourceEvent),
+        description: nextDescription,
+        sendUpdates: 'none',
+        recurrenceScope: 'ALL',
+      })
+    } catch {
+      setRoutineDoneOverrides((prev) => {
+        const next = new Map(prev)
+        next.delete(eventLocalId)
+        return next
+      })
+      return
+    }
+
+  }, [saveEvent])
+
   const flushShiftAssignmentsSave = useCallback(() => {
     const pending = pendingShiftSaveRef.current
     if (!pending) {
@@ -707,13 +947,28 @@ export function CalendarPage() {
       {useCustomTitlebar ? (
         <div className="titlebar">
           <div className="titlebar-leading">
+            <div className="titlebar-leading-actions">
             <button
               type="button"
               className="titlebar-settings-btn"
-              onClick={() => setSettingsOpen(true)}
+              onClick={() => {
+                setSyncOpen(false)
+                setSettingsOpen(true)
+              }}
             >
               설정
             </button>
+            <button
+              type="button"
+              className="titlebar-sync-btn"
+              onClick={() => {
+                setSettingsOpen(false)
+                setSyncOpen(true)
+              }}
+            >
+              동기화
+            </button>
+            </div>
           </div>
           <div className="titlebar-monthbar">
             <button
@@ -891,10 +1146,8 @@ export function CalendarPage() {
                     : `${startDt.setLocale('ko').toFormat('M/d')}~${inclusiveEnd.setLocale('ko').toFormat('M/d')}`
                   const vacInfo = parseVacationInfo(event.description ?? '')
                   const vType = vacInfo.vacationType
-                  const timeMatch = vType ? vType.match(/^(시간차)\((.+)\)$/) : null
-                  const typeInSummary = vType
-                    ? (timeMatch ? `시간차(${timeMatch[2]})` : vType)
-                    : null
+                  const summaryTimeMatch = vType === '시간차' ? event.summary.match(/시간차\((.+?)\)/) : null
+                  const typeInSummary = summaryTimeMatch ? summaryTimeMatch[0] : vType
                   const nameOnly = typeInSummary
                     ? event.summary.replace(typeInSummary, '').trim()
                     : event.summary
@@ -905,7 +1158,7 @@ export function CalendarPage() {
                           {nameOnly}
                           {vType && (
                             <>
-                              {' '}<span className="vacation-type-text">{timeMatch ? `${timeMatch[1]} (${timeMatch[2]})` : vType}</span>
+                              {' '}<span className="vacation-type-text">{summaryTimeMatch ? `시간차 (${summaryTimeMatch[1]})` : vType}</span>
                             </>
                           )}
                         </span>
@@ -1026,7 +1279,33 @@ export function CalendarPage() {
           </div>
         </aside>
 
-        <main className="calendar-panel" onWheel={handleCalendarWheel} onContextMenu={(e) => {
+        <main className="calendar-panel" onWheel={handleCalendarWheel} onClick={(e) => {
+          if (e.button !== 0) return
+          const target = e.target as HTMLElement
+          if (target.closest('.fc-event') || target.closest('.fc-event-title-inline-input')) return
+          // Left-click on shift label → open substitution flow
+          if (target.closest('.fc-day-shift-inline')) {
+            const dayCell = target.closest<HTMLElement>('[data-date]')
+            const dateStr = dayCell?.getAttribute('data-date')
+            if (dateStr) {
+              const shiftEvent = events.find(
+                (ev) => ev.eventType === '근무' && DateTime.fromISO(ev.startAtUtc).toLocal().toISODate() === dateStr,
+              )
+              if (shiftEvent) {
+                e.preventDefault()
+                setSubstitutionFlow({ anchor: { x: e.clientX, y: e.clientY }, dateStr, shiftEvent })
+              }
+            }
+            return
+          }
+          const dayCell = target.closest<HTMLElement>('[data-date]')
+          if (!dayCell) return
+          if (editingTitleEventId || editingEvent) return
+          const dateStr = dayCell.getAttribute('data-date')
+          if (!dateStr) return
+          e.preventDefault()
+          setRadialMenu({ anchor: { x: e.clientX, y: e.clientY }, dateStr })
+        }} onContextMenu={(e) => {
           const target = e.target as HTMLElement
           const dayCell = target.closest<HTMLElement>('[data-date]')
           if (!dayCell) return
@@ -1071,9 +1350,10 @@ export function CalendarPage() {
             const isEditing = editingTitleEventId === arg.event.id
             if (!isEditing) {
               const isRoutine = arg.event.extendedProps?.isRoutine === true
+              const routineDoneFromEvent = arg.event.extendedProps?.isRoutineDone === true
+              const routineDoneOverride = routineDoneOverrides.get(arg.event.id)
+              const isDone = isRoutine ? (routineDoneOverride ?? routineDoneFromEvent) : false
               const isEducation = arg.event.extendedProps?.isEducation === true
-              const completionKey = arg.event.extendedProps?.completionKey as string | null
-              const isDone = completionKey ? routineCompletions.has(completionKey) : false
 
               if (isEducation) {
                 const targets = (arg.event.extendedProps?.educationTargets as string[]) ?? []
@@ -1128,7 +1408,7 @@ export function CalendarPage() {
                       onClick={(e) => {
                         e.stopPropagation()
                         e.preventDefault()
-                        if (completionKey) toggleRoutineCompletion(completionKey)
+                        void toggleRoutineCompletion(arg.event.id, !isDone)
                       }}
                     >
                       {isDone ? (
@@ -1272,6 +1552,35 @@ export function CalendarPage() {
         </main>
       </div>
 
+      {radialMenu && (
+        <RadialMenu
+          anchor={radialMenu.anchor}
+          dateStr={radialMenu.dateStr}
+          memberNames={allMemberNames}
+          onComplete={async (draft) => { setRadialMenu(null); await saveEvent(draft) }}
+          onDismiss={() => setRadialMenu(null)}
+        />
+      )}
+      {substitutionFlow && (
+        <SubstitutionFlow
+          anchor={substitutionFlow.anchor}
+          shiftEvent={substitutionFlow.shiftEvent}
+          memberNames={allMemberNames}
+          onComplete={async (substitute, type, original) => {
+            const ev = substitutionFlow.shiftEvent
+            const editable = toEditableEvent(ev)
+            const lines: string[] = []
+            if (editable.description) lines.push(editable.description)
+            lines.push(`대체근무자: ${substitute}`)
+            lines.push(`근무종류: ${type}`)
+            lines.push(`원근무자: ${original}`)
+            editable.description = lines.join('\n')
+            setSubstitutionFlow(null)
+            await saveEvent(editable)
+          }}
+          onDismiss={() => setSubstitutionFlow(null)}
+        />
+      )}
       <EventModal
         open={Boolean(editingEvent)}
         value={editingEvent}
@@ -1288,6 +1597,17 @@ export function CalendarPage() {
       />
       <SettingsModal
         open={settingsOpen}
+        shiftType={shiftSettings.shiftType}
+        shiftTeamMode={shiftSettings.shiftTeamMode}
+        dayWorkerCount={shiftSettings.dayWorkerCount}
+        savingShiftSettings={savingShiftSettings}
+        onClose={() => setSettingsOpen(false)}
+        onSetShiftType={setShiftType}
+        onSetShiftTeamMode={setShiftTeamMode}
+        onSetDayWorkerCount={setDayWorkerCount}
+      />
+      <SyncModal
+        open={syncOpen}
         loading={loading}
         syncing={syncing}
         selectingCalendar={selectingCalendar}
@@ -1296,18 +1616,17 @@ export function CalendarPage() {
         calendars={calendars}
         selectedCalendarId={selectedCalendarId}
         selectedCalendarSummary={selectedCalendarSummary}
-        shiftType={shiftSettings.shiftType}
-        shiftTeamMode={shiftSettings.shiftTeamMode}
-        dayWorkerCount={shiftSettings.dayWorkerCount}
-        savingShiftSettings={savingShiftSettings}
-        onClose={() => setSettingsOpen(false)}
+        lastSyncResult={lastSyncResult}
+        outboxCount={outboxCount}
+        outboxJobs={outboxJobs}
+        loadingOutboxJobs={loadingOutboxJobs}
+        onClose={() => setSyncOpen(false)}
+        onRefreshOutboxJobs={refreshOutboxJobs}
+        onCancelOutboxJob={cancelOutboxJob}
         onConnectGoogle={connectGoogle}
         onDisconnectGoogle={disconnectGoogle}
         onSetSyncCalendar={setSyncCalendar}
         onSyncNow={syncNow}
-        onSetShiftType={setShiftType}
-        onSetShiftTeamMode={setShiftTeamMode}
-        onSetDayWorkerCount={setDayWorkerCount}
       />
       </div>
     </div>

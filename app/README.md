@@ -99,6 +99,9 @@ GOOGLE_CALENDAR_ID="primary"
 - Outbox 큐(패치 coalesce, 백오프 재시도)
 - Full/Delta 동기화 + `410` 시 Full 재동기화
 - eventType을 Google extendedProperties로 양방향 동기화
+- 동기화 전용 2열 모달: 좌측(준비 상태/동기화 상태/계정/달력), 우측(작업별 상태)
+- 작업별 상태 카드는 모달 여유 높이를 자동으로 채우고 목록만 내부 스크롤
+- 작업별 상태에서 `QUEUED`/`FAILED` 작업을 즉시 삭제(취소) 가능
 
 ### 한국 공휴일
 - Google 한국 공휴일 캘린더 연동

@@ -1,10 +1,12 @@
 import { contextBridge, ipcRenderer } from 'electron'
 import { IPC_CHANNELS } from '../main/ipc/channels'
 import type {
+  CancelOutboxJobInput,
   CalendarApi,
   CalendarEvent,
   DeleteCalendarEventInput,
   GoogleConnectionStatus,
+  ListOutboxJobsInput,
   ListEventsInput,
   SetSelectedCalendarInput,
   SelectedCalendar,
@@ -21,6 +23,10 @@ const calendarApi: CalendarApi = {
   deleteEvent: (payload: DeleteCalendarEventInput) =>
     ipcRenderer.invoke(IPC_CHANNELS.deleteEvent, payload) as Promise<boolean>,
   getOutboxCount: () => ipcRenderer.invoke(IPC_CHANNELS.getOutboxCount) as Promise<number>,
+  listOutboxJobs: (input?: ListOutboxJobsInput) =>
+    ipcRenderer.invoke(IPC_CHANNELS.listOutboxJobs, input),
+  cancelOutboxJob: (input: CancelOutboxJobInput) =>
+    ipcRenderer.invoke(IPC_CHANNELS.cancelOutboxJob, input),
   syncNow: () => ipcRenderer.invoke(IPC_CHANNELS.syncNow) as Promise<SyncResult>,
   connectGoogle: () =>
     ipcRenderer.invoke(IPC_CHANNELS.connectGoogle) as Promise<GoogleConnectionStatus>,
