@@ -6,6 +6,7 @@ export const IPC_CHANNELS = {
   listOutboxJobs: 'calendar:list-outbox-jobs',
   cancelOutboxJob: 'calendar:cancel-outbox-job',
   syncNow: 'calendar:sync-now',
+  forcePushAll: 'calendar:force-push-all',
   connectGoogle: 'calendar:connect-google',
   disconnectGoogle: 'calendar:disconnect-google',
   getGoogleConnectionStatus: 'calendar:get-google-connection-status',

@@ -25,6 +25,11 @@
     "@fullcalendar/timegrid": "^6.1.20",
     "@prisma/adapter-better-sqlite3": "^7.4.1",
     "@prisma/client": "^7.4.1",
+    "@tsparticles/engine": "^3.9.1",
+    "@tsparticles/preset-snow": "^3.2.0",
+    "@tsparticles/react": "^3.0.0",
+    "@tsparticles/shape-line": "^3.9.1",
+    "@tsparticles/slim": "^3.9.1",
     "better-sqlite3": "^12.6.2",
     "dotenv": "^17.3.1",
     "googleapis": "^171.4.0",
@@ -55,7 +60,6 @@
     "vitest": "^4.0.18"
   },
   "optionalDependencies": {
-    "@rollup/rollup-linux-x64-gnu": "^4.58.0",
     "@rollup/rollup-win32-x64-msvc": "^4.58.0"
   },
   "main": "dist-electron/main.js"

@@ -4,6 +4,7 @@ import type {
   CalendarApi,
   CalendarEvent,
   DayWorkerCount,
+  ForcePushResult,
   GoogleCalendarItem,
   GoogleConnectionStatus,
   OutboxJobItem,
@@ -20,12 +21,17 @@ import { defaultShiftSettings as defaultShiftSettingsValue } from '../../shared/
 import { expandRecurringEvents } from '../../shared/expandRecurrence'
 
 interface CalendarState {
+  allEvents: CalendarEvent[]
   events: CalendarEvent[]
+  renderRangeStartUtc: string
+  renderRangeEndUtc: string
   outboxCount: number
   outboxJobs: OutboxJobItem[]
   loadingOutboxJobs: boolean
   loading: boolean
   syncing: boolean
+  forcePushing: boolean
+  lastForcePushResult: ForcePushResult | null
   googleConnected: boolean
   accountEmail: string | null
   calendars: GoogleCalendarItem[]
@@ -35,12 +41,14 @@ interface CalendarState {
   lastSyncResult: SyncResult | null
   shiftSettings: ShiftSettings
   savingShiftSettings: boolean
+  setEventRenderRange: (rangeStartUtc: string, rangeEndUtc: string) => void
   hydrate: () => Promise<void>
   refreshOutboxJobs: () => Promise<void>
   cancelOutboxJob: (jobId: string) => Promise<boolean>
   saveEvent: (payload: UpsertCalendarEventInput) => Promise<CalendarEvent>
   deleteEvent: (localId: string, sendUpdates?: 'all' | 'none', recurrenceScope?: RecurrenceEditScope) => Promise<void>
   syncNow: () => Promise<void>
+  forcePushAll: () => Promise<void>
   connectGoogle: () => Promise<void>
   disconnectGoogle: () => Promise<void>
   setSyncCalendar: (calendarId: string) => Promise<void>
@@ -124,6 +132,9 @@ const fallbackApi: CalendarApi = {
       outboxRemaining: 0,
     }
   },
+  async forcePushAll() {
+    return { enqueuedJobs: 0, processedJobs: 0, skippedEvents: 0 }
+  },
   async connectGoogle() {
     return fallbackGoogleStatus
   },
@@ -170,7 +181,7 @@ function upsertEventInMemory(events: CalendarEvent[], saved: CalendarEvent): Cal
   return sortByStart(next)
 }
 
-function defaultRange() {
+function defaultRenderRange() {
   const now = DateTime.utc()
   return {
     rangeStartUtc: now.minus({ months: 3 }).toISO() ?? undefined,
@@ -178,13 +189,50 @@ function defaultRange() {
   }
 }
 
+function eventOverlapsRange(event: CalendarEvent, rangeStartUtc: string, rangeEndUtc: string): boolean {
+  const eventStart = Date.parse(event.startAtUtc)
+  const eventEnd = Date.parse(event.endAtUtc)
+  const rangeStart = Date.parse(rangeStartUtc)
+  const rangeEnd = Date.parse(rangeEndUtc)
+  if (
+    Number.isNaN(eventStart)
+    || Number.isNaN(eventEnd)
+    || Number.isNaN(rangeStart)
+    || Number.isNaN(rangeEnd)
+  ) {
+    return true
+  }
+  return eventEnd >= rangeStart && eventStart <= rangeEnd
+}
+
+function expandForRenderRange(events: CalendarEvent[], rangeStartUtc: string, rangeEndUtc: string): CalendarEvent[] {
+  const candidates = events.filter((event) => {
+    if (event.recurrenceRule && !event.recurringEventId) {
+      return true
+    }
+    return eventOverlapsRange(event, rangeStartUtc, rangeEndUtc)
+  })
+
+  const expanded = expandRecurringEvents(candidates, rangeStartUtc, rangeEndUtc)
+  return sortByStart(expanded.filter((event) => eventOverlapsRange(event, rangeStartUtc, rangeEndUtc)))
+}
+
+const initialRenderRange = defaultRenderRange()
+const initialRangeStartUtc = initialRenderRange.rangeStartUtc ?? DateTime.utc().minus({ months: 3 }).toISO()!
+const initialRangeEndUtc = initialRenderRange.rangeEndUtc ?? DateTime.utc().plus({ months: 3 }).toISO()!
+
 export const useCalendarStore = create<CalendarState>((set, get) => ({
+  allEvents: [],
   events: [],
+  renderRangeStartUtc: initialRangeStartUtc,
+  renderRangeEndUtc: initialRangeEndUtc,
   outboxCount: 0,
   outboxJobs: [],
   loadingOutboxJobs: false,
   loading: false,
   syncing: false,
+  forcePushing: false,
+  lastForcePushResult: null,
   googleConnected: false,
   accountEmail: null,
   calendars: [],
@@ -194,13 +242,28 @@ export const useCalendarStore = create<CalendarState>((set, get) => ({
   lastSyncResult: null,
   shiftSettings: cloneShiftSettings(defaultShiftSettingsValue),
   savingShiftSettings: false,
+  setEventRenderRange: (rangeStartUtc, rangeEndUtc) => {
+    const state = get()
+    if (
+      state.renderRangeStartUtc === rangeStartUtc
+      && state.renderRangeEndUtc === rangeEndUtc
+    ) {
+      return
+    }
+    const expanded = expandForRenderRange(state.allEvents, rangeStartUtc, rangeEndUtc)
+    set({
+      renderRangeStartUtc: rangeStartUtc,
+      renderRangeEndUtc: rangeEndUtc,
+      events: expanded,
+    })
+  },
 
   hydrate: async () => {
     const api = getCalendarApi()
     set({ loading: true })
     try {
-      const [events, outboxCount, outboxJobs, googleStatus, selectedCalendar, shiftSettings] = await Promise.all([
-        api.listEvents(defaultRange()),
+      const [allEvents, outboxCount, outboxJobs, googleStatus, selectedCalendar, shiftSettings] = await Promise.all([
+        api.listEvents(),
         api.getOutboxCount(),
         api.listOutboxJobs({ limit: 80, includeCompleted: false }).catch(() => []),
         api.getGoogleConnectionStatus(),
@@ -213,15 +276,12 @@ export const useCalendarStore = create<CalendarState>((set, get) => ({
         calendars = await api.listGoogleCalendars().catch(() => [])
       }
 
-      const { rangeStartUtc, rangeEndUtc } = defaultRange()
-      const expanded = expandRecurringEvents(
-        events,
-        rangeStartUtc ?? DateTime.utc().minus({ months: 3 }).toISO()!,
-        rangeEndUtc ?? DateTime.utc().plus({ months: 3 }).toISO()!,
-      )
+      const state = get()
+      const expanded = expandForRenderRange(allEvents, state.renderRangeStartUtc, state.renderRangeEndUtc)
 
       set({
-        events: sortByStart(expanded),
+        allEvents: sortByStart(allEvents),
+        events: expanded,
         outboxCount,
         outboxJobs,
         googleConnected: googleStatus.connected,
@@ -260,16 +320,22 @@ export const useCalendarStore = create<CalendarState>((set, get) => ({
   saveEvent: async (payload) => {
     const api = getCalendarApi()
     const saved = await api.upsertEvent(payload)
-    set((state) => ({
-      events: upsertEventInMemory(state.events, saved),
-    }))
+    set((state) => {
+      const nextAllEvents = upsertEventInMemory(state.allEvents, saved)
+      return {
+        allEvents: nextAllEvents,
+        events: expandForRenderRange(nextAllEvents, state.renderRangeStartUtc, state.renderRangeEndUtc),
+      }
+    })
 
     void Promise.all([
       api.getOutboxCount(),
       api.listOutboxJobs({ limit: 80, includeCompleted: false }).catch(() => []),
     ])
       .then(([outboxCount, outboxJobs]) => set({ outboxCount, outboxJobs }))
-      .catch(() => {})
+      .catch((error) => {
+        console.error('[CalendarStore] Failed to refresh outbox status:', error)
+      })
 
     const shouldRefreshInBackground =
       payload.recurrenceScope === 'FUTURE'
@@ -277,7 +343,9 @@ export const useCalendarStore = create<CalendarState>((set, get) => ({
       || Boolean(payload.recurringEventId)
 
     if (shouldRefreshInBackground) {
-      void get().hydrate().catch(() => {})
+      void get().hydrate().catch((error) => {
+        console.error('[CalendarStore] Background hydrate failed:', error)
+      })
     }
 
     return saved
@@ -297,12 +365,14 @@ export const useCalendarStore = create<CalendarState>((set, get) => ({
     if (recurrenceScope === 'FUTURE' || recurrenceScope === 'ALL') {
       await get().hydrate()
     } else {
-      const events = get().events.filter((event) => event.localId !== localId)
+      const state = get()
+      const allEvents = state.allEvents.filter((event) => event.localId !== localId)
+      const events = expandForRenderRange(allEvents, state.renderRangeStartUtc, state.renderRangeEndUtc)
       const [outboxCount, outboxJobs] = await Promise.all([
         api.getOutboxCount(),
         api.listOutboxJobs({ limit: 80, includeCompleted: false }).catch(() => []),
       ])
-      set({ events, outboxCount, outboxJobs })
+      set({ allEvents, events, outboxCount, outboxJobs })
     }
   },
 
@@ -319,6 +389,22 @@ export const useCalendarStore = create<CalendarState>((set, get) => ({
       await get().hydrate()
     } finally {
       set({ syncing: false })
+    }
+  },
+
+  forcePushAll: async () => {
+    if (!get().googleConnected || !get().selectedCalendarId) {
+      return
+    }
+
+    const api = getCalendarApi()
+    set({ forcePushing: true })
+    try {
+      const result = await api.forcePushAll()
+      set({ lastForcePushResult: result })
+      await get().hydrate()
+    } finally {
+      set({ forcePushing: false })
     }
   },
 

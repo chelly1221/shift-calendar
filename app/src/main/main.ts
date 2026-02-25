@@ -1,11 +1,19 @@
 import 'dotenv/config'
 import './bootstrapEnv'
+
+// Windows Electron에서 stdout 파이프가 닫힌 상태에서 console.log 호출 시 EPIPE 크래시 방지
+process.on('uncaughtException', (error) => {
+  if ((error as NodeJS.ErrnoException).code === 'EPIPE') return
+  throw error
+})
+
 import { app, BrowserWindow, ipcMain } from 'electron'
 import path from 'node:path'
 import { fileURLToPath } from 'node:url'
 import { ensureSetting } from './db/settingRepository'
 import { IPC_CHANNELS } from './ipc/channels'
 import { registerCalendarIpc } from './ipc/registerCalendarIpc'
+import { prisma } from './db/prisma'
 import { startOutboxWorker } from './sync/outboxWorker'
 import { runSyncNow } from './sync/syncEngine'
 
@@ -26,6 +34,7 @@ process.env.VITE_PUBLIC = VITE_DEV_SERVER_URL
   : RENDERER_DIST
 
 let syncTimer: NodeJS.Timeout | null = null
+let isSyncing = false
 
 interface WindowViewportCorrectionPayload {
   active: boolean
@@ -98,21 +107,6 @@ function toggleWindowMaximize(window: BrowserWindow): void {
 }
 
 function createMainWindow(): BrowserWindow {
-  const platformWindowOptions = process.platform === 'win32'
-    ? {
-        titleBarStyle: 'hidden' as const,
-        titleBarOverlay: false,
-        backgroundMaterial: 'none' as const,
-      }
-    : process.platform === 'linux'
-      ? {
-          titleBarStyle: 'hidden' as const,
-      }
-      : {
-          titleBarStyle: 'hidden' as const,
-          trafficLightPosition: { x: 20, y: 18 },
-        }
-
   const window = new BrowserWindow({
     title: '교대근무 일정관리',
     width: 1440,
@@ -120,7 +114,9 @@ function createMainWindow(): BrowserWindow {
     minWidth: 1080,
     minHeight: 700,
     autoHideMenuBar: true,
-    ...platformWindowOptions,
+    titleBarStyle: 'hidden' as const,
+    titleBarOverlay: false,
+    backgroundMaterial: 'none' as const,
     backgroundColor: '#f8f4ec',
     webPreferences: {
       preload: path.join(__dirname, 'preload.mjs'),
@@ -203,18 +199,18 @@ app.whenReady().then(async () => {
   })
 
   syncTimer = setInterval(() => {
-    void runSyncNow().catch((error) => {
-      console.error('Scheduled sync failed:', error)
-    })
+    if (isSyncing) return
+    isSyncing = true
+    void runSyncNow()
+      .catch((error) => {
+        console.error('Scheduled sync failed:', error)
+      })
+      .finally(() => {
+        isSyncing = false
+      })
   }, 60_000)
 
   createMainWindow()
-
-  app.on('activate', () => {
-    if (BrowserWindow.getAllWindows().length === 0) {
-      createMainWindow()
-    }
-  })
 })
 
 app.on('window-all-closed', () => {
@@ -222,7 +218,11 @@ app.on('window-all-closed', () => {
     clearInterval(syncTimer)
     syncTimer = null
   }
-  if (process.platform !== 'darwin') {
-    app.quit()
-  }
+  app.quit()
+})
+
+app.on('before-quit', () => {
+  void prisma.$disconnect().catch(() => {
+    // Non-fatal: best-effort cleanup
+  })
 })

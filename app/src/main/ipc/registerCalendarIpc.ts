@@ -1,10 +1,20 @@
 import { ipcMain } from 'electron'
 import { splitRRuleForFuture, withoutRRuleEnd } from '../../shared/rrule'
-import { appendFileSync } from 'node:fs'
+import { appendFileSync, statSync, renameSync, unlinkSync } from 'node:fs'
+
+const DEBUG_LOG_PATH = '/tmp/future-split-debug.log'
+const DEBUG_LOG_MAX_BYTES = 10 * 1024 * 1024 // 10 MB
 
 function debugLog(message: string): void {
   try {
-    appendFileSync('/tmp/future-split-debug.log', `[${new Date().toISOString()}] ${message}\n`)
+    try {
+      const size = statSync(DEBUG_LOG_PATH).size
+      if (size >= DEBUG_LOG_MAX_BYTES) {
+        try { unlinkSync(`${DEBUG_LOG_PATH}.1`) } catch { /* ignore */ }
+        renameSync(DEBUG_LOG_PATH, `${DEBUG_LOG_PATH}.1`)
+      }
+    } catch { /* file may not exist yet */ }
+    appendFileSync(DEBUG_LOG_PATH, `[${new Date().toISOString()}] ${message}\n`)
   } catch {
     // ignore
   }
@@ -13,6 +23,7 @@ import {
   cancelOutboxJobInputSchema,
   calendarEventSchema,
   deleteCalendarEventSchema,
+  forcePushResultSchema,
   googleCalendarItemSchema,
   googleConnectionStatusSchema,
   listOutboxJobsInputSchema,
@@ -52,7 +63,7 @@ import {
   isGoogleOAuthConfigured,
 } from '../google/oauthClient'
 import { cancelOutboxJob, enqueueOutboxOperation, getOutboxCount } from '../sync/outboxWorker'
-import { runSyncNow } from '../sync/syncEngine'
+import { forcePushAllToGoogle, runSyncNow } from '../sync/syncEngine'
 import { IPC_CHANNELS } from './channels'
 
 export function registerCalendarIpc(): void {
@@ -65,6 +76,7 @@ export function registerCalendarIpc(): void {
   ipcMain.removeHandler(IPC_CHANNELS.listOutboxJobs)
   ipcMain.removeHandler(IPC_CHANNELS.cancelOutboxJob)
   ipcMain.removeHandler(IPC_CHANNELS.syncNow)
+  ipcMain.removeHandler(IPC_CHANNELS.forcePushAll)
   ipcMain.removeHandler(IPC_CHANNELS.connectGoogle)
   ipcMain.removeHandler(IPC_CHANNELS.disconnectGoogle)
   ipcMain.removeHandler(IPC_CHANNELS.getGoogleConnectionStatus)
@@ -347,14 +359,22 @@ export function registerCalendarIpc(): void {
 
     // Non-recurring or ALL: delete the whole series (or single event)
     if (!hasRecurringContext || recurrenceScope === 'ALL') {
+      const seriesGoogleEventId = existing.recurringEventId ?? existing.googleEventId
+      const masterEvent =
+        recurrenceScope === 'ALL' && existing.recurringEventId
+          ? await prisma.event.findUnique({
+              where: { googleEventId: existing.recurringEventId },
+              select: { localId: true },
+            })
+          : null
+      const targetLocalId = masterEvent?.localId ?? input.localId
       const masterGoogleEventId =
         recurrenceScope === 'ALL' && existing.recurringEventId
           ? existing.recurringEventId
           : existing.googleEventId
-      const removed = await removeCalendarEvent(input.localId)
+      const removed = await removeCalendarEvent(targetLocalId)
       if (removed) {
         // ALL scope: also mark child instances as deleted locally
-        const seriesGoogleEventId = existing.recurringEventId ?? existing.googleEventId
         if (hasRecurringContext && seriesGoogleEventId) {
           await prisma.event.updateMany({
             where: {
@@ -369,7 +389,7 @@ export function registerCalendarIpc(): void {
         }
 
         await enqueueOutboxOperation({
-          eventLocalId: input.localId,
+          eventLocalId: targetLocalId,
           operation: 'DELETE',
           payload: {
             sendUpdates: input.sendUpdates,
@@ -528,6 +548,11 @@ export function registerCalendarIpc(): void {
   ipcMain.handle(IPC_CHANNELS.syncNow, async () => {
     const result = await runSyncNow()
     return syncResultSchema.parse(result)
+  })
+
+  ipcMain.handle(IPC_CHANNELS.forcePushAll, async () => {
+    const result = await forcePushAllToGoogle()
+    return forcePushResultSchema.parse(result)
   })
 
   ipcMain.handle(IPC_CHANNELS.connectGoogle, async () => {

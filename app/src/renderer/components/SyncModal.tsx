@@ -1,6 +1,6 @@
 import { DateTime } from 'luxon'
 import { useEffect, useState } from 'react'
-import type { GoogleCalendarItem, OutboxJobItem, OutboxOperation, OutboxStatus, SyncResult } from '../../shared/calendar'
+import type { ForcePushResult, GoogleCalendarItem, OutboxJobItem, OutboxOperation, OutboxStatus, SyncResult } from '../../shared/calendar'
 
 const OUTBOX_OPERATION_LABELS: Record<OutboxOperation, string> = {
   CREATE: '생성',
@@ -39,6 +39,7 @@ interface SyncModalProps {
   open: boolean
   loading: boolean
   syncing: boolean
+  forcePushing: boolean
   selectingCalendar: boolean
   googleConnected: boolean
   accountEmail: string | null
@@ -46,6 +47,7 @@ interface SyncModalProps {
   selectedCalendarId: string | null
   selectedCalendarSummary: string | null
   lastSyncResult: SyncResult | null
+  lastForcePushResult: ForcePushResult | null
   outboxCount: number
   outboxJobs: OutboxJobItem[]
   loadingOutboxJobs: boolean
@@ -56,12 +58,14 @@ interface SyncModalProps {
   onDisconnectGoogle: () => Promise<void>
   onSetSyncCalendar: (calendarId: string) => Promise<void>
   onSyncNow: () => Promise<void>
+  onForcePushAll: () => Promise<void>
 }
 
 export function SyncModal({
   open,
   loading,
   syncing,
+  forcePushing,
   selectingCalendar,
   googleConnected,
   accountEmail,
@@ -69,6 +73,7 @@ export function SyncModal({
   selectedCalendarId,
   selectedCalendarSummary,
   lastSyncResult,
+  lastForcePushResult,
   outboxCount,
   outboxJobs,
   loadingOutboxJobs,
@@ -79,6 +84,7 @@ export function SyncModal({
   onDisconnectGoogle,
   onSetSyncCalendar,
   onSyncNow,
+  onForcePushAll,
 }: SyncModalProps) {
   const [isOnline, setIsOnline] = useState(() => {
     if (typeof navigator === 'undefined') {
@@ -90,6 +96,7 @@ export function SyncModal({
 
   useEffect(() => {
     if (!open) {
+      setRemovingJobIds(new Set())
       return
     }
 
@@ -132,7 +139,8 @@ export function SyncModal({
     ? selectedCalendarId
     : ''
   const isCalendarSelected = Boolean(selectedCalendarId)
-  const canSyncNow = isOnline && googleConnected && isCalendarSelected && !syncing
+  const canSyncNow = isOnline && googleConnected && isCalendarSelected && !syncing && !forcePushing
+  const canForcePush = isOnline && googleConnected && isCalendarSelected && !syncing && !forcePushing
   const readinessText = !isOnline
     ? '오프라인 상태'
     : !googleConnected
@@ -239,14 +247,45 @@ export function SyncModal({
                     </div>
                   </div>
                 ) : null}
-                <button
-                  type="button"
-                  className="primary-button"
-                  onClick={() => void onSyncNow()}
-                  disabled={!canSyncNow}
-                >
-                  {syncing ? '동기화 중...' : '지금 동기화'}
-                </button>
+                <div className="sync-action-buttons">
+                  <button
+                    type="button"
+                    className="primary-button"
+                    onClick={() => void onSyncNow()}
+                    disabled={!canSyncNow}
+                  >
+                    {syncing ? '동기화 중...' : '지금 동기화'}
+                  </button>
+                  <button
+                    type="button"
+                    className="ghost-button sync-force-push-button"
+                    onClick={() => {
+                      if (window.confirm('로컬 캘린더 기준으로 구글 캘린더를 강제 업데이트합니다.\n이 작업은 되돌릴 수 없습니다. 계속하시겠습니까?')) {
+                        void onForcePushAll()
+                      }
+                    }}
+                    disabled={!canForcePush}
+                  >
+                    {forcePushing ? '강제 푸시 중...' : '로컬 기준 강제 푸시'}
+                  </button>
+                </div>
+                {lastForcePushResult ? (
+                  <div className="sync-detail-grid">
+                    <div className="sync-detail-item">
+                      <span className="sync-detail-label">등록</span>
+                      <span className="sync-detail-value">{lastForcePushResult.enqueuedJobs}건</span>
+                    </div>
+                    <div className="sync-detail-item">
+                      <span className="sync-detail-label">처리</span>
+                      <span className="sync-detail-value">{lastForcePushResult.processedJobs}건</span>
+                    </div>
+                    <div className="sync-detail-item">
+                      <span className="sync-detail-label">건너뜀</span>
+                      <span className="sync-detail-value">{lastForcePushResult.skippedEvents}건</span>
+                    </div>
+                  </div>
+                ) : null}
+                <p className="settings-hint">강제 푸시: 로컬 이벤트를 기준으로 구글 캘린더를 덮어씁니다.</p>
               </section>
 
               <section className="settings-section">

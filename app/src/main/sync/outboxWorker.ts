@@ -1,4 +1,5 @@
 import { OutboxStatus, OutboxOperationType, SyncState, type Prisma } from '@prisma/client'
+import { DateTime } from 'luxon'
 import type { OutboxOperation, SendUpdates } from '../../shared/calendar'
 import { getCalendarEventByLocalId, updateEventSyncState, upsertRemoteEvent } from '../db/eventRepository'
 import { prisma } from '../db/prisma'
@@ -14,16 +15,15 @@ interface OutboxPayload {
 }
 
 const RETRY_DELAYS_MS = [60_000, 5 * 60_000, 15 * 60_000, 60 * 60_000]
+const MAX_ATTEMPTS = 8
 let timer: NodeJS.Timeout | null = null
-let isRunning = false
-let pendingFlushRequested = false
+let isProcessing = false
+let pendingFlush = false
 
-function requestOutboxFlush(): void {
-  if (isRunning) {
-    pendingFlushRequested = true
-    return
-  }
-  void processOutboxNow()
+export function requestOutboxFlush(): void {
+  void processOutboxNow().catch((error) => {
+    console.error('[OutboxWorker] flush failed:', error)
+  })
 }
 
 function toOutboxOperationType(operation: OutboxOperation): OutboxOperationType {
@@ -46,19 +46,18 @@ function mergePayload(current: Prisma.JsonValue, next: OutboxPayload): Prisma.Js
 }
 
 function nextRetryAt(attempts: number): Date {
-  const delay = RETRY_DELAYS_MS[Math.min(attempts - 1, RETRY_DELAYS_MS.length - 1)]
-  return new Date(Date.now() + delay)
+  const baseDelay = RETRY_DELAYS_MS[Math.min(attempts - 1, RETRY_DELAYS_MS.length - 1)]
+  const jitter = Math.floor(Math.random() * baseDelay * 0.2) // 0-20% jitter
+  return new Date(Date.now() + baseDelay + jitter)
 }
 
-function isGoogleApi410(error: unknown): boolean {
-  const candidate = error as {
-    code?: number
-    status?: number
-    response?: {
-      status?: number
-    }
-  }
-  return candidate.code === 410 || candidate.status === 410 || candidate.response?.status === 410
+function classifyGoogleError(error: unknown): 'TRANSIENT' | 'PERMANENT' | 'RATE_LIMITED' {
+  const candidate = error as { code?: number; status?: number; response?: { status?: number } }
+  const code = candidate.code ?? candidate.status ?? candidate.response?.status
+  if (code === 429) return 'RATE_LIMITED'
+  if (code === 401 || code === 403 || code === 404) return 'PERMANENT'
+  if (code === 410 || code === 408 || code === 503 || code === 500) return 'TRANSIENT'
+  return 'TRANSIENT'
 }
 
 async function findNextDueJob() {
@@ -85,7 +84,10 @@ async function findNextDueJob() {
   })
 }
 
-async function cancelJob(jobId: string, reason: string): Promise<void> {
+async function cancelJob(jobId: string, reason: string, visited: Set<string> = new Set()): Promise<void> {
+  if (visited.has(jobId)) return
+  visited.add(jobId)
+
   const currentJob = await prisma.outboxJob.findUnique({
     where: { id: jobId },
     select: { eventLocalId: true },
@@ -117,25 +119,11 @@ async function cancelJob(jobId: string, reason: string): Promise<void> {
     },
   })
 
-  await prisma.outboxJob.updateMany({
-    where: {
-      dependsOnOutboxId: jobId,
-      status: {
-        in: [OutboxStatus.QUEUED, OutboxStatus.FAILED, OutboxStatus.RUNNING],
-      },
-    },
-    data: {
-      status: OutboxStatus.CANCELLED,
-      lastError: `Cancelled: dependency ${jobId} was cancelled.`,
-    },
-  })
-
   for (const dependent of dependentJobs) {
-    if (!dependent.eventLocalId) {
-      continue
+    if (dependent.eventLocalId) {
+      affectedEventLocalIds.add(dependent.eventLocalId)
     }
-    affectedEventLocalIds.add(dependent.eventLocalId)
-    if (dependent.operation === OutboxOperationType.CREATE) {
+    if (dependent.operation === OutboxOperationType.CREATE && dependent.eventLocalId) {
       await prisma.event.updateMany({
         where: { localId: dependent.eventLocalId },
         data: {
@@ -143,14 +131,15 @@ async function cancelJob(jobId: string, reason: string): Promise<void> {
           syncState: SyncState.CLEAN,
         },
       })
-      continue
+    } else if (dependent.eventLocalId) {
+      await prisma.event.updateMany({
+        where: { localId: dependent.eventLocalId },
+        data: {
+          syncState: SyncState.ERROR,
+        },
+      })
     }
-    await prisma.event.updateMany({
-      where: { localId: dependent.eventLocalId },
-      data: {
-        syncState: SyncState.ERROR,
-      },
-    })
+    await cancelJob(dependent.id, `Cancelled: dependency ${jobId} was cancelled.`, visited)
   }
 
   for (const eventLocalId of affectedEventLocalIds) {
@@ -192,9 +181,9 @@ async function processJob(jobId: string): Promise<boolean> {
   if (remoteEventId && operation !== 'CREATE') {
     const remoteSnapshot = await google.fetchRemoteEvent(remoteEventId)
     if (remoteSnapshot?.googleUpdatedAtUtc && localEvent) {
-      const remoteMs = Date.parse(remoteSnapshot.googleUpdatedAtUtc)
-      const localMs = Date.parse(localEvent.localEditedAtUtc)
-      if (Number.isFinite(remoteMs) && Number.isFinite(localMs) && remoteMs >= localMs) {
+      const remoteDt = DateTime.fromISO(remoteSnapshot.googleUpdatedAtUtc, { zone: 'utc' })
+      const localDt = DateTime.fromISO(localEvent.localEditedAtUtc, { zone: 'utc' })
+      if (remoteDt.isValid && localDt.isValid && remoteDt.toMillis() >= localDt.toMillis()) {
         await upsertRemoteEvent(remoteSnapshot)
         await cancelJob(job.id, 'Cancelled: remote version is newer or equal.')
         return true
@@ -205,9 +194,12 @@ async function processJob(jobId: string): Promise<boolean> {
   const pushResult = await google.pushLocalChange(operation, localEvent, payload)
 
   if (job.eventLocalId) {
+    const shouldAdoptGoogleEventId =
+      Boolean(pushResult.googleEventId)
+      && !localEvent?.googleEventId
     await updateEventSyncState(job.eventLocalId, {
       syncState: SyncState.CLEAN,
-      googleEventId: pushResult.googleEventId ?? undefined,
+      googleEventId: shouldAdoptGoogleEventId ? (pushResult.googleEventId ?? undefined) : undefined,
       googleUpdatedAtUtc: pushResult.googleUpdatedAtUtc ?? undefined,
     })
   }
@@ -236,7 +228,7 @@ export async function enqueueOutboxOperation(input: {
         eventLocalId: input.eventLocalId,
         operation: OutboxOperationType.PATCH,
         status: {
-          in: [OutboxStatus.QUEUED, OutboxStatus.FAILED],
+          in: [OutboxStatus.QUEUED, OutboxStatus.FAILED, OutboxStatus.RUNNING],
         },
       },
       orderBy: { createdAt: 'asc' },
@@ -304,77 +296,106 @@ export async function cancelOutboxJob(jobId: string): Promise<boolean> {
 }
 
 export async function processOutboxNow(): Promise<number> {
+  if (isProcessing) {
+    pendingFlush = true
+    return 0
+  }
+  isProcessing = true
+  try {
+    let total = 0
+    do {
+      pendingFlush = false
+      total += await doProcessOutbox()
+    } while (pendingFlush)
+    return total
+  } finally {
+    isProcessing = false
+  }
+}
+
+async function doProcessOutbox(): Promise<number> {
   const selectedCalendar = await getSelectedCalendar()
   if (!selectedCalendar.selectedCalendarId) {
     return 0
   }
 
-  if (isRunning) {
-    pendingFlushRequested = true
-    return 0
-  }
-  isRunning = true
+  // Recover jobs stuck in RUNNING state for more than 5 minutes
+  const RUNNING_TIMEOUT_MS = 5 * 60 * 1000
+  await prisma.outboxJob.updateMany({
+    where: {
+      status: OutboxStatus.RUNNING,
+      updatedAt: { lt: new Date(Date.now() - RUNNING_TIMEOUT_MS) },
+    },
+    data: {
+      status: OutboxStatus.FAILED,
+      lastError: 'Recovered: job was stuck in RUNNING state.',
+      attempts: { increment: 1 },
+    },
+  })
 
   let processedCount = 0
-  try {
-    // Process all jobs due now. When a job fails, stop this cycle and wait for backoff window.
-    for (;;) {
-      const next = await findNextDueJob()
-      if (!next) {
-        break
+
+  // Process all jobs due now.
+  for (;;) {
+    const next = await findNextDueJob()
+    if (!next) {
+      break
+    }
+
+    await prisma.outboxJob.update({
+      where: { id: next.id },
+      data: {
+        status: OutboxStatus.RUNNING,
+      },
+    })
+
+    try {
+      const processed = await processJob(next.id)
+      if (processed) {
+        processedCount += 1
+      }
+    } catch (error) {
+      const refreshed = await prisma.outboxJob.findUnique({
+        where: { id: next.id },
+        select: { attempts: true, eventLocalId: true },
+      })
+      const attempts = (refreshed?.attempts ?? next.attempts) + 1
+      const errorMsg =
+        error instanceof Error ? error.message : 'Outbox processing failed with unknown error.'
+      const errorKind = classifyGoogleError(error)
+
+      if (errorKind === 'PERMANENT' || attempts >= MAX_ATTEMPTS) {
+        const reason = errorKind === 'PERMANENT'
+          ? `Permanently failed (${errorKind}): ${errorMsg}`
+          : `Permanently failed after ${MAX_ATTEMPTS} attempts: ${errorMsg}`
+        await cancelJob(next.id, reason)
+        continue
       }
 
+      const retryAt = nextRetryAt(attempts)
       await prisma.outboxJob.update({
         where: { id: next.id },
         data: {
-          status: OutboxStatus.RUNNING,
+          status: OutboxStatus.FAILED,
+          attempts,
+          nextRetryAtUtc: retryAt,
+          lastError: errorMsg,
         },
       })
 
-      try {
-        const processed = await processJob(next.id)
-        if (processed) {
-          processedCount += 1
-        }
-      } catch (error) {
-        const refreshed = await prisma.outboxJob.findUnique({
-          where: { id: next.id },
-          select: { attempts: true, eventLocalId: true },
+      if (refreshed?.eventLocalId) {
+        await updateEventSyncState(refreshed.eventLocalId, {
+          syncState: SyncState.ERROR,
         })
-        const attempts = (refreshed?.attempts ?? next.attempts) + 1
-        const retryAt = nextRetryAt(attempts)
-        await prisma.outboxJob.update({
-          where: { id: next.id },
-          data: {
-            status: OutboxStatus.FAILED,
-            attempts,
-            nextRetryAtUtc: retryAt,
-            lastError:
-              error instanceof Error ? error.message : 'Outbox processing failed with unknown error.',
-          },
-        })
+      }
 
-        if (refreshed?.eventLocalId) {
-          await updateEventSyncState(refreshed.eventLocalId, {
-            syncState: SyncState.ERROR,
-          })
-        }
-
-        if (isGoogleApi410(error)) {
-          // 410 is sync-token related; keep retries but stop immediate burst.
-          break
-        }
-
+      if (errorKind === 'RATE_LIMITED') {
+        // Stop processing entirely when rate-limited.
         break
       }
-    }
-  } finally {
-    isRunning = false
-  }
 
-  if (pendingFlushRequested) {
-    pendingFlushRequested = false
-    void processOutboxNow()
+      // TRANSIENT: continue to next job
+    }
   }
 
   return processedCount
@@ -389,4 +410,11 @@ export function startOutboxWorker(): void {
   timer = setInterval(() => {
     void processOutboxNow()
   }, 60_000)
+}
+
+export function stopOutboxWorker(): void {
+  if (timer) {
+    clearInterval(timer)
+    timer = null
+  }
 }

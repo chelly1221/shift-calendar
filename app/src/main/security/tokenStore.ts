@@ -34,8 +34,10 @@ async function readFallbackTokenStore(): Promise<FallbackTokenStore> {
 }
 
 async function writeFallbackTokenStore(payload: FallbackTokenStore): Promise<void> {
-  await fs.mkdir(path.dirname(FALLBACK_STORE_PATH), { recursive: true })
+  await fs.mkdir(path.dirname(FALLBACK_STORE_PATH), { recursive: true, mode: 0o700 })
   await fs.writeFile(FALLBACK_STORE_PATH, JSON.stringify(payload), 'utf8')
+  // chmod is a no-op on Windows; best-effort for NTFS ACL awareness
+  await fs.chmod(FALLBACK_STORE_PATH, 0o600).catch(() => {})
 }
 
 export async function saveRefreshToken(refreshToken: string): Promise<void> {

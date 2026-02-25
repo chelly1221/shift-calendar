@@ -79,6 +79,153 @@ body {
   will-change: transform, width, height;
 }
 
+.weather-overlay {
+  position: fixed;
+  inset: 0;
+  overflow: hidden;
+  pointer-events: none;
+  z-index: 24;
+}
+
+.weather-overlay-rain {
+  background: transparent;
+}
+
+.weather-overlay-snow {
+  background: transparent;
+}
+
+.weather-rain {
+  position: absolute;
+  left: 0;
+  width: 100%;
+  height: 100%;
+  pointer-events: none;
+}
+
+.weather-rain-front-row {
+  z-index: 2;
+}
+
+.weather-rain-back-row {
+  z-index: 1;
+  bottom: 60px;
+  opacity: 0.5;
+}
+
+.weather-rain-drop {
+  position: absolute;
+  bottom: 100%;
+  width: 15px;
+  height: 120px;
+  pointer-events: none;
+  animation-name: weather-rain-drop;
+  animation-timing-function: linear;
+  animation-iteration-count: infinite;
+}
+
+.weather-rain-stem {
+  width: 2px;
+  height: 60%;
+  margin-left: 7px;
+  background: linear-gradient(
+    to bottom,
+    rgba(79, 195, 247, 0) 0%,
+    rgba(129, 212, 250, 0.86) 66%,
+    rgba(179, 229, 252, 0.98) 100%
+  );
+  animation-name: weather-rain-stem;
+  animation-timing-function: linear;
+  animation-iteration-count: infinite;
+}
+
+.weather-rain-splat {
+  width: 15px;
+  height: 10px;
+  border-top: 2px dotted rgba(129, 212, 250, 0.95);
+  border-radius: 50%;
+  opacity: 1;
+  transform: scale(0);
+  animation-name: weather-rain-splat;
+  animation-timing-function: linear;
+  animation-iteration-count: infinite;
+}
+
+.weather-overlay-canvas {
+  position: absolute;
+  inset: 0;
+  width: 100%;
+  height: 100%;
+}
+
+.weather-overlay-canvas > canvas {
+  width: 100% !important;
+  height: 100% !important;
+}
+
+.weather-overlay-snow .weather-overlay-canvas {
+  filter: saturate(138%) contrast(130%) brightness(114%);
+}
+
+@keyframes weather-rain-drop {
+  0% {
+    transform: translate(0, 0);
+  }
+
+  75% {
+    transform: translate(0, 84vh);
+  }
+
+  100% {
+    transform: translate(0, 84vh);
+  }
+}
+
+@keyframes weather-rain-stem {
+  0% {
+    opacity: 1;
+  }
+
+  65% {
+    opacity: 1;
+  }
+
+  75% {
+    opacity: 0;
+  }
+
+  100% {
+    opacity: 0;
+  }
+}
+
+@keyframes weather-rain-splat {
+  0% {
+    opacity: 0;
+    transform: scale(0);
+  }
+
+  70% {
+    opacity: 0;
+    transform: scale(0);
+  }
+
+  80% {
+    opacity: 1;
+    transform: scale(1);
+  }
+
+  90% {
+    opacity: 0.5;
+    transform: scale(1.3);
+  }
+
+  100% {
+    opacity: 0;
+    transform: scale(1.5);
+  }
+}
+
 /* ── Custom Titlebar ── */
 .titlebar {
   position: absolute;
@@ -440,6 +587,54 @@ body {
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
+  cursor: pointer;
+  border-radius: var(--radius-sm);
+  padding: 1px 4px;
+  margin: -1px -4px;
+  transition: background 0.15s;
+}
+
+.today-shift-members:hover {
+  background: var(--line);
+}
+
+.today-shift-members.is-overridden {
+  color: var(--accent);
+}
+
+.today-shift-members-input {
+  font-family: var(--font-base);
+  font-size: 22px;
+  font-weight: 600;
+  line-height: 24px;
+  color: var(--ink-900);
+  background: var(--surface);
+  border: 1.5px solid var(--accent);
+  border-radius: var(--radius-sm);
+  padding: 1px 4px;
+  margin: -1px -4px;
+  outline: none;
+  max-width: 220px;
+  width: 100%;
+  min-width: 0;
+}
+
+.today-shift-override-reset {
+  flex: 0 0 auto;
+  background: none;
+  border: none;
+  color: var(--ink-500);
+  font-size: 14px;
+  cursor: pointer;
+  padding: 0 2px;
+  line-height: 1;
+  opacity: 0.6;
+  transition: opacity 0.15s, color 0.15s;
+}
+
+.today-shift-override-reset:hover {
+  opacity: 1;
+  color: var(--danger);
 }
 
 .today-list {
@@ -979,6 +1174,12 @@ body {
   background: rgba(0, 0, 0, 0.03);
 }
 
+.ghost-button.is-active {
+  background: var(--accent);
+  border-color: var(--accent);
+  color: #fff;
+}
+
 .danger-button {
   background: var(--danger-tint);
   color: var(--danger);
@@ -1128,6 +1329,66 @@ body {
   font-size: 12px;
 }
 
+.settings-inline-actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+}
+
+.shift-badge-inline-editor {
+  position: fixed;
+  z-index: 52;
+  width: 304px;
+  padding: 12px;
+  border-radius: 12px;
+  border: 1px solid var(--line-strong);
+  background: var(--surface-raised);
+  box-shadow: 0 16px 36px rgba(12, 16, 28, 0.2);
+  display: grid;
+  gap: 8px;
+}
+
+.shift-badge-inline-title {
+  margin: 0;
+  font-size: 14px;
+  font-weight: 700;
+  color: var(--ink-900);
+}
+
+.shift-badge-inline-hint {
+  margin: 0;
+  font-size: 12px;
+  color: var(--ink-500);
+}
+
+.shift-badge-inline-field {
+  display: grid;
+  gap: 4px;
+}
+
+.shift-badge-inline-field span {
+  font-size: 12px;
+  font-weight: 600;
+  color: var(--ink-600);
+}
+
+.shift-badge-inline-field input,
+.shift-badge-inline-field select {
+  height: 34px;
+  border-radius: 8px;
+  border: 1px solid var(--line-strong);
+  background: var(--surface);
+  padding: 0 10px;
+  color: var(--ink-900);
+  font-size: 13px;
+}
+
+.shift-badge-inline-actions {
+  display: flex;
+  justify-content: flex-end;
+  gap: 6px;
+}
+
 .settings-calendar-control {
   min-width: 0;
   width: 100%;
@@ -1163,6 +1424,21 @@ body {
 
 .sync-detail-value.is-pending {
   color: var(--orange, #e67700);
+}
+
+.sync-action-buttons {
+  display: flex;
+  gap: 8px;
+  align-items: center;
+}
+
+.sync-force-push-button {
+  color: var(--orange, #e67700);
+  border-color: var(--orange, #e67700);
+}
+
+.sync-force-push-button:hover:not(:disabled) {
+  background: rgba(230, 119, 0, 0.08);
 }
 
 .sync-jobs-header {
@@ -1729,6 +2005,7 @@ textarea {
 
 .fc .fc-daygrid-day-number {
   display: flex;
+  position: relative;
   align-items: baseline;
   justify-content: flex-start;
   width: 100%;
@@ -1737,9 +2014,19 @@ textarea {
   font-size: 22px;
   font-weight: 600;
   gap: 6px;
+  overflow: visible;
 }
 
 .fc .fc-day-number-text {
+}
+
+.fc .fc-day-meta-row {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  min-width: 0;
+  max-width: 100%;
+  flex: 1 1 auto;
 }
 
 .fc .fc-day-today .fc-day-number-text {
@@ -1758,14 +2045,56 @@ textarea {
 
 .fc .fc-day-shift-inline {
   max-width: calc(100% - 28px);
+  min-width: 0;
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  background: transparent;
+  color: #111;
+  font-size: 22px;
+  font-weight: 500;
+  line-height: 1.1;
+}
+
+.fc .fc-day-shift-label {
+  flex: 0 0 auto;
+  max-width: 100%;
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
-  background: transparent;
-  color: #111;
-  font-size: inherit;
-  font-weight: 500;
-  line-height: 1.1;
+}
+
+.fc .fc-day-shift-badges {
+  flex: 1 1 0;
+  min-width: 0;
+  max-width: 100%;
+  display: flex;
+  flex-wrap: wrap;
+  gap: 2px 4px;
+  align-items: center;
+  padding-top: 5px;
+  max-height: 35px;
+  overflow: hidden;
+}
+
+.fc .fc-day-shift-badge {
+  display: inline-flex;
+  position: relative;
+  top: -5px;
+  align-items: center;
+  padding: 1px 7px;
+  border-radius: 999px;
+  background: rgba(0, 110, 220, 0.12);
+  color: #0a4d97;
+  font-size: 12px;
+  font-weight: 700;
+  letter-spacing: -0.01em;
+  white-space: nowrap;
+}
+
+.fc .fc-day-shift-badge.is-replacement {
+  background: rgba(188, 33, 90, 0.14);
+  color: #9a1146;
 }
 
 .fc .fc-day-holiday-pill {
@@ -1781,6 +2110,18 @@ textarea {
   overflow: hidden;
   text-overflow: ellipsis;
   max-width: 50%;
+}
+
+.fc .fc-day-holiday-pill.is-under-day-number {
+  position: absolute;
+  left: 6px;
+  top: 31px;
+  margin-left: 0;
+  margin-top: 0;
+  max-width: calc(100% - 12px);
+  width: fit-content;
+  z-index: 2;
+  pointer-events: none;
 }
 
 .fc .fc-col-header-cell-cushion {

@@ -10,6 +10,13 @@ function defaultSyncWindow() {
   }
 }
 
+function unboundedSyncWindow() {
+  return {
+    syncWindowStartUtc: DateTime.utc(1900, 1, 1).startOf('day').toJSDate(),
+    syncWindowEndUtc: DateTime.utc(9999, 12, 31).endOf('day').toJSDate(),
+  }
+}
+
 const DEFAULT_SHIFT_SETTINGS: ShiftSettings = {
   shiftType: 'DAY_NIGHT_OFF_OFF',
   shiftTeamMode: 'PAIR',
@@ -165,6 +172,18 @@ export async function setSyncToken(syncToken: string | null): Promise<void> {
   })
 }
 
+export async function markSyncWindowUnbounded(): Promise<void> {
+  await ensureSetting()
+  const unbounded = unboundedSyncWindow()
+  await prisma.setting.update({
+    where: { id: 1 },
+    data: {
+      syncWindowStartUtc: unbounded.syncWindowStartUtc,
+      syncWindowEndUtc: unbounded.syncWindowEndUtc,
+    },
+  })
+}
+
 export async function setAccountEmail(accountEmail: string | null): Promise<void> {
   await prisma.setting.update({
     where: { id: 1 },
@@ -249,6 +268,16 @@ export async function setSelectedCalendar(input: {
       },
     })
     return
+  }
+
+  const pendingCount = await prisma.outboxJob.count({
+    where: {
+      status: { in: ['QUEUED', 'FAILED', 'RUNNING'] },
+    },
+  })
+
+  if (pendingCount > 0) {
+    console.warn(`[Settings] Switching calendar with ${pendingCount} pending outbox jobs - these will be discarded`)
   }
 
   await prisma.$transaction([

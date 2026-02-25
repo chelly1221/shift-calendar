@@ -137,6 +137,8 @@ export function RadialMenu({ anchor, dateStr, memberNames, onComplete, onDismiss
   const [recurrence, setRecurrence] = useState<RecurrenceValue>(() => parseRRule(null))
   const [selectedTargets, setSelectedTargets] = useState<Set<string>>(new Set())
   const [selectedVacationType, setSelectedVacationType] = useState<string | null>(null)
+  const [customVacationType, setCustomVacationType] = useState('')
+  const [isCustomVacation, setIsCustomVacation] = useState(false)
   const [vacationTimeStart, setVacationTimeStart] = useState('')
   const [vacationTimeEnd, setVacationTimeEnd] = useState('')
   const [draftTitle, setDraftTitle] = useState('')
@@ -146,6 +148,7 @@ export function RadialMenu({ anchor, dateStr, memberNames, onComplete, onDismiss
   const containerRef = useRef<HTMLDivElement>(null)
   const closingTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null)
   const titleInputRef = useRef<HTMLInputElement>(null)
+  const customVacationInputRef = useRef<HTMLInputElement>(null)
 
   const pos = clampPosition(anchor)
 
@@ -250,6 +253,13 @@ export function RadialMenu({ anchor, dateStr, memberNames, onComplete, onDismiss
     }
   }, [phase])
 
+  // Auto-focus custom vacation type input
+  useEffect(() => {
+    if (isCustomVacation && phase === 'VACATION_TYPE') {
+      requestAnimationFrame(() => customVacationInputRef.current?.focus())
+    }
+  }, [isCustomVacation, phase])
+
   // Keep corner-based positioning even when flow size changes
   useLayoutEffect(() => {
     if (phase === 'CLOSING') return
@@ -310,12 +320,25 @@ export function RadialMenu({ anchor, dateStr, memberNames, onComplete, onDismiss
 
   const handleVacationTypeSelect = (vType: string) => {
     setSelectedVacationType(vType)
+    setIsCustomVacation(false)
     if (vType === '시간차') {
       setDraftStartDate(dateStr)
       setDraftEndDate(dateStr)
       setPhase('VACATION_TIME')
       return
     }
+    setPhase('DATE_RANGE')
+  }
+
+  const handleCustomVacationToggle = () => {
+    setIsCustomVacation(true)
+    setSelectedVacationType(null)
+  }
+
+  const handleCustomVacationConfirm = () => {
+    const trimmed = customVacationType.trim()
+    if (!trimmed) return
+    setSelectedVacationType(trimmed)
     setPhase('DATE_RANGE')
   }
 
@@ -437,14 +460,36 @@ export function RadialMenu({ anchor, dateStr, memberNames, onComplete, onDismiss
             {phase === 'VACATION_TYPE' && (
               <>
                 <div className="qmenu-flow-header">
-                  <button type="button" className="qmenu-back" onClick={() => setPhase('VACATION_TARGETS')}>&lsaquo;</button>
+                  <button type="button" className="qmenu-back" onClick={() => { setIsCustomVacation(false); setCustomVacationType(''); setPhase('VACATION_TARGETS') }}>&lsaquo;</button>
                   <span>휴가 종류</span>
                 </div>
                 <div className="qmenu-pill-grid">
                   {VACATION_TYPES.map((vType) => (
-                    <button key={vType} type="button" className={selectedVacationType === vType ? 'qmenu-pill is-selected' : 'qmenu-pill'} onClick={() => handleVacationTypeSelect(vType)}>{vType}</button>
+                    <button key={vType} type="button" className={!isCustomVacation && selectedVacationType === vType ? 'qmenu-pill is-selected' : 'qmenu-pill'} onClick={() => handleVacationTypeSelect(vType)}>{vType}</button>
                   ))}
+                  <button type="button" className={isCustomVacation ? 'qmenu-pill is-selected' : 'qmenu-pill'} onClick={handleCustomVacationToggle}>기타</button>
                 </div>
+                {isCustomVacation && (
+                  <>
+                    <input
+                      ref={customVacationInputRef}
+                      type="text"
+                      className="qmenu-input"
+                      value={customVacationType}
+                      onChange={(e) => setCustomVacationType(e.target.value)}
+                      placeholder="휴가 종류 입력"
+                      onKeyDown={(e) => {
+                        if (e.key === 'Enter' && customVacationType.trim()) {
+                          e.preventDefault()
+                          handleCustomVacationConfirm()
+                        }
+                      }}
+                    />
+                    <div className="qmenu-actions">
+                      <button type="button" className="qmenu-action-btn primary" disabled={!customVacationType.trim()} onClick={handleCustomVacationConfirm}>다음</button>
+                    </div>
+                  </>
+                )}
               </>
             )}
 

@@ -112,6 +112,13 @@ export const syncResultSchema = z.object({
 })
 export type SyncResult = z.infer<typeof syncResultSchema>
 
+export const forcePushResultSchema = z.object({
+  enqueuedJobs: z.number().int().min(0),
+  processedJobs: z.number().int().min(0),
+  skippedEvents: z.number().int().min(0),
+})
+export type ForcePushResult = z.infer<typeof forcePushResultSchema>
+
 export const googleConnectionStatusSchema = z.object({
   connected: z.boolean(),
   accountEmail: z.string().email().nullable(),
@@ -188,6 +195,7 @@ export interface CalendarApi {
   listOutboxJobs: (input?: ListOutboxJobsInput) => Promise<OutboxJobItem[]>
   cancelOutboxJob: (input: CancelOutboxJobInput) => Promise<boolean>
   syncNow: () => Promise<SyncResult>
+  forcePushAll: () => Promise<ForcePushResult>
   connectGoogle: () => Promise<GoogleConnectionStatus>
   disconnectGoogle: () => Promise<GoogleConnectionStatus>
   getGoogleConnectionStatus: () => Promise<GoogleConnectionStatus>

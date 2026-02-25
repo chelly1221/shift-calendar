@@ -1,4 +1,4 @@
-import { Prisma, SyncState } from '@prisma/client'
+import { OutboxOperationType, OutboxStatus, Prisma, SyncState } from '@prisma/client'
 import type { CalendarEvent, ListEventsInput, UpsertCalendarEventInput } from '../../shared/calendar'
 import { splitRRuleForFuture, withoutRRuleEnd } from '../../shared/rrule'
 import { prisma } from './prisma'
@@ -160,10 +160,13 @@ function buildRangeFilter(input?: ListEventsInput): Prisma.EventWhereInput {
   return where
 }
 
+const LIST_EVENTS_MAX = 10_000
+
 export async function listCalendarEvents(input?: ListEventsInput): Promise<CalendarEvent[]> {
   const events = await prisma.event.findMany({
     where: buildRangeFilter(input),
     orderBy: { startAtUtc: 'asc' },
+    take: LIST_EVENTS_MAX,
   })
   return events.map(toCalendarEvent)
 }
@@ -348,6 +351,31 @@ export async function applyFutureSplitForDelete(
       },
     })
 
+    // Create DELETE outbox jobs for each deleted instance that has a Google ID
+    const deletedInstances = await tx.event.findMany({
+      where: {
+        recurringEventId: source.googleEventId,
+        startAtUtc: { gte: splitStart },
+        isDeleted: true,
+        googleEventId: { not: null },
+      },
+      select: { localId: true, googleEventId: true },
+    })
+
+    for (const instance of deletedInstances) {
+      if (instance.googleEventId) {
+        await tx.outboxJob.create({
+          data: {
+            eventLocalId: instance.localId,
+            operation: OutboxOperationType.DELETE,
+            payloadJson: { googleEventId: instance.googleEventId },
+            status: OutboxStatus.QUEUED,
+            nextRetryAtUtc: now,
+          },
+        })
+      }
+    }
+
     return { splitSourceEvent: toCalendarEvent(splitSourceEvent) }
   })
 
@@ -421,7 +449,10 @@ export async function upsertRemoteEvent(snapshot: RemoteEventSnapshot): Promise<
     }
   }
 
-  const preservedEventType = existing?.eventType ?? normalizeEventType(snapshot.eventType)
+  const snapshotType = normalizeEventType(snapshot.eventType)
+  const preservedEventType = (existing?.eventType && existing.eventType !== '일반')
+    ? existing.eventType
+    : snapshotType
 
   const baseData = {
     summary: snapshot.summary,
@@ -448,7 +479,7 @@ export async function upsertRemoteEvent(snapshot: RemoteEventSnapshot): Promise<
     where: { googleEventId: snapshot.googleEventId },
     create: {
       googleEventId: snapshot.googleEventId,
-      eventType: normalizeEventType(snapshot.eventType),
+      eventType: snapshotType,
       ...baseData,
     },
     update: {
@@ -458,10 +489,87 @@ export async function upsertRemoteEvent(snapshot: RemoteEventSnapshot): Promise<
   })
 }
 
+const UPSERT_BATCH_SIZE = 50
+
 export async function upsertRemoteEvents(snapshots: RemoteEventSnapshot[]): Promise<void> {
-  for (const snapshot of snapshots) {
-    await upsertRemoteEvent(snapshot)
+  for (let i = 0; i < snapshots.length; i += UPSERT_BATCH_SIZE) {
+    const batch = snapshots.slice(i, i + UPSERT_BATCH_SIZE)
+    await prisma.$transaction(async (tx) => {
+      for (const snapshot of batch) {
+        await upsertRemoteEventInTx(tx, snapshot)
+      }
+    })
   }
+}
+
+type TxClient = Parameters<Parameters<typeof prisma.$transaction>[0]>[0]
+
+async function upsertRemoteEventInTx(tx: TxClient, snapshot: RemoteEventSnapshot): Promise<void> {
+  if (snapshot.isDeleted) {
+    await tx.event.updateMany({
+      where: { googleEventId: snapshot.googleEventId },
+      data: {
+        isDeleted: true,
+        syncState: SyncState.CLEAN,
+        googleUpdatedAtUtc: snapshot.googleUpdatedAtUtc ? normalizeDate(snapshot.googleUpdatedAtUtc) : undefined,
+      },
+    })
+    return
+  }
+
+  const googleUpdatedAt = normalizeDate(snapshot.googleUpdatedAtUtc)
+
+  const existing = await tx.event.findUnique({
+    where: { googleEventId: snapshot.googleEventId },
+    select: { eventType: true, syncState: true, isDeleted: true, localEditedAtUtc: true },
+  })
+
+  if (existing?.syncState === SyncState.PENDING) {
+    const remoteMs = googleUpdatedAt.getTime()
+    const localMs = existing.localEditedAtUtc.getTime()
+    if (localMs > remoteMs) {
+      return
+    }
+  }
+
+  const snapshotType = normalizeEventType(snapshot.eventType)
+  const preservedEventType = (existing?.eventType && existing.eventType !== '일반')
+    ? existing.eventType
+    : snapshotType
+
+  const baseData = {
+    summary: snapshot.summary,
+    description: snapshot.description || null,
+    location: snapshot.location || null,
+    startAtUtc: normalizeDate(snapshot.startAtUtc),
+    endAtUtc: normalizeDate(snapshot.endAtUtc),
+    timeZone: snapshot.timeZone,
+    recurrenceJson: toRecurrenceJson(snapshot.recurrenceRule),
+    recurringEventId: snapshot.recurringEventId,
+    originalStartTimeUtc: snapshot.originalStartTimeUtc
+      ? normalizeDate(snapshot.originalStartTimeUtc)
+      : null,
+    attendeesJson: toAttendeesJson(snapshot.attendees),
+    organizerEmail: snapshot.organizerEmail,
+    hangoutLink: snapshot.hangoutLink,
+    googleUpdatedAtUtc: googleUpdatedAt,
+    localEditedAtUtc: googleUpdatedAt,
+    syncState: SyncState.CLEAN,
+    isDeleted: false,
+  }
+
+  await tx.event.upsert({
+    where: { googleEventId: snapshot.googleEventId },
+    create: {
+      googleEventId: snapshot.googleEventId,
+      eventType: snapshotType,
+      ...baseData,
+    },
+    update: {
+      eventType: preservedEventType,
+      ...baseData,
+    },
+  })
 }
 
 export async function applyEventTypeToRecurringSeries(

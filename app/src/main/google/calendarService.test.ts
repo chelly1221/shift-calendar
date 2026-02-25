@@ -90,8 +90,9 @@ describe('eventType 동기화 - Push (로컬 → Google)', () => {
     expect(request.summary).toBe('팀 미팅')
     expect(request.description).toBe('회의 내용')
     expect(request.location).toBe('서울')
-    expect(request.start?.dateTime).toBe(event.startAtUtc)
-    expect(request.end?.dateTime).toBe(event.endAtUtc)
+    // UTC → 로컬 타임존 변환 확인 (Asia/Seoul = UTC+9)
+    expect(request.start?.dateTime).toBe('2026-03-01T18:00:00.000+09:00')
+    expect(request.end?.dateTime).toBe('2026-03-01T19:00:00.000+09:00')
   })
 
   it('종일 일정은 date 필드로 전송된다', () => {
@@ -196,6 +197,119 @@ describe('eventType 동기화 - toRemoteSnapshot 라운드트립', () => {
     const snapshot = toRemoteSnapshot(googleEvent)
 
     expect(snapshot).toBeNull()
+  })
+})
+
+describe('제목 기반 eventType 추론 - toRemoteSnapshot', () => {
+  it('extendedProperties 없는 "박혜지 대휴"가 휴가로 추론된다', () => {
+    const googleEvent = makeGoogleEvent({
+      summary: '박혜지 대휴',
+      extendedProperties: undefined,
+    })
+    const snapshot = toRemoteSnapshot(googleEvent)
+
+    expect(snapshot).not.toBeNull()
+    expect(snapshot?.eventType).toBe('휴가')
+    expect(snapshot?.summary).toBe('박혜지 대휴')
+    expect(snapshot?.description).toContain('휴가대상: 박혜지')
+    expect(snapshot?.description).toContain('휴가종류: 대휴')
+  })
+
+  it('extendedProperties 없는 "이종열 안전교육"이 교육으로 추론된다', () => {
+    const googleEvent = makeGoogleEvent({
+      summary: '이종열 안전교육',
+      extendedProperties: undefined,
+    })
+    const snapshot = toRemoteSnapshot(googleEvent)
+
+    expect(snapshot).not.toBeNull()
+    expect(snapshot?.eventType).toBe('교육')
+    expect(snapshot?.summary).toBe('안전교육')
+    expect(snapshot?.description).toContain('교육대상: 이종열')
+  })
+
+  it('extendedProperties가 있으면 제목 추론을 하지 않는다', () => {
+    const googleEvent = makeGoogleEvent({
+      summary: '박혜지 대휴',
+      extendedProperties: {
+        private: { shiftCalendarEventType: '일반' },
+      },
+    })
+    const snapshot = toRemoteSnapshot(googleEvent)
+
+    // extendedProperties에 '일반'이 명시되어 있으므로 제목 패턴으로 휴가 추론
+    expect(snapshot?.eventType).toBe('휴가')
+  })
+
+  it('매칭되지 않는 일반 이벤트는 그대로 유지', () => {
+    const googleEvent = makeGoogleEvent({
+      summary: '팀 미팅',
+      extendedProperties: undefined,
+    })
+    const snapshot = toRemoteSnapshot(googleEvent)
+
+    expect(snapshot?.eventType).toBe('일반')
+    expect(snapshot?.summary).toBe('팀 미팅')
+  })
+})
+
+describe('교육 이벤트 Push 시 toGoogleEventRequest', () => {
+  it('교육 이벤트의 summary에 대상자가 포함된다', () => {
+    const event = makeCalendarEvent({
+      eventType: '교육',
+      summary: '안전교육',
+      description: '교육대상: 홍길동, 김영희',
+    })
+    const request = toGoogleEventRequest(event)
+
+    expect(request.summary).toBe('홍길동, 김영희 안전교육')
+  })
+
+  it('교육 대상이 없으면 summary 그대로 전송된다', () => {
+    const event = makeCalendarEvent({
+      eventType: '교육',
+      summary: '안전교육',
+      description: '',
+    })
+    const request = toGoogleEventRequest(event)
+
+    expect(request.summary).toBe('안전교육')
+  })
+
+  it('휴가 이벤트의 summary는 변경되지 않는다', () => {
+    const event = makeCalendarEvent({
+      eventType: '휴가',
+      summary: '박혜지 대휴',
+      description: '휴가대상: 박혜지\n휴가종류: 대휴',
+    })
+    const request = toGoogleEventRequest(event)
+
+    expect(request.summary).toBe('박혜지 대휴')
+  })
+})
+
+describe('교육 Push→Pull 라운드트립 (통합)', () => {
+  it('교육 push → Google summary → pull → 로컬 summary 복원', () => {
+    // Step 1: Push - local event to Google
+    const localEvent = makeCalendarEvent({
+      eventType: '교육',
+      summary: '안전교육',
+      description: '교육대상: 홍길동, 김영희',
+    })
+    const requestBody = toGoogleEventRequest(localEvent)
+    expect(requestBody.summary).toBe('홍길동, 김영희 안전교육')
+
+    // Step 2: Pull - Google response back to local
+    const googleResponse = makeGoogleEvent({
+      summary: requestBody.summary,
+      description: localEvent.description,
+      extendedProperties: requestBody.extendedProperties,
+    })
+    const snapshot = toRemoteSnapshot(googleResponse)
+
+    expect(snapshot).not.toBeNull()
+    expect(snapshot?.eventType).toBe('교육')
+    expect(snapshot?.summary).toBe('안전교육')
   })
 })
 

@@ -1,16 +1,19 @@
 import { useEffect } from 'react'
 import type { DayWorkerCount, ShiftTeamMode, ShiftType } from '../../shared/calendar'
+import type { WeatherOverlayMode } from './WeatherOverlay'
 
 interface SettingsModalProps {
   open: boolean
   shiftType: ShiftType
   shiftTeamMode: ShiftTeamMode
   dayWorkerCount: DayWorkerCount
+  weatherPreviewMode: WeatherOverlayMode | null
   savingShiftSettings: boolean
   onClose: () => void
   onSetShiftType: (shiftType: ShiftType) => Promise<void>
   onSetShiftTeamMode: (shiftTeamMode: ShiftTeamMode) => Promise<void>
   onSetDayWorkerCount: (dayWorkerCount: DayWorkerCount) => Promise<void>
+  onSetWeatherPreviewMode: (mode: WeatherOverlayMode | null) => void
 }
 
 export function SettingsModal({
@@ -18,11 +21,13 @@ export function SettingsModal({
   shiftType,
   shiftTeamMode,
   dayWorkerCount,
+  weatherPreviewMode,
   savingShiftSettings,
   onClose,
   onSetShiftType,
   onSetShiftTeamMode,
   onSetDayWorkerCount,
+  onSetWeatherPreviewMode,
 }: SettingsModalProps) {
   useEffect(() => {
     if (!open) {
@@ -113,6 +118,43 @@ export function SettingsModal({
               </select>
             </label>
             <p className="settings-hint">일근자 입력 칸 개수를 지정합니다.</p>
+          </section>
+
+          <section className="settings-section">
+            <div className="settings-row">
+              <p className="settings-label">날씨 이펙트 테스트</p>
+              <p className="settings-value">
+                {weatherPreviewMode === null
+                  ? '실시간(김포공항)'
+                  : weatherPreviewMode === 'rain'
+                    ? '비 강제'
+                    : '눈 강제'}
+              </p>
+            </div>
+            <div className="settings-inline-actions" role="group" aria-label="날씨 효과 선택">
+              <button
+                type="button"
+                className={weatherPreviewMode === null ? 'ghost-button is-active' : 'ghost-button'}
+                onClick={() => onSetWeatherPreviewMode(null)}
+              >
+                실시간
+              </button>
+              <button
+                type="button"
+                className={weatherPreviewMode === 'rain' ? 'ghost-button is-active' : 'ghost-button'}
+                onClick={() => onSetWeatherPreviewMode('rain')}
+              >
+                비
+              </button>
+              <button
+                type="button"
+                className={weatherPreviewMode === 'snow' ? 'ghost-button is-active' : 'ghost-button'}
+                onClick={() => onSetWeatherPreviewMode('snow')}
+              >
+                눈
+              </button>
+            </div>
+            <p className="settings-hint">실시간 모드는 김포공항 현재 날씨(강수/적설) 기준으로 자동 반영됩니다.</p>
           </section>
         </div>
       </section>

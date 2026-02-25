@@ -5,11 +5,15 @@ import type {
   CalendarApi,
   CalendarEvent,
   DeleteCalendarEventInput,
+  ForcePushResult,
   GoogleConnectionStatus,
   ListOutboxJobsInput,
   ListEventsInput,
+  OutboxJobItem,
   SetSelectedCalendarInput,
+  SetShiftSettingsInput,
   SelectedCalendar,
+  ShiftSettings,
   SyncResult,
   UpsertCalendarEventInput,
   GoogleCalendarItem,
@@ -24,10 +28,11 @@ const calendarApi: CalendarApi = {
     ipcRenderer.invoke(IPC_CHANNELS.deleteEvent, payload) as Promise<boolean>,
   getOutboxCount: () => ipcRenderer.invoke(IPC_CHANNELS.getOutboxCount) as Promise<number>,
   listOutboxJobs: (input?: ListOutboxJobsInput) =>
-    ipcRenderer.invoke(IPC_CHANNELS.listOutboxJobs, input),
+    ipcRenderer.invoke(IPC_CHANNELS.listOutboxJobs, input) as Promise<OutboxJobItem[]>,
   cancelOutboxJob: (input: CancelOutboxJobInput) =>
-    ipcRenderer.invoke(IPC_CHANNELS.cancelOutboxJob, input),
+    ipcRenderer.invoke(IPC_CHANNELS.cancelOutboxJob, input) as Promise<boolean>,
   syncNow: () => ipcRenderer.invoke(IPC_CHANNELS.syncNow) as Promise<SyncResult>,
+  forcePushAll: () => ipcRenderer.invoke(IPC_CHANNELS.forcePushAll) as Promise<ForcePushResult>,
   connectGoogle: () =>
     ipcRenderer.invoke(IPC_CHANNELS.connectGoogle) as Promise<GoogleConnectionStatus>,
   disconnectGoogle: () =>
@@ -41,9 +46,9 @@ const calendarApi: CalendarApi = {
   setSelectedCalendar: (payload: SetSelectedCalendarInput) =>
     ipcRenderer.invoke(IPC_CHANNELS.setSelectedCalendar, payload) as Promise<SelectedCalendar>,
   getShiftSettings: () =>
-    ipcRenderer.invoke(IPC_CHANNELS.getShiftSettings),
-  setShiftSettings: (payload) =>
-    ipcRenderer.invoke(IPC_CHANNELS.setShiftSettings, payload),
+    ipcRenderer.invoke(IPC_CHANNELS.getShiftSettings) as Promise<ShiftSettings>,
+  setShiftSettings: (payload: SetShiftSettingsInput) =>
+    ipcRenderer.invoke(IPC_CHANNELS.setShiftSettings, payload) as Promise<ShiftSettings>,
 }
 
 contextBridge.exposeInMainWorld('calendarApi', calendarApi)

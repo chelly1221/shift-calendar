@@ -3,23 +3,33 @@ import type { CalendarEvent } from './calendar'
 import { parseRRuleSegments, parseUntilToUtcIso } from './rrule'
 import type { WeekdayCode } from './rrule'
 
-export const VIRTUAL_INSTANCE_PREFIX = 'virtual::'
+export const VIRTUAL_INSTANCE_PREFIX = 'v::'
+/** @deprecated kept for backwards compatibility with persisted IDs */
+const LEGACY_VIRTUAL_PREFIX = 'virtual::'
 
 export function isVirtualInstance(localId: string): boolean {
-  return localId.startsWith(VIRTUAL_INSTANCE_PREFIX)
+  return localId.startsWith(VIRTUAL_INSTANCE_PREFIX) || localId.startsWith(LEGACY_VIRTUAL_PREFIX)
 }
 
 export function extractMasterLocalId(virtualLocalId: string): string {
   if (!isVirtualInstance(virtualLocalId)) {
     return virtualLocalId
   }
-  const withoutPrefix = virtualLocalId.slice(VIRTUAL_INSTANCE_PREFIX.length)
+  const prefixLen = virtualLocalId.startsWith(LEGACY_VIRTUAL_PREFIX)
+    ? LEGACY_VIRTUAL_PREFIX.length
+    : VIRTUAL_INSTANCE_PREFIX.length
+  const withoutPrefix = virtualLocalId.slice(prefixLen)
   const separatorIndex = withoutPrefix.indexOf('::')
   return separatorIndex >= 0 ? withoutPrefix.slice(0, separatorIndex) : withoutPrefix
 }
 
+/** Compact UTC timestamp: 20260226T143000Z (17 chars vs 24 for full ISO) */
+function compactUtc(iso: string): string {
+  return iso.replace(/[-:]/g, '').replace(/\.\d{3}/, '')
+}
+
 function makeVirtualLocalId(masterLocalId: string, occurrenceStartUtcIso: string): string {
-  return `${VIRTUAL_INSTANCE_PREFIX}${masterLocalId}::${occurrenceStartUtcIso}`
+  return `${VIRTUAL_INSTANCE_PREFIX}${masterLocalId}::${compactUtc(occurrenceStartUtcIso)}`
 }
 
 const WEEKDAY_TO_LUXON: Record<WeekdayCode, WeekdayNumbers> = {
@@ -32,7 +42,8 @@ const WEEKDAY_TO_LUXON: Record<WeekdayCode, WeekdayNumbers> = {
   SU: 7,
 }
 
-const MAX_INSTANCES_PER_MASTER = 400
+// Keep a practical hard cap to avoid runaway expansion, but high enough for long-running daily series.
+const MAX_INSTANCES_PER_MASTER = 10_000
 
 interface OccurrenceGeneratorOptions {
   freq: string

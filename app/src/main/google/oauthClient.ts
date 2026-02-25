@@ -172,11 +172,32 @@ export async function getAuthorizedGoogleClient(): Promise<OAuth2Client> {
 
   const oauth = createOAuthClient('http://127.0.0.1')
   oauth.setCredentials({ refresh_token: refreshToken })
-  await oauth.getAccessToken()
+  try {
+    await oauth.getAccessToken()
+  } catch (error) {
+    const message = error instanceof Error ? error.message : 'Unknown error'
+    console.error('[OAuth] Failed to refresh access token:', message)
+    throw new Error(`Google 인증 토큰 갱신 실패: ${message}`)
+  }
   return oauth
 }
 
 export async function disconnectGoogleAccount(): Promise<void> {
+  // Try to revoke token at Google before clearing locally
+  try {
+    const refreshToken = await loadRefreshToken()
+    if (refreshToken) {
+      const oauth = createOAuthClient('http://127.0.0.1')
+      oauth.setCredentials({ refresh_token: refreshToken })
+      await oauth.revokeToken(refreshToken).catch(() => {
+        // Revocation failure is non-fatal - token may already be invalid
+        console.warn('[OAuth] Token revocation failed, proceeding with local cleanup')
+      })
+    }
+  } catch {
+    // Non-fatal: proceed with local cleanup even if revocation fails
+    console.warn('[OAuth] Could not revoke token, proceeding with local cleanup')
+  }
   await clearRefreshToken()
 }
 

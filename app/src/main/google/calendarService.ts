@@ -1,6 +1,7 @@
 import { DateTime } from 'luxon'
 import { google, type calendar_v3 } from 'googleapis'
 import type { CalendarEvent, GoogleCalendarItem, OutboxOperation, SendUpdates } from '../../shared/calendar'
+import { inferEventMetadata, toGoogleSummary } from '../../shared/eventTitleMapper'
 import { splitRRuleForFuture } from '../../shared/rrule'
 import type { RemoteEventSnapshot } from '../db/eventRepository'
 import { getSelectedCalendar } from '../db/settingRepository'
@@ -113,22 +114,23 @@ function extractRecurrenceRule(recurrence: string[] | null | undefined): string 
 
 function isWholeDayEvent(event: CalendarEvent): boolean {
   const zone = event.timeZone?.trim() || 'UTC'
-  const start = DateTime.fromISO(event.startAtUtc, { setZone: true }).setZone(zone)
-  const end = DateTime.fromISO(event.endAtUtc, { setZone: true }).setZone(zone)
+  const start = DateTime.fromISO(event.startAtUtc, { zone: 'utc' }).setZone(zone)
+  const end = DateTime.fromISO(event.endAtUtc, { zone: 'utc' }).setZone(zone)
 
   if (!start.isValid || !end.isValid || end <= start) {
     return false
   }
 
-  const isMidnight = (value: DateTime) =>
-    value.hour === 0 && value.minute === 0 && value.second === 0 && value.millisecond === 0
+  const isMidnight = (dt: DateTime) =>
+    dt.hour === 0 && dt.minute === 0 && dt.second === 0 && dt.millisecond === 0
 
   if (!isMidnight(start) || !isMidnight(end)) {
     return false
   }
 
-  const dayDiff = end.diff(start, 'days').days
-  return Number.isInteger(dayDiff) && dayDiff >= 1
+  // Duration must be exactly N whole days (at least 1)
+  const diffDays = end.diff(start, 'days').days
+  return diffDays >= 1 && Number.isInteger(diffDays)
 }
 
 export function extractEventType(event: calendar_v3.Schema$Event): string {
@@ -177,11 +179,16 @@ export function toRemoteSnapshot(event: calendar_v3.Schema$Event): RemoteEventSn
 
   const originalStart = fromGoogleEventDateTime(event.originalStartTime)
 
+  const rawEventType = extractEventType(event)
+  const rawSummary = event.summary ?? '(No title)'
+  const rawDescription = event.description ?? ''
+  const inferred = inferEventMetadata(rawSummary, rawDescription, rawEventType)
+
   return {
     googleEventId,
-    eventType: extractEventType(event),
-    summary: event.summary ?? '(No title)',
-    description: event.description ?? '',
+    eventType: inferred.eventType,
+    summary: inferred.summary,
+    description: inferred.description,
     location: event.location ?? '',
     startAtUtc: start.utcIso,
     endAtUtc: end.utcIso,
@@ -202,23 +209,23 @@ export function toRemoteSnapshot(event: calendar_v3.Schema$Event): RemoteEventSn
 export function toGoogleEventRequest(event: CalendarEvent): calendar_v3.Schema$Event {
   const wholeDayEvent = isWholeDayEvent(event)
   const zone = event.timeZone?.trim() || 'UTC'
-  const startLocal = DateTime.fromISO(event.startAtUtc, { setZone: true }).setZone(zone)
-  const endLocal = DateTime.fromISO(event.endAtUtc, { setZone: true }).setZone(zone)
+  const startLocal = DateTime.fromISO(event.startAtUtc, { zone: 'utc' }).setZone(zone)
+  const endLocal = DateTime.fromISO(event.endAtUtc, { zone: 'utc' }).setZone(zone)
 
   return {
-    summary: event.summary,
+    summary: toGoogleSummary(event.summary, event.description ?? '', event.eventType),
     description: event.description || undefined,
     location: event.location || undefined,
     start: wholeDayEvent
       ? { date: startLocal.toISODate() ?? undefined }
       : {
-          dateTime: event.startAtUtc,
+          dateTime: startLocal.toISO() ?? event.startAtUtc,
           timeZone: zone,
         },
     end: wholeDayEvent
       ? { date: endLocal.toISODate() ?? undefined }
       : {
-          dateTime: event.endAtUtc,
+          dateTime: endLocal.toISO() ?? event.endAtUtc,
           timeZone: zone,
         },
     attendees: event.attendees.map((email) => ({ email })),
@@ -229,6 +236,49 @@ export function toGoogleEventRequest(event: CalendarEvent): calendar_v3.Schema$E
       },
     },
   }
+}
+
+function alignRequestTimeShapeWithRemote(
+  event: CalendarEvent,
+  requestBody: calendar_v3.Schema$Event,
+  remoteEvent: calendar_v3.Schema$Event,
+): calendar_v3.Schema$Event {
+  const zone = event.timeZone?.trim() || 'UTC'
+  const start = remoteEvent.start
+  const end = remoteEvent.end
+  if (!start || !end) {
+    return requestBody
+  }
+
+  // Keep all-day events aligned with all-day master/instance shape.
+  if (start.date || end.date) {
+    const startLocal = DateTime.fromISO(event.startAtUtc, { zone: 'utc' }).setZone(zone)
+    const endLocal = DateTime.fromISO(event.endAtUtc, { zone: 'utc' }).setZone(zone)
+    return {
+      ...requestBody,
+      start: { date: startLocal.toISODate() ?? undefined },
+      end: { date: endLocal.toISODate() ?? undefined },
+    }
+  }
+
+  // Keep timed events aligned with timed master/instance shape.
+  if (start.dateTime || end.dateTime) {
+    const startLocal = DateTime.fromISO(event.startAtUtc, { zone: 'utc' }).setZone(zone)
+    const endLocal = DateTime.fromISO(event.endAtUtc, { zone: 'utc' }).setZone(zone)
+    return {
+      ...requestBody,
+      start: {
+        dateTime: startLocal.toISO() ?? event.startAtUtc,
+        timeZone: zone,
+      },
+      end: {
+        dateTime: endLocal.toISO() ?? event.endAtUtc,
+        timeZone: zone,
+      },
+    }
+  }
+
+  return requestBody
 }
 
 function toPushResult(event: calendar_v3.Schema$Event | undefined): PushResult {
@@ -324,10 +374,19 @@ function toGoogleCalendarItem(entry: calendar_v3.Schema$CalendarListEntry): Goog
 }
 
 export function createGoogleCalendarService(): GoogleCalendarService {
+  let cachedClient: calendar_v3.Calendar | null = null
+
+  async function getClient(): Promise<calendar_v3.Calendar> {
+    if (!cachedClient) {
+      const auth = await getAuthorizedGoogleClient()
+      cachedClient = google.calendar({ version: 'v3', auth })
+    }
+    return cachedClient
+  }
+
   return {
     async listCalendars() {
-      const auth = await getAuthorizedGoogleClient()
-      const calendar = google.calendar({ version: 'v3', auth })
+      const calendar = await getClient()
       const items: GoogleCalendarItem[] = []
       let pageToken: string | undefined
 
@@ -362,22 +421,38 @@ export function createGoogleCalendarService(): GoogleCalendarService {
     },
 
     async pullRemoteEvents(query) {
-      const auth = await getAuthorizedGoogleClient()
-      const calendar = google.calendar({ version: 'v3', auth })
+      console.log(`[CalendarService] pullRemoteEvents: mode=${query.syncToken ? 'DELTA' : 'FULL'}`)
+      const calendar = await getClient()
       const calendarId = await getCalendarId()
-      const response = await calendar.events.list({
+
+      const listParams: calendar_v3.Params$Resource$Events$List = {
         calendarId,
-        syncToken: query.syncToken,
-        timeMin: query.timeMin,
-        timeMax: query.timeMax,
-        pageToken: query.pageToken,
         singleEvents: true,
         showDeleted: true,
         maxResults: 2500,
-      })
+        pageToken: query.pageToken ?? undefined,
+        fields:
+          'nextPageToken,nextSyncToken,items(id,summary,description,location,start,end,updated,status,recurrence,recurringEventId,originalStartTime,extendedProperties,attendees,organizer,htmlLink,hangoutLink)',
+      }
+
+      if (query.syncToken) {
+        listParams.syncToken = query.syncToken
+        // Do NOT include timeMin/timeMax with syncToken (incompatible per Google Calendar API)
+      } else {
+        if (query.timeMin) listParams.timeMin = query.timeMin
+        if (query.timeMax) listParams.timeMax = query.timeMax
+      }
+
+      const response = await calendar.events.list(listParams)
 
       const events = (response.data.items ?? [])
-        .map(toRemoteSnapshot)
+        .map((item) => {
+          const snapshot = toRemoteSnapshot(item)
+          if (!snapshot) {
+            console.warn(`[CalendarService] skipped unmappable event: id=${item.id}, status=${item.status}`)
+          }
+          return snapshot
+        })
         .filter((item): item is RemoteEventSnapshot => Boolean(item))
 
       // Fetch RRULE from master events for recurring instances
@@ -406,6 +481,8 @@ export function createGoogleCalendarService(): GoogleCalendarService {
         }
       }
 
+      console.log(`[CalendarService] pulled ${events.length} events (page ${query.pageToken ? 'next' : 'first'})`)
+
       return {
         events,
         nextPageToken: response.data.nextPageToken ?? null,
@@ -414,8 +491,7 @@ export function createGoogleCalendarService(): GoogleCalendarService {
     },
 
     async pullHolidays(timeMin, timeMax) {
-      const auth = await getAuthorizedGoogleClient()
-      const calendar = google.calendar({ version: 'v3', auth })
+      const calendar = await getClient()
       const holidays: RemoteEventSnapshot[] = []
       let pageToken: string | undefined
 
@@ -445,8 +521,8 @@ export function createGoogleCalendarService(): GoogleCalendarService {
     },
 
     async fetchRemoteEvent(googleEventId) {
-      const auth = await getAuthorizedGoogleClient()
-      const calendar = google.calendar({ version: 'v3', auth })
+      console.log(`[CalendarService] fetchRemoteEvent: ${googleEventId}`)
+      const calendar = await getClient()
       const calendarId = await getCalendarId()
       try {
         const response = await calendar.events.get({
@@ -466,8 +542,8 @@ export function createGoogleCalendarService(): GoogleCalendarService {
     },
 
     async pushLocalChange(operation, event, payload) {
-      const auth = await getAuthorizedGoogleClient()
-      const calendar = google.calendar({ version: 'v3', auth })
+      console.log(`[CalendarService] pushLocalChange: operation=${operation}, eventId=${event?.localId ?? 'N/A'}`)
+      const calendar = await getClient()
       const calendarId = await getCalendarId()
       const sendUpdates = payload.sendUpdates ?? 'none'
       let googleEventId = payload.googleEventId ?? event?.googleEventId ?? null
@@ -563,11 +639,23 @@ export function createGoogleCalendarService(): GoogleCalendarService {
         return toPushResult(response.data)
       }
 
+      let patchRequestBody = requestBody
+      try {
+        const remoteResponse = await calendar.events.get({
+          calendarId,
+          eventId: googleEventId,
+          alwaysIncludeEmail: true,
+        })
+        patchRequestBody = alignRequestTimeShapeWithRemote(event, requestBody, remoteResponse.data)
+      } catch {
+        // If remote prefetch fails, continue with local request body.
+      }
+
       const response = await calendar.events.patch({
         calendarId,
         eventId: googleEventId,
         sendUpdates,
-        requestBody,
+        requestBody: patchRequestBody,
       })
       return toPushResult(response.data)
     },
