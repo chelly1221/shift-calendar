@@ -7,6 +7,7 @@ import { type WheelEvent as ReactWheelEvent, useCallback, useEffect, useMemo, us
 import type { DatesSetArg, EventClickArg } from '@fullcalendar/core'
 import type { CalendarEvent, RecurrenceEditScope, ShiftTeamAssignments, ShiftTeamMode, UpsertCalendarEventInput } from '../../shared/calendar'
 import { expandRecurringEvents, isVirtualInstance, extractMasterLocalId } from '../../shared/expandRecurrence'
+import { parseShiftAbbreviations, stripShiftAbbreviations, resolveAbbreviationToName } from '../../shared/eventTitleMapper'
 import { isPublicHolidayName, FIXED_PUBLIC_HOLIDAY_MMDD } from '../../shared/koreanHolidays'
 import { EventModal, type EditableEvent } from '../components/EventModal'
 import { RadialMenu } from '../components/RadialMenu'
@@ -338,6 +339,7 @@ function parseShiftBadgeSelection(badgeEl: HTMLElement): ShiftBadgeSelection | n
   if (
     !eventLocalId
     || !Number.isInteger(substitutionIndex)
+    || substitutionIndex < 0
     || !team
     || !substitute
     || !original
@@ -1221,6 +1223,21 @@ export function CalendarPage() {
       })
   }, [events, visibleMonth])
 
+  const allMemberNames = useMemo(() => {
+    const names: string[] = []
+    for (const worker of dayWorkerDrafts) {
+      const trimmed = worker.trim()
+      if (trimmed && !names.includes(trimmed)) names.push(trimmed)
+    }
+    for (const teamKey of shiftTeamKeys) {
+      for (const member of shiftTeamDrafts[teamKey]) {
+        const trimmed = member.trim()
+        if (trimmed && !names.includes(trimmed)) names.push(trimmed)
+      }
+    }
+    return names
+  }, [shiftTeamDrafts, dayWorkerDrafts])
+
   const shiftDisplayByDate = useMemo(() => {
     const groupedByDate = new Map<string, CalendarEvent[]>()
 
@@ -1268,9 +1285,10 @@ export function CalendarPage() {
       }>()
 
       for (const event of dateEvents) {
-        const summary = event.summary.trim()
-        if (summary && !summaries.includes(summary)) {
-          summaries.push(summary)
+        const abbreviations = parseShiftAbbreviations(event.summary)
+        const cleanSummary = stripShiftAbbreviations(event.summary).trim()
+        if (cleanSummary && !summaries.includes(cleanSummary)) {
+          summaries.push(cleanSummary)
         }
 
         const teams = parseShiftTeamsFromSummary(event.summary)
@@ -1298,6 +1316,25 @@ export function CalendarPage() {
             substitutionIndex,
           })
         })
+
+        // Fallback badges from summary abbreviations (when no description-based badge exists for the team)
+        for (const [teamKey, chars] of abbreviations) {
+          const hasDescBadge = [...latestByOriginal.values()].some((b) => b.team === teamKey && b.substitutionIndex >= 0)
+          if (hasDescBadge) continue
+
+          for (const char of chars) {
+            const fullName = resolveAbbreviationToName(char, allMemberNames)
+            const resolvedName = fullName ?? char
+            latestByOriginal.set(`${teamKey}:abbrev:${char}`, {
+              team: teamKey as ShiftTeamKey,
+              name: resolvedName,
+              type: '대리근무' as SubstitutionWorkType,
+              original: resolvedName,
+              eventLocalId: event.localId,
+              substitutionIndex: -1,
+            })
+          }
+        }
       }
 
       if (summaries.length === 0) {
@@ -1336,7 +1373,7 @@ export function CalendarPage() {
     }
 
     return displays
-  }, [events, shiftTeamDrafts])
+  }, [events, shiftTeamDrafts, allMemberNames])
 
   const calendarEvents = useMemo(
     () =>
@@ -1416,21 +1453,6 @@ export function CalendarPage() {
         }),
     [events],
   )
-
-  const allMemberNames = useMemo(() => {
-    const names: string[] = []
-    for (const worker of dayWorkerDrafts) {
-      const trimmed = worker.trim()
-      if (trimmed && !names.includes(trimmed)) names.push(trimmed)
-    }
-    for (const teamKey of shiftTeamKeys) {
-      for (const member of shiftTeamDrafts[teamKey]) {
-        const trimmed = member.trim()
-        if (trimmed && !names.includes(trimmed)) names.push(trimmed)
-      }
-    }
-    return names
-  }, [shiftTeamDrafts, dayWorkerDrafts])
 
   const useCustomTitlebar = true // Windows 11 only — always use custom titlebar
   const visibleMemberCount = shiftSettings.shiftTeamMode === 'SINGLE' ? 1 : 2

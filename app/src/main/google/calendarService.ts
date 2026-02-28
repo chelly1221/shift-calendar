@@ -1,7 +1,8 @@
 import { DateTime } from 'luxon'
 import { google, type calendar_v3 } from 'googleapis'
 import type { CalendarEvent, GoogleCalendarItem, OutboxOperation, SendUpdates } from '../../shared/calendar'
-import { inferEventMetadata, toGoogleSummary } from '../../shared/eventTitleMapper'
+import { inferEventMetadata, toGoogleSummary, buildShiftGoogleSummary } from '../../shared/eventTitleMapper'
+import type { ShiftTeamAssignments } from '../../shared/calendar'
 import { splitRRuleForFuture } from '../../shared/rrule'
 import type { RemoteEventSnapshot } from '../db/eventRepository'
 import { getSelectedCalendar } from '../db/settingRepository'
@@ -206,14 +207,24 @@ export function toRemoteSnapshot(event: calendar_v3.Schema$Event): RemoteEventSn
   }
 }
 
-export function toGoogleEventRequest(event: CalendarEvent): calendar_v3.Schema$Event {
+export interface ShiftContext {
+  teams: ShiftTeamAssignments
+  allNames: string[]
+}
+
+export function toGoogleEventRequest(
+  event: CalendarEvent,
+  shiftContext?: ShiftContext,
+): calendar_v3.Schema$Event {
   const wholeDayEvent = isWholeDayEvent(event)
   const zone = event.timeZone?.trim() || 'UTC'
   const startLocal = DateTime.fromISO(event.startAtUtc, { zone: 'utc' }).setZone(zone)
   const endLocal = DateTime.fromISO(event.endAtUtc, { zone: 'utc' }).setZone(zone)
 
   return {
-    summary: toGoogleSummary(event.summary, event.description ?? '', event.eventType),
+    summary: event.eventType === '근무' && shiftContext
+      ? buildShiftGoogleSummary(event.summary, event.description ?? '', shiftContext.teams, shiftContext.allNames)
+      : toGoogleSummary(event.summary, event.description ?? '', event.eventType),
     description: event.description || undefined,
     location: event.location || undefined,
     start: wholeDayEvent
@@ -314,6 +325,7 @@ export interface GoogleCalendarService {
       originalStartTimeUtc?: string | null
       splitStartUtc?: string
     },
+    shiftContext?: ShiftContext,
   ) => Promise<PushResult>
 }
 
@@ -541,7 +553,7 @@ export function createGoogleCalendarService(): GoogleCalendarService {
       }
     },
 
-    async pushLocalChange(operation, event, payload) {
+    async pushLocalChange(operation, event, payload, shiftContext) {
       console.log(`[CalendarService] pushLocalChange: operation=${operation}, eventId=${event?.localId ?? 'N/A'}`)
       const calendar = await getClient()
       const calendarId = await getCalendarId()
@@ -614,7 +626,7 @@ export function createGoogleCalendarService(): GoogleCalendarService {
         throw new Error(`Missing local event payload for outbox operation: ${operation}`)
       }
 
-      const requestBody = toGoogleEventRequest(event)
+      const requestBody = toGoogleEventRequest(event, shiftContext)
       if (operation === 'RECUR_ALL' && !event.recurrenceRule && googleEventId) {
         const masterResponse = await calendar.events.get({
           calendarId,

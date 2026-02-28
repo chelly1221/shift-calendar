@@ -3,8 +3,8 @@ import { DateTime } from 'luxon'
 import type { OutboxOperation, SendUpdates } from '../../shared/calendar'
 import { getCalendarEventByLocalId, updateEventSyncState, upsertRemoteEvent } from '../db/eventRepository'
 import { prisma } from '../db/prisma'
-import { getSelectedCalendar } from '../db/settingRepository'
-import { createGoogleCalendarService } from '../google/calendarService'
+import { getSelectedCalendar, getShiftSettings } from '../db/settingRepository'
+import { createGoogleCalendarService, type ShiftContext } from '../google/calendarService'
 
 interface OutboxPayload {
   sendUpdates?: SendUpdates
@@ -191,7 +191,24 @@ async function processJob(jobId: string): Promise<boolean> {
     }
   }
 
-  const pushResult = await google.pushLocalChange(operation, localEvent, payload)
+  let shiftContext: ShiftContext | undefined
+  if (localEvent?.eventType === '근무') {
+    const settings = await getShiftSettings()
+    const allNames: string[] = []
+    for (const key of ['A', 'B', 'C', 'D'] as const) {
+      for (const member of settings.teams[key]) {
+        const trimmed = member.trim()
+        if (trimmed && !allNames.includes(trimmed)) allNames.push(trimmed)
+      }
+    }
+    for (const worker of settings.dayWorkers) {
+      const trimmed = worker.trim()
+      if (trimmed && !allNames.includes(trimmed)) allNames.push(trimmed)
+    }
+    shiftContext = { teams: settings.teams, allNames }
+  }
+
+  const pushResult = await google.pushLocalChange(operation, localEvent, payload, shiftContext)
 
   if (job.eventLocalId) {
     const shouldAdoptGoogleEventId =
