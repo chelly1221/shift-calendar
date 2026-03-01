@@ -84,7 +84,7 @@ async function pullHolidays(): Promise<number> {
 export async function forcePushAllToGoogle(): Promise<ForcePushResult> {
   await ensureSetting()
 
-  if (!isGoogleOAuthConfigured() || !(await isGoogleConnected())) {
+  if (!(await isGoogleOAuthConfigured()) || !(await isGoogleConnected())) {
     return { enqueuedJobs: 0, processedJobs: 0, skippedEvents: 0 }
   }
 
@@ -208,7 +208,7 @@ export async function forcePushAllToGoogle(): Promise<ForcePushResult> {
 export async function runSyncNow(): Promise<SyncResult> {
   await ensureSetting()
 
-  if (!isGoogleOAuthConfigured() || !(await isGoogleConnected())) {
+  if (!(await isGoogleOAuthConfigured()) || !(await isGoogleConnected())) {
     return {
       mode: 'SKIPPED',
       pulledEvents: 0,

@@ -174,6 +174,19 @@ export type ShiftSettings = z.infer<typeof shiftSettingsSchema>
 export const setShiftSettingsInputSchema = shiftSettingsSchema
 export type SetShiftSettingsInput = z.infer<typeof setShiftSettingsInputSchema>
 
+export const googleOAuthConfigSchema = z.object({
+  clientId: z.string().nullable(),
+  clientSecret: z.string().nullable(),
+  configured: z.boolean(),
+})
+export type GoogleOAuthConfig = z.infer<typeof googleOAuthConfigSchema>
+
+export const setGoogleOAuthConfigInputSchema = z.object({
+  clientId: z.string().trim().min(1),
+  clientSecret: z.string().trim().min(1),
+})
+export type SetGoogleOAuthConfigInput = z.infer<typeof setGoogleOAuthConfigInputSchema>
+
 export const defaultShiftSettings: ShiftSettings = {
   shiftType: 'DAY_NIGHT_OFF_OFF',
   shiftTeamMode: 'PAIR',
@@ -204,4 +217,6 @@ export interface CalendarApi {
   setSelectedCalendar: (payload: SetSelectedCalendarInput) => Promise<SelectedCalendar>
   getShiftSettings: () => Promise<ShiftSettings>
   setShiftSettings: (payload: SetShiftSettingsInput) => Promise<ShiftSettings>
+  getGoogleOAuthConfig: () => Promise<GoogleOAuthConfig>
+  setGoogleOAuthConfig: (payload: SetGoogleOAuthConfigInput) => Promise<GoogleOAuthConfig>
 }

@@ -6,17 +6,19 @@ import type {
   CalendarEvent,
   DeleteCalendarEventInput,
   ForcePushResult,
+  GoogleCalendarItem,
   GoogleConnectionStatus,
+  GoogleOAuthConfig,
   ListOutboxJobsInput,
   ListEventsInput,
   OutboxJobItem,
+  SetGoogleOAuthConfigInput,
   SetSelectedCalendarInput,
   SetShiftSettingsInput,
   SelectedCalendar,
   ShiftSettings,
   SyncResult,
   UpsertCalendarEventInput,
-  GoogleCalendarItem,
 } from '../shared/calendar'
 
 const calendarApi: CalendarApi = {
@@ -49,6 +51,10 @@ const calendarApi: CalendarApi = {
     ipcRenderer.invoke(IPC_CHANNELS.getShiftSettings) as Promise<ShiftSettings>,
   setShiftSettings: (payload: SetShiftSettingsInput) =>
     ipcRenderer.invoke(IPC_CHANNELS.setShiftSettings, payload) as Promise<ShiftSettings>,
+  getGoogleOAuthConfig: () =>
+    ipcRenderer.invoke(IPC_CHANNELS.getGoogleOAuthConfig) as Promise<GoogleOAuthConfig>,
+  setGoogleOAuthConfig: (payload: SetGoogleOAuthConfigInput) =>
+    ipcRenderer.invoke(IPC_CHANNELS.setGoogleOAuthConfig, payload) as Promise<GoogleOAuthConfig>,
 }
 
 contextBridge.exposeInMainWorld('calendarApi', calendarApi)

@@ -15,6 +15,8 @@ export const IPC_CHANNELS = {
   setSelectedCalendar: 'calendar:set-selected-calendar',
   getShiftSettings: 'calendar:get-shift-settings',
   setShiftSettings: 'calendar:set-shift-settings',
+  getGoogleOAuthConfig: 'calendar:get-google-oauth-config',
+  setGoogleOAuthConfig: 'calendar:set-google-oauth-config',
   windowMinimize: 'window:minimize',
   windowMaximize: 'window:maximize',
   windowClose: 'window:close',

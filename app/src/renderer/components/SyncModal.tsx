@@ -1,6 +1,6 @@
 import { DateTime } from 'luxon'
-import { useEffect, useState } from 'react'
-import type { ForcePushResult, GoogleCalendarItem, OutboxJobItem, OutboxOperation, OutboxStatus, SyncResult } from '../../shared/calendar'
+import { useCallback, useEffect, useState } from 'react'
+import type { ForcePushResult, GoogleCalendarItem, GoogleOAuthConfig, OutboxJobItem, OutboxOperation, OutboxStatus, SyncResult } from '../../shared/calendar'
 
 const OUTBOX_OPERATION_LABELS: Record<OutboxOperation, string> = {
   CREATE: '생성',
@@ -93,12 +93,30 @@ export function SyncModal({
     return navigator.onLine
   })
   const [removingJobIds, setRemovingJobIds] = useState<Set<string>>(() => new Set())
+  const [oauthConfig, setOauthConfig] = useState<GoogleOAuthConfig | null>(null)
+  const [oauthClientId, setOauthClientId] = useState('')
+  const [oauthClientSecret, setOauthClientSecret] = useState('')
+  const [oauthSaving, setOauthSaving] = useState(false)
+
+  const loadOAuthConfig = useCallback(async () => {
+    try {
+      const config = await window.calendarApi.getGoogleOAuthConfig()
+      setOauthConfig(config)
+      if (config.configured && config.clientId) {
+        setOauthClientId(config.clientId)
+        setOauthClientSecret('')
+      }
+    } catch {
+      // ignore
+    }
+  }, [])
 
   useEffect(() => {
     if (!open) {
       setRemovingJobIds(new Set())
       return
     }
+    void loadOAuthConfig()
 
     const handleKeyDown = (event: KeyboardEvent) => {
       if (event.key === 'Escape') {
@@ -107,7 +125,7 @@ export function SyncModal({
     }
     window.addEventListener('keydown', handleKeyDown)
     return () => window.removeEventListener('keydown', handleKeyDown)
-  }, [open, onClose])
+  }, [open, onClose, loadOAuthConfig])
 
   useEffect(() => {
     const handleOnline = () => setIsOnline(true)
@@ -150,6 +168,27 @@ export function SyncModal({
         : syncing
           ? '동기화 진행 중'
           : '즉시 동기화 가능'
+
+  const saveOAuthConfig = async () => {
+    const trimmedId = oauthClientId.trim()
+    const trimmedSecret = oauthClientSecret.trim()
+    if (!trimmedId || !trimmedSecret) {
+      return
+    }
+    setOauthSaving(true)
+    try {
+      const result = await window.calendarApi.setGoogleOAuthConfig({
+        clientId: trimmedId,
+        clientSecret: trimmedSecret,
+      })
+      setOauthConfig(result)
+      setOauthClientSecret('')
+    } catch {
+      // ignore
+    } finally {
+      setOauthSaving(false)
+    }
+  }
 
   const removeOutboxJob = async (jobId: string) => {
     setRemovingJobIds((prev) => {
@@ -286,6 +325,50 @@ export function SyncModal({
                   </div>
                 ) : null}
                 <p className="settings-hint">강제 푸시: 로컬 이벤트를 기준으로 구글 캘린더를 덮어씁니다.</p>
+              </section>
+
+              <section className="settings-section">
+                <div className="settings-row">
+                  <p className="settings-label">Google OAuth 설정</p>
+                  <p className="settings-value">
+                    {oauthConfig?.configured ? '설정됨' : '미설정'}
+                  </p>
+                </div>
+                <label className="calendar-target-control settings-calendar-control" htmlFor="oauth-client-id">
+                  <span>Client ID</span>
+                  <input
+                    id="oauth-client-id"
+                    type="text"
+                    value={oauthClientId}
+                    onChange={(e) => setOauthClientId(e.target.value)}
+                    placeholder="Google OAuth Client ID"
+                    disabled={oauthSaving}
+                  />
+                </label>
+                <label className="calendar-target-control settings-calendar-control" htmlFor="oauth-client-secret">
+                  <span>Client Secret</span>
+                  <input
+                    id="oauth-client-secret"
+                    type="password"
+                    value={oauthClientSecret}
+                    onChange={(e) => setOauthClientSecret(e.target.value)}
+                    placeholder={oauthConfig?.configured ? '********' : 'Google OAuth Client Secret'}
+                    disabled={oauthSaving}
+                  />
+                </label>
+                <button
+                  type="button"
+                  className="primary-button"
+                  onClick={() => void saveOAuthConfig()}
+                  disabled={oauthSaving || !oauthClientId.trim() || !oauthClientSecret.trim()}
+                >
+                  {oauthSaving ? '저장 중...' : '저장'}
+                </button>
+                <p className="settings-hint">
+                  {oauthConfig?.configured
+                    ? 'Google OAuth 자격증명이 저장되어 있습니다. 변경하려면 새 값을 입력하세요.'
+                    : 'Google Cloud Console에서 OAuth Client ID와 Secret을 발급받아 입력하세요.'}
+                </p>
               </section>
 
               <section className="settings-section">

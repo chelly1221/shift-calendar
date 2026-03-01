@@ -26,10 +26,12 @@ import {
   forcePushResultSchema,
   googleCalendarItemSchema,
   googleConnectionStatusSchema,
+  googleOAuthConfigSchema,
   listOutboxJobsInputSchema,
   listEventsInputSchema,
   outboxJobItemSchema,
   selectedCalendarSchema,
+  setGoogleOAuthConfigInputSchema,
   setShiftSettingsInputSchema,
   setSelectedCalendarInputSchema,
   shiftSettingsSchema,
@@ -49,9 +51,11 @@ import { prisma } from '../db/prisma'
 import {
   ensureSetting,
   getAccountEmail,
+  getGoogleOAuthConfig,
   getShiftSettings,
   getSelectedCalendar,
   setAccountEmail,
+  setGoogleOAuthConfig,
   setShiftSettings,
   setSelectedCalendar,
 } from '../db/settingRepository'
@@ -85,6 +89,8 @@ export function registerCalendarIpc(): void {
   ipcMain.removeHandler(IPC_CHANNELS.setSelectedCalendar)
   ipcMain.removeHandler(IPC_CHANNELS.getShiftSettings)
   ipcMain.removeHandler(IPC_CHANNELS.setShiftSettings)
+  ipcMain.removeHandler(IPC_CHANNELS.getGoogleOAuthConfig)
+  ipcMain.removeHandler(IPC_CHANNELS.setGoogleOAuthConfig)
 
   ipcMain.handle(IPC_CHANNELS.listEvents, async (_event, payload?: unknown) => {
     const input =
@@ -557,7 +563,7 @@ export function registerCalendarIpc(): void {
 
   ipcMain.handle(IPC_CHANNELS.connectGoogle, async () => {
     await ensureSetting()
-    if (!isGoogleOAuthConfigured()) {
+    if (!(await isGoogleOAuthConfigured())) {
       return googleConnectionStatusSchema.parse({
         connected: false,
         accountEmail: null,
@@ -583,7 +589,7 @@ export function registerCalendarIpc(): void {
 
   ipcMain.handle(IPC_CHANNELS.getGoogleConnectionStatus, async () => {
     await ensureSetting()
-    const connected = isGoogleOAuthConfigured() && (await isGoogleConnected())
+    const connected = (await isGoogleOAuthConfigured()) && (await isGoogleConnected())
     const accountEmail = connected ? await getAccountEmail() : null
     return googleConnectionStatusSchema.parse({
       connected,
@@ -593,12 +599,15 @@ export function registerCalendarIpc(): void {
 
   ipcMain.handle(IPC_CHANNELS.listGoogleCalendars, async () => {
     await ensureSetting()
-    const connected = isGoogleOAuthConfigured() && (await isGoogleConnected())
-    if (!connected) {
+    const oauthConfigured = await isGoogleOAuthConfigured()
+    const googleConnected = await isGoogleConnected()
+    console.debug('[IPC] listGoogleCalendars: oauthConfigured=%s, googleConnected=%s', oauthConfigured, googleConnected)
+    if (!oauthConfigured || !googleConnected) {
       return []
     }
 
     const calendars = await googleCalendarService.listCalendars()
+    console.debug('[IPC] listGoogleCalendars: found %d calendars', calendars.length)
     return calendars.map((calendar) => googleCalendarItemSchema.parse(calendar))
   })
 
@@ -635,5 +644,25 @@ export function registerCalendarIpc(): void {
     const input = setShiftSettingsInputSchema.parse(payload)
     const settings = await setShiftSettings(input)
     return shiftSettingsSchema.parse(settings)
+  })
+
+  ipcMain.handle(IPC_CHANNELS.getGoogleOAuthConfig, async () => {
+    const config = await getGoogleOAuthConfig()
+    const configured = Boolean(config.clientId && config.clientSecret)
+    return googleOAuthConfigSchema.parse({
+      clientId: config.clientId,
+      clientSecret: configured ? '********' : null,
+      configured,
+    })
+  })
+
+  ipcMain.handle(IPC_CHANNELS.setGoogleOAuthConfig, async (_event, payload: unknown) => {
+    const input = setGoogleOAuthConfigInputSchema.parse(payload)
+    await setGoogleOAuthConfig(input.clientId, input.clientSecret)
+    return googleOAuthConfigSchema.parse({
+      clientId: input.clientId,
+      clientSecret: '********',
+      configured: true,
+    })
   })
 }

@@ -254,6 +254,46 @@ export async function setShiftSettings(input: ShiftSettings): Promise<ShiftSetti
   return nextSettings
 }
 
+export async function getGoogleOAuthConfig(): Promise<{
+  clientId: string | null
+  clientSecret: string | null
+}> {
+  const setting = await ensureSetting()
+  const row = await prisma.setting.findUnique({
+    where: { id: setting.id },
+    select: { googleClientId: true, googleClientSecret: true },
+  })
+  return {
+    clientId: row?.googleClientId ?? null,
+    clientSecret: row?.googleClientSecret ?? null,
+  }
+}
+
+export async function setGoogleOAuthConfig(
+  clientId: string,
+  clientSecret: string,
+): Promise<void> {
+  await ensureSetting()
+  await prisma.setting.update({
+    where: { id: 1 },
+    data: {
+      googleClientId: clientId,
+      googleClientSecret: clientSecret,
+    },
+  })
+}
+
+export async function clearGoogleOAuthConfig(): Promise<void> {
+  await ensureSetting()
+  await prisma.setting.update({
+    where: { id: 1 },
+    data: {
+      googleClientId: null,
+      googleClientSecret: null,
+    },
+  })
+}
+
 export async function setSelectedCalendar(input: {
   calendarId: string
   calendarSummary?: string | null

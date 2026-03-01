@@ -4,6 +4,7 @@ import { clipboard, dialog, shell } from 'electron'
 import { google } from 'googleapis'
 import type { OAuth2Client } from 'google-auth-library'
 import { clearRefreshToken, loadRefreshToken, saveRefreshToken } from '../security/tokenStore'
+import { getGoogleOAuthConfig } from '../db/settingRepository'
 
 const CALENDAR_SCOPE = 'https://www.googleapis.com/auth/calendar'
 
@@ -12,21 +13,27 @@ interface GoogleConfig {
   clientSecret: string
 }
 
-function loadGoogleConfig(): GoogleConfig | null {
+async function loadGoogleConfig(): Promise<GoogleConfig | null> {
   const clientId = process.env.GOOGLE_CLIENT_ID?.trim()
   const clientSecret = process.env.GOOGLE_CLIENT_SECRET?.trim()
-  if (!clientId || !clientSecret) {
-    return null
+  if (clientId && clientSecret) {
+    return { clientId, clientSecret }
   }
-  return { clientId, clientSecret }
+
+  const dbConfig = await getGoogleOAuthConfig()
+  if (dbConfig.clientId && dbConfig.clientSecret) {
+    return { clientId: dbConfig.clientId, clientSecret: dbConfig.clientSecret }
+  }
+
+  return null
 }
 
-export function isGoogleOAuthConfigured(): boolean {
-  return Boolean(loadGoogleConfig())
+export async function isGoogleOAuthConfigured(): Promise<boolean> {
+  return Boolean(await loadGoogleConfig())
 }
 
-function createOAuthClient(redirectUri: string): OAuth2Client {
-  const config = loadGoogleConfig()
+async function createOAuthClient(redirectUri: string): Promise<OAuth2Client> {
+  const config = await loadGoogleConfig()
   if (!config) {
     throw new Error('Google OAuth is not configured. Set GOOGLE_CLIENT_ID and GOOGLE_CLIENT_SECRET.')
   }
@@ -73,7 +80,7 @@ async function waitForAuthorizationCode(timeoutMs = 180_000): Promise<{ code: st
 
       const redirectUri = `http://127.0.0.1:${address.port}/oauth2callback`
       try {
-        const oauth = createOAuthClient(redirectUri)
+        const oauth = await createOAuthClient(redirectUri)
         const url = oauth.generateAuthUrl({
           access_type: 'offline',
           prompt: 'consent',
@@ -132,12 +139,12 @@ async function waitForAuthorizationCode(timeoutMs = 180_000): Promise<{ code: st
 }
 
 export async function connectGoogleInteractive(): Promise<{ accountEmail: string | null }> {
-  if (!isGoogleOAuthConfigured()) {
+  if (!(await isGoogleOAuthConfigured())) {
     throw new Error('Google OAuth is not configured. Set GOOGLE_CLIENT_ID and GOOGLE_CLIENT_SECRET.')
   }
 
   const { code, redirectUri } = await waitForAuthorizationCode()
-  const oauth = createOAuthClient(redirectUri)
+  const oauth = await createOAuthClient(redirectUri)
   const tokenResponse = await oauth.getToken(code)
 
   const refreshToken = tokenResponse.tokens.refresh_token ?? (await loadRefreshToken())
@@ -161,7 +168,7 @@ export async function connectGoogleInteractive(): Promise<{ accountEmail: string
 }
 
 export async function getAuthorizedGoogleClient(): Promise<OAuth2Client> {
-  if (!isGoogleOAuthConfigured()) {
+  if (!(await isGoogleOAuthConfigured())) {
     throw new Error('Google OAuth is not configured. Set GOOGLE_CLIENT_ID and GOOGLE_CLIENT_SECRET.')
   }
 
@@ -170,7 +177,7 @@ export async function getAuthorizedGoogleClient(): Promise<OAuth2Client> {
     throw new Error('Google account is not connected.')
   }
 
-  const oauth = createOAuthClient('http://127.0.0.1')
+  const oauth = await createOAuthClient('http://127.0.0.1')
   oauth.setCredentials({ refresh_token: refreshToken })
   try {
     await oauth.getAccessToken()
@@ -187,7 +194,7 @@ export async function disconnectGoogleAccount(): Promise<void> {
   try {
     const refreshToken = await loadRefreshToken()
     if (refreshToken) {
-      const oauth = createOAuthClient('http://127.0.0.1')
+      const oauth = await createOAuthClient('http://127.0.0.1')
       oauth.setCredentials({ refresh_token: refreshToken })
       await oauth.revokeToken(refreshToken).catch(() => {
         // Revocation failure is non-fatal - token may already be invalid

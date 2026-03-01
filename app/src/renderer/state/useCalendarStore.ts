@@ -162,6 +162,12 @@ const fallbackApi: CalendarApi = {
   async setShiftSettings(payload) {
     return cloneShiftSettings(payload)
   },
+  async getGoogleOAuthConfig() {
+    return { clientId: null, clientSecret: null, configured: false }
+  },
+  async setGoogleOAuthConfig() {
+    return { clientId: null, clientSecret: null, configured: false }
+  },
 }
 
 function getCalendarApi(): CalendarApi {
@@ -273,7 +279,10 @@ export const useCalendarStore = create<CalendarState>((set, get) => ({
 
       let calendars: GoogleCalendarItem[] = []
       if (googleStatus.connected) {
-        calendars = await api.listGoogleCalendars().catch(() => [])
+        calendars = await api.listGoogleCalendars().catch((err) => {
+          console.warn('[Store] listGoogleCalendars failed:', err)
+          return []
+        })
       }
 
       const state = get()
