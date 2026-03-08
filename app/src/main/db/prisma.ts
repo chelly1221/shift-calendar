@@ -1,7 +1,7 @@
 import { PrismaClient } from '@prisma/client'
 import { PrismaBetterSqlite3 } from '@prisma/adapter-better-sqlite3'
 import Database from 'better-sqlite3'
-import { copyFileSync, existsSync, mkdirSync } from 'node:fs'
+import { copyFileSync, existsSync, mkdirSync, statSync, unlinkSync } from 'node:fs'
 import { dirname, join } from 'node:path'
 
 declare global {
@@ -104,13 +104,31 @@ CREATE INDEX IF NOT EXISTS "OutboxJob_eventLocalId_status_idx" ON "OutboxJob"("e
 }
 
 /**
- * If userData has no database yet, copy the bundled seed database
- * (extraResources/seed.db) so the app starts with existing data.
+ * Check whether a seed database should replace the current database.
+ * Returns true when the file doesn't exist or is an empty-schema stub
+ * (< 1 MB, indicating no real data).
+ */
+function needsSeed(dbPath: string): boolean {
+  if (!existsSync(dbPath)) return true
+  try {
+    const size = statSync(dbPath).size
+    // An empty-schema SQLite db with our tables is ~32 KB.
+    // The real seed with events is ~19 MB. Use 1 MB as threshold.
+    return size < 1_000_000
+  } catch {
+    return true
+  }
+}
+
+/**
+ * If userData has no database yet (or only an empty-schema stub),
+ * copy the bundled seed database (extraResources/seed.db) so the
+ * app starts with existing data.
  * Falls back to creating empty tables via ensureSchema.
  */
 function seedIfNeeded(dbPath: string): void {
   if (dbPath === ':memory:') return
-  if (existsSync(dbPath)) return
+  if (!needsSeed(dbPath)) return
 
   try {
     mkdirSync(dirname(dbPath), { recursive: true })
@@ -123,6 +141,10 @@ function seedIfNeeded(dbPath: string): void {
   if (resourcesPath) {
     const seedPath = join(resourcesPath, 'seed.db')
     if (existsSync(seedPath)) {
+      // Remove empty stub and WAL files before overwriting
+      for (const suffix of ['', '-wal', '-shm']) {
+        try { unlinkSync(dbPath + suffix) } catch { /* not found */ }
+      }
       copyFileSync(seedPath, dbPath)
       console.log('[prisma] Seeded database from bundled seed.db')
       return
