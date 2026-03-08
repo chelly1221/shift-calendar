@@ -61,10 +61,7 @@ export default defineConfig(({ command }) => ({
             ? { 'process.env.VITE_DEV_SERVER_URL': JSON.stringify('http://localhost:5173') }
             : undefined,
           plugins: [
-            cjsInteropPlugin([
-              '@prisma/client',
-              '@prisma/adapter-better-sqlite3',
-            ]),
+            cjsInteropPlugin(['@prisma/client']),
           ],
           build: {
             rollupOptions: {
