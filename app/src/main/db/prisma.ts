@@ -1,8 +1,8 @@
 import { PrismaClient } from '@prisma/client'
 import { PrismaBetterSqlite3 } from '@prisma/adapter-better-sqlite3'
 import Database from 'better-sqlite3'
-import { mkdirSync } from 'node:fs'
-import { dirname } from 'node:path'
+import { copyFileSync, existsSync, mkdirSync } from 'node:fs'
+import { dirname, join } from 'node:path'
 
 declare global {
   // eslint-disable-next-line no-var
@@ -103,17 +103,47 @@ CREATE INDEX IF NOT EXISTS "OutboxJob_eventLocalId_status_idx" ON "OutboxJob"("e
   }
 }
 
+/**
+ * If userData has no database yet, copy the bundled seed database
+ * (extraResources/seed.db) so the app starts with existing data.
+ * Falls back to creating empty tables via ensureSchema.
+ */
+function seedIfNeeded(dbPath: string): void {
+  if (dbPath === ':memory:') return
+  if (existsSync(dbPath)) return
+
+  try {
+    mkdirSync(dirname(dbPath), { recursive: true })
+  } catch {
+    // directory already exists
+  }
+
+  // In packaged builds process.resourcesPath points to <app>/resources
+  const resourcesPath = process.resourcesPath
+  if (resourcesPath) {
+    const seedPath = join(resourcesPath, 'seed.db')
+    if (existsSync(seedPath)) {
+      copyFileSync(seedPath, dbPath)
+      console.log('[prisma] Seeded database from bundled seed.db')
+      return
+    }
+  }
+
+  // No seed available — create empty schema
+  ensureSchema(dbPath)
+}
+
 const databaseUrl = process.env.DATABASE_URL ?? 'file:./dev.db'
 const resolvedPath = resolveSqlitePathFromDatabaseUrl(databaseUrl)
 
-// Create tables if they don't exist (safe for existing databases).
+// Seed or create schema on first launch.
 // Wrapped in try-catch so that test environments with incompatible
 // native binaries (e.g. WSL running Windows-compiled better-sqlite3)
 // can still import this module.
 try {
-  ensureSchema(resolvedPath)
+  seedIfNeeded(resolvedPath)
 } catch (err) {
-  console.warn('[prisma] Schema migration skipped:', err)
+  console.warn('[prisma] Database seed/migration skipped:', err)
 }
 
 const adapter = new PrismaBetterSqlite3({
