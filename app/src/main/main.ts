@@ -193,13 +193,18 @@ if (!gotTheLock) {
   app.whenReady().then(async () => {
     app.setName('교대근무 일정관리')
 
+    // Migrate legacy SyncState values BEFORE any Prisma model query
+    // Raw SQL bypasses Prisma's client-side enum validation
+    try {
+      await prisma.$executeRawUnsafe(
+        `UPDATE "Event" SET "syncState" = 'PENDING' WHERE "syncState" NOT IN ('CLEAN', 'PENDING', 'ERROR')`,
+      )
+    } catch (err) {
+      console.warn('Legacy SyncState migration skipped:', err)
+    }
+
     try {
       await ensureSetting()
-
-      // Migrate legacy SyncState values that are no longer in the Prisma enum
-      await prisma.$executeRawUnsafe(
-        `UPDATE Event SET syncState = 'PENDING' WHERE syncState NOT IN ('CLEAN', 'PENDING', 'ERROR')`,
-      )
     } catch (err) {
       console.error('Database initialization failed:', err)
     }
