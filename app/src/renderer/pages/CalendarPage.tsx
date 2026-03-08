@@ -5,9 +5,9 @@ import koLocale from '@fullcalendar/core/locales/ko'
 import { DateTime } from 'luxon'
 import { type WheelEvent as ReactWheelEvent, useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import type { DatesSetArg, EventClickArg } from '@fullcalendar/core'
-import type { CalendarEvent, RecurrenceEditScope, ShiftTeamAssignments, ShiftTeamMode, UpsertCalendarEventInput } from '../../shared/calendar'
+import type { CalendarEvent, RecurrenceEditScope, SendUpdates, ShiftTeamAssignments, ShiftTeamMode, UpsertCalendarEventInput } from '../../shared/calendar'
 import { expandRecurringEvents, isVirtualInstance, extractMasterLocalId } from '../../shared/expandRecurrence'
-import { parseShiftAbbreviations, stripShiftAbbreviations, resolveAbbreviationToName } from '../../shared/eventTitleMapper'
+import { parseShiftAbbreviations, stripShiftAbbreviations, resolveAbbreviationToName, buildUniqueCharMap, buildShiftGoogleSummary } from '../../shared/eventTitleMapper'
 import { isPublicHolidayName, FIXED_PUBLIC_HOLIDAY_MMDD } from '../../shared/koreanHolidays'
 import { EventModal, type EditableEvent } from '../components/EventModal'
 import { RadialMenu } from '../components/RadialMenu'
@@ -616,6 +616,7 @@ export function CalendarPage() {
     setShiftAssignments,
     connectGoogle,
     disconnectGoogle,
+    setShiftAbbreviation,
   } = useCalendarStore()
 
   const [routineDoneOverrides, setRoutineDoneOverrides] = useState<Map<string, boolean>>(new Map())
@@ -635,6 +636,18 @@ export function CalendarPage() {
     type: SubstitutionWorkType
     original: string
   } | null>(null)
+  const [editingShiftSummary, setEditingShiftSummary] = useState<{
+    eventLocalId: string
+    dateKey: string
+    draft: string
+    rect: { left: number; top: number; width: number; height: number }
+  } | null>(null)
+  const [abbreviationModal, setAbbreviationModal] = useState<{
+    anchor: { x: number; y: number }
+    name: string
+    currentChar: string
+  } | null>(null)
+  const [abbreviationDraft, setAbbreviationDraft] = useState('')
   const [editingTitleEventId, setEditingTitleEventId] = useState<string | null>(null)
   const [editingTitleDraft, setEditingTitleDraft] = useState('')
   const [settingsOpen, setSettingsOpen] = useState(false)
@@ -669,6 +682,7 @@ export function CalendarPage() {
   const editingTitleDraftRef = useRef('')
   const undoStackRef = useRef<UndoOperation[][]>([])
   const applyingUndoRef = useRef(false)
+  const savingShiftSummaryRef = useRef(false)
   editingTitleDraftRef.current = editingTitleDraft
   const effectiveWeatherOverlayMode = weatherPreviewMode ?? weatherOverlayMode
 
@@ -726,7 +740,7 @@ export function CalendarPage() {
 
   const deleteEventWithUndo = useCallback(async (
     localId: string,
-    sendUpdates: 'all' | 'none' = 'none',
+    sendUpdates: SendUpdates = 'none',
     recurrenceScope?: RecurrenceEditScope,
     trackUndo = true,
   ) => {
@@ -963,7 +977,7 @@ export function CalendarPage() {
 
       return next.size === prev.size ? prev : next
     })
-  }, [events, routineDoneOverrides.size])
+  }, [events, routineDoneOverrides])
 
   useEffect(() => {
     if (!editingTitleEventId) return
@@ -1003,6 +1017,33 @@ export function CalendarPage() {
       document.removeEventListener('keydown', handleKeyDown, true)
     }
   }, [editingShiftBadge])
+
+  useEffect(() => {
+    if (!abbreviationModal) {
+      return
+    }
+
+    const handlePointerDown = (event: PointerEvent) => {
+      const target = event.target as HTMLElement
+      if (target.closest('.shift-badge-inline-editor')) {
+        return
+      }
+      setAbbreviationModal(null)
+    }
+    const handleKeyDown = (event: KeyboardEvent) => {
+      if (event.key === 'Escape') {
+        event.preventDefault()
+        setAbbreviationModal(null)
+      }
+    }
+
+    document.addEventListener('pointerdown', handlePointerDown, true)
+    document.addEventListener('keydown', handleKeyDown, true)
+    return () => {
+      document.removeEventListener('pointerdown', handlePointerDown, true)
+      document.removeEventListener('keydown', handleKeyDown, true)
+    }
+  }, [abbreviationModal])
 
   useEffect(() => {
     const handleKeyDown = (event: KeyboardEvent) => {
@@ -1055,15 +1096,17 @@ export function CalendarPage() {
       }
     }
 
-    // 오프라인 fallback: 현재 연도 기준 고정 날짜 공휴일
-    const year = DateTime.local().year
-    for (const mmdd of FIXED_PUBLIC_HOLIDAY_MMDD) {
-      const key = `${year}-${mmdd}`
-      if (!map.has(key)) map.set(key, '')
+    // 오프라인 fallback: 표시 월 기준 전후 연도 고정 날짜 공휴일
+    const year = visibleMonth.year
+    for (const y of [year - 1, year, year + 1]) {
+      for (const mmdd of FIXED_PUBLIC_HOLIDAY_MMDD) {
+        const key = `${y}-${mmdd}`
+        if (!map.has(key)) map.set(key, '')
+      }
     }
 
     return map
-  }, [events, todayContextEvents])
+  }, [events, todayContextEvents, visibleMonth])
 
   const todayShiftSummary = useMemo(() => {
     const today = DateTime.local().toISODate()
@@ -1285,14 +1328,12 @@ export function CalendarPage() {
       }>()
 
       for (const event of dateEvents) {
-        const abbreviations = parseShiftAbbreviations(event.summary)
-        const cleanSummary = stripShiftAbbreviations(event.summary).trim()
-        if (cleanSummary && !summaries.includes(cleanSummary)) {
-          summaries.push(cleanSummary)
-        }
-
         const teams = parseShiftTeamsFromSummary(event.summary)
         if (!teams) {
+          const cleanSummary = stripShiftAbbreviations(event.summary).trim()
+          if (cleanSummary && !summaries.includes(cleanSummary)) {
+            summaries.push(cleanSummary)
+          }
           continue
         }
 
@@ -1318,22 +1359,42 @@ export function CalendarPage() {
         })
 
         // Fallback badges from summary abbreviations (when no description-based badge exists for the team)
+        const abbreviations = parseShiftAbbreviations(event.summary)
         for (const [teamKey, chars] of abbreviations) {
           const hasDescBadge = [...latestByOriginal.values()].some((b) => b.team === teamKey && b.substitutionIndex >= 0)
           if (hasDescBadge) continue
 
-          for (const char of chars) {
-            const fullName = resolveAbbreviationToName(char, allMemberNames)
+          for (let ci = 0; ci < chars.length; ci++) {
+            const char = chars[ci]
+            const charMap = buildUniqueCharMap(allMemberNames, shiftSettings.abbreviations)
+            const charToNameLocal = new Map<string, string>()
+            for (const [n, c] of charMap) charToNameLocal.set(c, n)
+            const fullName = charToNameLocal.get(char)
+              ?? resolveAbbreviationToName(char, allMemberNames, shiftSettings.abbreviations)
             const resolvedName = fullName ?? char
+            const teamMembers = shiftTeamDrafts[teamKey as ShiftTeamKey] ?? []
+            const original = teamMembers[ci]?.trim() || teamMembers[0]?.trim() || resolvedName
             latestByOriginal.set(`${teamKey}:abbrev:${char}`, {
               team: teamKey as ShiftTeamKey,
               name: resolvedName,
               type: '대리근무' as SubstitutionWorkType,
-              original: resolvedName,
+              original,
               eventLocalId: event.localId,
               substitutionIndex: -1,
             })
           }
+        }
+
+        // Build label: use buildShiftGoogleSummary for description-based subs,
+        // otherwise preserve original summary abbreviations
+        const summaryForLabel = parsedDescription.substitutions.length > 0
+          ? buildShiftGoogleSummary(
+            event.summary, event.description ?? '',
+            shiftTeamDrafts, allMemberNames, shiftSettings.abbreviations,
+          )
+          : event.summary.trim()
+        if (summaryForLabel && !summaries.includes(summaryForLabel)) {
+          summaries.push(summaryForLabel)
         }
       }
 
@@ -1373,7 +1434,20 @@ export function CalendarPage() {
     }
 
     return displays
-  }, [events, shiftTeamDrafts, allMemberNames])
+  }, [events, shiftTeamDrafts, allMemberNames, shiftSettings.teams, shiftSettings.abbreviations])
+
+  useEffect(() => {
+    const frame = requestAnimationFrame(() => {
+      const pills = document.querySelectorAll<HTMLElement>('.fc-day-holiday-pill:not(.is-under-day-number)')
+      for (const pill of pills) {
+        pill.classList.remove('is-truncated')
+        if (pill.scrollWidth > pill.clientWidth) {
+          pill.classList.add('is-truncated')
+        }
+      }
+    })
+    return () => cancelAnimationFrame(frame)
+  }, [shiftDisplayByDate, publicHolidayMap])
 
   const calendarEvents = useMemo(
     () =>
@@ -1471,6 +1545,21 @@ export function CalendarPage() {
     const top = Math.min(Math.max(editingShiftBadge.anchor.y + 8, pad), maxTop)
     return { left, top }
   }, [editingShiftBadge])
+
+  const abbreviationModalPosition = useMemo(() => {
+    if (!abbreviationModal) {
+      return null
+    }
+
+    const editorWidth = 260
+    const editorHeight = 180
+    const pad = 12
+    const maxLeft = Math.max(pad, window.innerWidth - editorWidth - pad)
+    const maxTop = Math.max(pad, window.innerHeight - editorHeight - pad)
+    const left = Math.min(Math.max(abbreviationModal.anchor.x + 8, pad), maxLeft)
+    const top = Math.min(Math.max(abbreviationModal.anchor.y + 8, pad), maxTop)
+    return { left, top }
+  }, [abbreviationModal])
 
   const moveMonth = (direction: 'prev' | 'next' | 'today') => {
     const calendarApi = calendarRef.current?.getApi()
@@ -1592,6 +1681,111 @@ export function CalendarPage() {
 
   }, [saveEventWithUndo])
 
+  const saveShiftSummaryInlineEdit = useCallback(async () => {
+    if (savingShiftSummaryRef.current) return
+    if (!editingShiftSummary) return
+    savingShiftSummaryRef.current = true
+    try {
+      const targetEvent = allEventsRef.current.find((ev) => ev.localId === editingShiftSummary.eventLocalId)
+      if (!targetEvent) {
+        setEditingShiftSummary(null)
+        return
+      }
+      const trimmed = editingShiftSummary.draft.trim()
+      // Compare against the Google summary to avoid no-op saves
+      const currentGoogleSummary = buildShiftGoogleSummary(
+        targetEvent.summary, targetEvent.description ?? '',
+        shiftSettings.teams, allMemberNames, shiftSettings.abbreviations,
+      )
+      if (!trimmed || (trimmed === currentGoogleSummary || trimmed === targetEvent.summary.trim())) {
+        setEditingShiftSummary(null)
+        return
+      }
+
+      // Detect abbreviation changes and update description substitutions accordingly
+      // Use original summary abbreviations as baseline when buildShiftGoogleSummary has none (fallback case)
+      const generatedAbbrevs = parseShiftAbbreviations(currentGoogleSummary)
+      const oldAbbrevs = generatedAbbrevs.size > 0 ? generatedAbbrevs : parseShiftAbbreviations(targetEvent.summary)
+      const newAbbrevs = parseShiftAbbreviations(trimmed)
+      const parsed = parseShiftDescriptionState(targetEvent.description ?? '')
+
+      // Build char→name map using the same charMap as buildShiftGoogleSummary (inverted)
+      const charMap = buildUniqueCharMap(allMemberNames, shiftSettings.abbreviations)
+      const charToName = new Map<string, string>()
+      for (const [name, char] of charMap) {
+        charToName.set(char, name)
+      }
+
+      // Build mapping: for each team, which substitution indices belong to it (in order)
+      const teamSubIndices = new Map<ShiftTeamKey, number[]>()
+      for (let i = 0; i < parsed.substitutions.length; i++) {
+        const sub = parsed.substitutions[i]
+        let targetTeam: ShiftTeamKey | null = null
+        for (const key of ['A', 'B', 'C', 'D'] as const) {
+          if (shiftSettings.teams[key].some((m) => m.trim() === sub.original)) {
+            targetTeam = key
+            break
+          }
+        }
+        if (targetTeam) {
+          const indices = teamSubIndices.get(targetTeam) ?? []
+          indices.push(i)
+          teamSubIndices.set(targetTeam, indices)
+        }
+      }
+
+      // For each team with changed abbreviations, resolve new chars to full names and update substitutions
+      let descriptionChanged = false
+      for (const [teamKey, newChars] of newAbbrevs) {
+        const oldChars = oldAbbrevs.get(teamKey) ?? []
+        const subIndices = teamSubIndices.get(teamKey) ?? []
+        for (let i = 0; i < newChars.length; i++) {
+          if (newChars[i] === oldChars[i]) continue
+          const newName = charToName.get(newChars[i])
+            ?? resolveAbbreviationToName(newChars[i], allMemberNames, shiftSettings.abbreviations)
+          if (!newName) continue
+          if (i < subIndices.length) {
+            // Update existing substitution block
+            parsed.substitutions[subIndices[i]].substitute = newName
+            descriptionChanged = true
+          } else {
+            // No existing substitution — create new block with team member as original
+            const teamMembers = shiftSettings.teams[teamKey] ?? []
+            const original = teamMembers[i]?.trim() || teamMembers[0]?.trim()
+            if (original) {
+              parsed.substitutions.push({ substitute: newName, type: '대리근무', original })
+              descriptionChanged = true
+            }
+          }
+        }
+      }
+
+      const cleanSummary = stripShiftAbbreviations(trimmed)
+      await saveEventWithUndo({
+        ...toEditableEvent(targetEvent),
+        summary: cleanSummary,
+        ...(descriptionChanged ? { description: serializeShiftDescriptionState(parsed) } : {}),
+        sendUpdates: 'none',
+      })
+      setEditingShiftSummary(null)
+    } finally {
+      savingShiftSummaryRef.current = false
+    }
+  }, [editingShiftSummary, saveEventWithUndo, shiftSettings.teams, allMemberNames, shiftSettings.abbreviations])
+
+  useEffect(() => {
+    if (!editingShiftSummary) return
+    const handlePointerDown = (event: PointerEvent) => {
+      const target = event.target as HTMLElement
+      if (target.closest('.fc-day-shift-summary-input')) return
+      void saveShiftSummaryInlineEdit()
+    }
+    document.addEventListener('pointerdown', handlePointerDown, true)
+    return () => {
+      document.removeEventListener('pointerdown', handlePointerDown, true)
+    }
+  }, [editingShiftSummary, saveShiftSummaryInlineEdit])
+
   const saveShiftBadgeInlineEdit = useCallback(async () => {
     if (!editingShiftBadge) {
       return
@@ -1712,10 +1906,10 @@ export function CalendarPage() {
       return
     }
 
-    event.preventDefault()
     if (monthWheelLockRef.current) {
       return
     }
+    event.preventDefault()
 
     moveMonth(event.deltaY > 0 ? 'next' : 'prev')
     monthWheelLockRef.current = setTimeout(() => {
@@ -2128,6 +2322,19 @@ export function CalendarPage() {
                             setDayWorkerDrafts(nextWorkers)
                             scheduleShiftAssignmentsSave(shiftTeamDrafts, nextWorkers)
                           }}
+                          onContextMenu={(event) => {
+                            const memberName = (dayWorkerDrafts[workerIndex] ?? '').trim()
+                            if (!memberName) return
+                            event.preventDefault()
+                            const charMap = buildUniqueCharMap(allMemberNames, shiftSettings.abbreviations)
+                            const currentChar = shiftSettings.abbreviations[memberName] || charMap.get(memberName) || ''
+                            setAbbreviationDraft(currentChar)
+                            setAbbreviationModal({
+                              anchor: { x: event.clientX, y: event.clientY },
+                              name: memberName,
+                              currentChar,
+                            })
+                          }}
                           maxLength={40}
                         />
                       </label>
@@ -2158,6 +2365,19 @@ export function CalendarPage() {
                                 setShiftTeamDrafts(nextTeams)
                                 scheduleShiftAssignmentsSave(nextTeams, dayWorkerDrafts)
                               }}
+                              onContextMenu={(event) => {
+                                const memberName = (shiftTeamDrafts[teamKey][memberIndex] ?? '').trim()
+                                if (!memberName) return
+                                event.preventDefault()
+                                const charMap = buildUniqueCharMap(allMemberNames, shiftSettings.abbreviations)
+                                const currentChar = shiftSettings.abbreviations[memberName] || charMap.get(memberName) || ''
+                                setAbbreviationDraft(currentChar)
+                                setAbbreviationModal({
+                                  anchor: { x: event.clientX, y: event.clientY },
+                                  name: memberName,
+                                  currentChar,
+                                })
+                              }}
                               maxLength={40}
                             />
                           </label>
@@ -2175,17 +2395,40 @@ export function CalendarPage() {
         <main className="calendar-panel" onWheel={handleCalendarWheel} onClick={(e) => {
           if (e.button !== 0) return
           const target = e.target as HTMLElement
+          if (target.closest('.fc-day-shift-summary-input')) return
           if (target.closest('.fc-event') || target.closest('.fc-event-title-inline-input')) return
           const badgeEl = target.closest<HTMLElement>('.fc-day-shift-badge')
           if (badgeEl) {
-            const badgeSelection = parseShiftBadgeSelection(badgeEl)
-            if (badgeSelection) {
+            const eventLocalId = badgeEl.dataset.shiftBadgeEvent
+            if (eventLocalId) {
               e.preventDefault()
               e.stopPropagation()
-              setEditingShiftBadge({
-                anchor: { x: e.clientX, y: e.clientY },
-                ...badgeSelection,
-              })
+              setAbbreviationModal(null)
+              setEditingShiftBadge(null)
+              const shiftEvent = eventsRef.current.find((ev) => ev.localId === eventLocalId)
+              if (shiftEvent) {
+                const inlineEl = badgeEl.closest<HTMLElement>('.fc-day-shift-inline')
+                if (inlineEl) {
+                  const rect = inlineEl.getBoundingClientRect()
+                  const googleSummary = buildShiftGoogleSummary(
+                    shiftEvent.summary, shiftEvent.description ?? '',
+                    shiftSettings.teams, allMemberNames, shiftSettings.abbreviations,
+                  )
+                  // Use original summary when it has abbreviations but buildShiftGoogleSummary stripped them (fallback case)
+                  const originalHasAbbrevs = parseShiftAbbreviations(shiftEvent.summary).size > 0
+                  const generatedHasAbbrevs = parseShiftAbbreviations(googleSummary).size > 0
+                  const draft = (originalHasAbbrevs && !generatedHasAbbrevs)
+                    ? shiftEvent.summary.trim()
+                    : googleSummary
+                  const dateKey = DateTime.fromISO(shiftEvent.startAtUtc).toLocal().toISODate()
+                  if (dateKey) {
+                    setEditingShiftSummary({
+                      eventLocalId: shiftEvent.localId, dateKey, draft,
+                      rect: { left: rect.left, top: rect.top, width: rect.width, height: rect.height },
+                    })
+                  }
+                }
+              }
             }
             return
           }
@@ -2213,12 +2456,15 @@ export function CalendarPage() {
           setRadialMenu({ anchor: { x: e.clientX, y: e.clientY }, dateStr })
         }} onContextMenu={(e) => {
           const target = e.target as HTMLElement
+          if (target.closest('.fc-day-shift-summary-input')) return
           const badgeEl = target.closest<HTMLElement>('.fc-day-shift-badge')
           if (badgeEl) {
             const badgeSelection = parseShiftBadgeSelection(badgeEl)
             if (badgeSelection) {
               e.preventDefault()
               e.stopPropagation()
+              setAbbreviationModal(null)
+              setEditingShiftSummary(null)
               setEditingShiftBadge({
                 anchor: { x: e.clientX, y: e.clientY },
                 ...badgeSelection,
@@ -2235,7 +2481,7 @@ export function CalendarPage() {
 
           // Right-click on shift label → open existing 근무 event for editing
           if (target.closest('.fc-day-shift-inline')) {
-            const shiftEvent = events.find(
+            const shiftEvent = eventsRef.current.find(
               (ev) => ev.eventType === '근무' && DateTime.fromISO(ev.startAtUtc).toLocal().toISODate() === dateStr,
             )
             if (shiftEvent) {
@@ -2450,40 +2696,89 @@ export function CalendarPage() {
             const shiftDisplay = dateKey ? shiftDisplayByDate.get(dateKey) : null
             const holidayName = dateKey ? publicHolidayMap.get(dateKey) : undefined
             const isHoliday = holidayName !== undefined
-            const hasShiftBadges = Boolean(shiftDisplay && shiftDisplay.badges.length > 0)
-            const showHolidayUnderDayNumber = Boolean(holidayName && hasShiftBadges)
             return (
               <>
                 <span className="fc-day-meta-row">
                   <span className={isHoliday ? 'fc-day-number-text is-public-holiday' : 'fc-day-number-text'}>{arg.dayNumberText.replace('일', '')}</span>
                   {shiftDisplay ? (
                     <span className="fc-day-shift-inline">
-                      <span className="fc-day-shift-label">{shiftDisplay.label}</span>
-                      {shiftDisplay.badges.length > 0 ? (
-                        <span className="fc-day-shift-badges">
-                          {shiftDisplay.badges.map((badge) => (
-                            <span
-                              key={badge.key}
-                              className={badge.type === '대체근무' ? 'fc-day-shift-badge is-replacement' : 'fc-day-shift-badge'}
-                              data-shift-badge-event={badge.eventLocalId}
-                              data-shift-badge-index={badge.substitutionIndex}
-                              data-shift-badge-team={badge.team}
-                              data-shift-badge-substitute={badge.name}
-                              data-shift-badge-original={badge.original}
-                              data-shift-badge-type={badge.type}
-                            >
-                              {badge.team}조 {badge.name}
-                            </span>
-                          ))}
-                        </span>
-                      ) : null}
+                      {(() => {
+                        if (shiftDisplay.badges.length === 0) {
+                          return <span className="fc-day-shift-label">{shiftDisplay.label}</span>
+                        }
+                        const badgesByTeam = new Map<string, typeof shiftDisplay.badges>()
+                        for (const badge of shiftDisplay.badges) {
+                          const arr = badgesByTeam.get(badge.team) ?? []
+                          arr.push(badge)
+                          badgesByTeam.set(badge.team, arr)
+                        }
+                        const parts: React.ReactNode[] = []
+                        let lastEnd = 0
+                        const label = shiftDisplay.label
+                        for (let i = 0; i < label.length; i++) {
+                          const ch = label[i]
+                          const teamBadges = badgesByTeam.get(ch)
+                          if (teamBadges && teamBadges.length > 0) {
+                            if (i > lastEnd) {
+                              parts.push(<span key={`s${lastEnd}`} className="fc-day-shift-label-part">{label.slice(lastEnd, i)}</span>)
+                            }
+                            parts.push(<span key={`t${i}`} className="fc-day-shift-label-part">{ch}</span>)
+                            if (teamBadges.length === 1) {
+                              const badge = teamBadges[0]
+                              parts.push(
+                                <span
+                                  key={badge.key}
+                                  className="fc-day-shift-badge"
+                                  data-shift-badge-event={badge.eventLocalId}
+                                  data-shift-badge-index={badge.substitutionIndex}
+                                  data-shift-badge-team={badge.team}
+                                  data-shift-badge-substitute={badge.name}
+                                  data-shift-badge-original={badge.original}
+                                  data-shift-badge-type={badge.type}
+                                >
+                                  {badge.name}
+                                </span>,
+                              )
+                            } else {
+                              parts.push(
+                                <span key={`stack${i}`} className="fc-day-shift-badge-stack">
+                                  {teamBadges.map((badge) => (
+                                    <span
+                                      key={badge.key}
+                                      className="fc-day-shift-badge"
+                                      data-shift-badge-event={badge.eventLocalId}
+                                      data-shift-badge-index={badge.substitutionIndex}
+                                      data-shift-badge-team={badge.team}
+                                      data-shift-badge-substitute={badge.name}
+                                      data-shift-badge-original={badge.original}
+                                      data-shift-badge-type={badge.type}
+                                    >
+                                      {badge.name}
+                                    </span>
+                                  ))}
+                                </span>,
+                              )
+                            }
+                            lastEnd = i + 1
+                            // Skip any abbreviation notation like "(홍)" after the team letter
+                            if (label[lastEnd] === '(') {
+                              const closeIdx = label.indexOf(')', lastEnd)
+                              if (closeIdx !== -1) {
+                                lastEnd = closeIdx + 1
+                              }
+                            }
+                            badgesByTeam.delete(ch)
+                          }
+                        }
+                        if (lastEnd < label.length) {
+                          parts.push(<span key={`s${lastEnd}`} className="fc-day-shift-label-part">{label.slice(lastEnd)}</span>)
+                        }
+                        return parts
+                      })()}
                     </span>
                   ) : null}
-                  {holidayName && !showHolidayUnderDayNumber ? <span className="fc-day-holiday-pill">{holidayName}</span> : null}
+                  {holidayName ? <span className="fc-day-holiday-pill">{holidayName}</span> : null}
                 </span>
-                {showHolidayUnderDayNumber ? (
-                  <span className="fc-day-holiday-pill is-under-day-number">{holidayName}</span>
-                ) : null}
               </>
             )
           }}
@@ -2507,6 +2802,34 @@ export function CalendarPage() {
         </main>
       </div>
 
+      {editingShiftSummary && (
+        <input
+          type="text"
+          className="fc-day-shift-summary-input"
+          style={{
+            position: 'fixed',
+            left: editingShiftSummary.rect.left,
+            top: editingShiftSummary.rect.top,
+            width: editingShiftSummary.rect.width,
+            height: editingShiftSummary.rect.height,
+            zIndex: 9999,
+          }}
+          value={editingShiftSummary.draft}
+          onChange={(ev) => setEditingShiftSummary((prev) => prev ? { ...prev, draft: ev.target.value } : prev)}
+          onKeyDown={(ev) => {
+            if (ev.key === 'Enter') {
+              ev.preventDefault()
+              void saveShiftSummaryInlineEdit()
+            }
+            if (ev.key === 'Escape') {
+              ev.preventDefault()
+              setEditingShiftSummary(null)
+            }
+          }}
+          autoFocus
+        />
+      )}
+
       {editingShiftBadge && shiftBadgeEditorPosition ? (
         <div
           className="shift-badge-inline-editor"
@@ -2515,85 +2838,161 @@ export function CalendarPage() {
             event.stopPropagation()
           }}
         >
-          <p className="shift-badge-inline-title">대체근무 배지 편집</p>
-          <p className="shift-badge-inline-hint">{editingShiftBadge.team}조에 표시됩니다</p>
-          <label className="shift-badge-inline-field">
-            <span>대체근무자</span>
-            <input
-              type="text"
-              value={editingShiftBadge.substitute}
-              onChange={(event) =>
-                setEditingShiftBadge((current) => (current
-                  ? { ...current, substitute: event.target.value }
-                  : current))}
-              maxLength={40}
-            />
-          </label>
-          <label className="shift-badge-inline-field">
-            <span>근무종류</span>
-            <select
-              value={editingShiftBadge.type}
-              onChange={(event) =>
-                setEditingShiftBadge((current) => (current
-                  ? { ...current, type: event.target.value as SubstitutionWorkType }
-                  : current))}
-            >
-              <option value="대리근무">대리근무</option>
-              <option value="대체근무">대체근무</option>
-            </select>
-          </label>
-          <label className="shift-badge-inline-field">
-            <span>원근무자</span>
-            <select
-              value={editingShiftBadge.original}
-              onChange={(event) =>
-                setEditingShiftBadge((current) => (current
-                  ? { ...current, original: event.target.value }
-                  : current))}
-            >
-              {Array.from(
-                new Set([
-                  editingShiftBadge.original,
-                  ...shiftTeamDrafts[editingShiftBadge.team].map((name) => name.trim()),
-                ]),
-              )
-                .filter((name) => name.trim().length > 0)
-                .map((name) => (
-                  <option key={name} value={name}>
-                    {name}
-                  </option>
-                ))}
-            </select>
-          </label>
-          <div className="shift-badge-inline-actions">
-            <button
-              type="button"
-              className="ghost-button"
-              onClick={() => {
-                void deleteShiftBadgeInlineEdit()
-              }}
-            >
-              삭제
-            </button>
-            <button
-              type="button"
-              className="ghost-button"
-              onClick={() => setEditingShiftBadge(null)}
-            >
-              취소
-            </button>
-            <button
-              type="button"
-              className="primary-button"
-              onClick={() => {
-                void saveShiftBadgeInlineEdit()
-              }}
-            >
-              저장
-            </button>
-          </div>
+              <p className="shift-badge-inline-title">대체근무 배지 편집</p>
+              <p className="shift-badge-inline-hint">{editingShiftBadge.team}조에 표시됩니다</p>
+              <label className="shift-badge-inline-field">
+                <span>대체근무자</span>
+                <input
+                  type="text"
+                  value={editingShiftBadge.substitute}
+                  onChange={(event) =>
+                    setEditingShiftBadge((current) => (current
+                      ? { ...current, substitute: event.target.value }
+                      : current))}
+                  maxLength={40}
+                  autoFocus
+                />
+              </label>
+              <label className="shift-badge-inline-field">
+                <span>근무종류</span>
+                <select
+                  value={editingShiftBadge.type}
+                  onChange={(event) =>
+                    setEditingShiftBadge((current) => (current
+                      ? { ...current, type: event.target.value as SubstitutionWorkType }
+                      : current))}
+                >
+                  <option value="대리근무">대리근무</option>
+                  <option value="대체근무">대체근무</option>
+                </select>
+              </label>
+              <label className="shift-badge-inline-field">
+                <span>원근무자</span>
+                <select
+                  value={editingShiftBadge.original}
+                  onChange={(event) =>
+                    setEditingShiftBadge((current) => (current
+                      ? { ...current, original: event.target.value }
+                      : current))}
+                >
+                  {Array.from(
+                    new Set([
+                      editingShiftBadge.original,
+                      ...shiftTeamDrafts[editingShiftBadge.team].map((name) => name.trim()),
+                    ]),
+                  )
+                    .filter((name) => name.trim().length > 0)
+                    .map((name) => (
+                      <option key={name} value={name}>
+                        {name}
+                      </option>
+                    ))}
+                </select>
+              </label>
+              <div className="shift-badge-inline-actions">
+                <button
+                  type="button"
+                  className="ghost-button"
+                  onClick={() => {
+                    void deleteShiftBadgeInlineEdit()
+                  }}
+                >
+                  삭제
+                </button>
+                <button
+                  type="button"
+                  className="ghost-button"
+                  onClick={() => setEditingShiftBadge(null)}
+                >
+                  취소
+                </button>
+                <button
+                  type="button"
+                  className="primary-button"
+                  onClick={() => {
+                    void saveShiftBadgeInlineEdit()
+                  }}
+                >
+                  저장
+                </button>
+              </div>
         </div>
       ) : null}
+
+      {abbreviationModal && abbreviationModalPosition ? (() => {
+        const duplicateOwner = abbreviationDraft.length === 1
+          ? Object.entries(shiftSettings.abbreviations).find(
+              ([n, c]) => c === abbreviationDraft && n !== abbreviationModal.name,
+            )
+          : undefined
+        const canSave = abbreviationDraft.length === 1 && !duplicateOwner
+        const handleSave = () => {
+          if (canSave) {
+            void setShiftAbbreviation(abbreviationModal.name, abbreviationDraft)
+          }
+          setAbbreviationModal(null)
+        }
+        return (
+          <div
+            className="shift-badge-inline-editor"
+            style={{ left: abbreviationModalPosition.left, top: abbreviationModalPosition.top }}
+            onClick={(event) => {
+              event.stopPropagation()
+            }}
+          >
+            <p className="shift-badge-inline-title">약어 지정</p>
+            <p className="shift-badge-inline-hint">{abbreviationModal.name}</p>
+            <label className="shift-badge-inline-field">
+              <span>약어 (1글자)</span>
+              <input
+                type="text"
+                value={abbreviationDraft}
+                onChange={(event) => setAbbreviationDraft(event.target.value.slice(0, 1))}
+                onKeyDown={(event) => {
+                  if (event.key === 'Enter') {
+                    event.preventDefault()
+                    handleSave()
+                  }
+                }}
+                maxLength={1}
+                autoFocus
+              />
+            </label>
+            {duplicateOwner ? (
+              <p className="shift-badge-inline-hint" style={{ color: 'var(--error-color, #e74c3c)' }}>
+                이미 {duplicateOwner[0]}에 지정된 약어입니다
+              </p>
+            ) : null}
+            <div className="shift-badge-inline-actions">
+              <button
+                type="button"
+                className="ghost-button"
+                onClick={() => {
+                  void setShiftAbbreviation(abbreviationModal.name, null)
+                  setAbbreviationModal(null)
+                }}
+              >
+                초기화
+              </button>
+              <button
+                type="button"
+                className="ghost-button"
+                onClick={() => setAbbreviationModal(null)}
+              >
+                취소
+              </button>
+              <button
+                type="button"
+                className="primary-button"
+                disabled={!canSave}
+                onClick={handleSave}
+              >
+                저장
+              </button>
+            </div>
+          </div>
+        )
+      })() : null}
 
       {radialMenu && (
         <RadialMenu

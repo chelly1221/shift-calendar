@@ -10,6 +10,7 @@ import type {
   OutboxJobItem,
   RecurrenceEditScope,
   SelectedCalendar,
+  SendUpdates,
   ShiftSettings,
   ShiftTeamAssignments,
   ShiftTeamMode,
@@ -41,12 +42,13 @@ interface CalendarState {
   lastSyncResult: SyncResult | null
   shiftSettings: ShiftSettings
   savingShiftSettings: boolean
+  error: string | null
   setEventRenderRange: (rangeStartUtc: string, rangeEndUtc: string) => void
   hydrate: () => Promise<void>
   refreshOutboxJobs: () => Promise<void>
   cancelOutboxJob: (jobId: string) => Promise<boolean>
   saveEvent: (payload: UpsertCalendarEventInput) => Promise<CalendarEvent>
-  deleteEvent: (localId: string, sendUpdates?: 'all' | 'none', recurrenceScope?: RecurrenceEditScope) => Promise<void>
+  deleteEvent: (localId: string, sendUpdates?: SendUpdates, recurrenceScope?: RecurrenceEditScope) => Promise<void>
   syncNow: () => Promise<void>
   forcePushAll: () => Promise<void>
   connectGoogle: () => Promise<void>
@@ -58,6 +60,7 @@ interface CalendarState {
   setShiftTeams: (teams: ShiftTeamAssignments) => Promise<void>
   setDayWorkers: (dayWorkers: string[]) => Promise<void>
   setShiftAssignments: (teams: ShiftTeamAssignments, dayWorkers: string[]) => Promise<void>
+  setShiftAbbreviation: (name: string, char: string | null) => Promise<void>
 }
 
 const fallbackGoogleStatus: GoogleConnectionStatus = {
@@ -82,6 +85,7 @@ function cloneShiftSettings(settings: ShiftSettings): ShiftSettings {
     dayWorkers: [...settings.dayWorkers],
     shiftTeamMode: settings.shiftTeamMode,
     dayWorkerCount: settings.dayWorkerCount,
+    abbreviations: { ...settings.abbreviations },
   }
 }
 
@@ -227,6 +231,8 @@ const initialRenderRange = defaultRenderRange()
 const initialRangeStartUtc = initialRenderRange.rangeStartUtc ?? DateTime.utc().minus({ months: 3 }).toISO()!
 const initialRangeEndUtc = initialRenderRange.rangeEndUtc ?? DateTime.utc().plus({ months: 3 }).toISO()!
 
+let hydratePromise: Promise<void> | null = null
+
 export const useCalendarStore = create<CalendarState>((set, get) => ({
   allEvents: [],
   events: [],
@@ -248,6 +254,7 @@ export const useCalendarStore = create<CalendarState>((set, get) => ({
   lastSyncResult: null,
   shiftSettings: cloneShiftSettings(defaultShiftSettingsValue),
   savingShiftSettings: false,
+  error: null,
   setEventRenderRange: (rangeStartUtc, rangeEndUtc) => {
     const state = get()
     if (
@@ -265,44 +272,54 @@ export const useCalendarStore = create<CalendarState>((set, get) => ({
   },
 
   hydrate: async () => {
-    const api = getCalendarApi()
-    set({ loading: true })
-    try {
-      const [allEvents, outboxCount, outboxJobs, googleStatus, selectedCalendar, shiftSettings] = await Promise.all([
-        api.listEvents(),
-        api.getOutboxCount(),
-        api.listOutboxJobs({ limit: 80, includeCompleted: false }).catch(() => []),
-        api.getGoogleConnectionStatus(),
-        api.getSelectedCalendar(),
-        api.getShiftSettings(),
-      ])
+    if (hydratePromise) return hydratePromise
+    hydratePromise = (async () => {
+      const api = getCalendarApi()
+      set({ loading: true, error: null })
+      try {
+        const [allEvents, outboxCount, outboxJobs, googleStatus, selectedCalendar, shiftSettings] = await Promise.all([
+          api.listEvents(),
+          api.getOutboxCount(),
+          api.listOutboxJobs({ limit: 80, includeCompleted: false }).catch(() => []),
+          api.getGoogleConnectionStatus(),
+          api.getSelectedCalendar(),
+          api.getShiftSettings(),
+        ])
 
-      let calendars: GoogleCalendarItem[] = []
-      if (googleStatus.connected) {
-        calendars = await api.listGoogleCalendars().catch((err) => {
-          console.warn('[Store] listGoogleCalendars failed:', err)
-          return []
+        let calendars: GoogleCalendarItem[] = []
+        if (googleStatus.connected) {
+          calendars = await api.listGoogleCalendars().catch((err) => {
+            console.warn('[Store] listGoogleCalendars failed:', err)
+            return []
+          })
+        }
+
+        const state = get()
+        const expanded = expandForRenderRange(allEvents, state.renderRangeStartUtc, state.renderRangeEndUtc)
+
+        set({
+          allEvents: sortByStart(allEvents),
+          events: expanded,
+          outboxCount,
+          outboxJobs,
+          googleConnected: googleStatus.connected,
+          accountEmail: googleStatus.accountEmail,
+          calendars,
+          selectedCalendarId: selectedCalendar.calendarId,
+          selectedCalendarSummary: selectedCalendar.calendarSummary,
+          shiftSettings: cloneShiftSettings(shiftSettings),
         })
+      } catch (err) {
+        const message = err instanceof Error ? err.message : 'Failed to load calendar data.'
+        console.error('[CalendarStore] hydrate failed:', err)
+        set({ error: message })
+        throw err
+      } finally {
+        set({ loading: false })
+        hydratePromise = null
       }
-
-      const state = get()
-      const expanded = expandForRenderRange(allEvents, state.renderRangeStartUtc, state.renderRangeEndUtc)
-
-      set({
-        allEvents: sortByStart(allEvents),
-        events: expanded,
-        outboxCount,
-        outboxJobs,
-        googleConnected: googleStatus.connected,
-        accountEmail: googleStatus.accountEmail,
-        calendars,
-        selectedCalendarId: selectedCalendar.calendarId,
-        selectedCalendarSummary: selectedCalendar.calendarSummary,
-        shiftSettings: cloneShiftSettings(shiftSettings),
-      })
-    } finally {
-      set({ loading: false })
-    }
+    })()
+    return hydratePromise
   },
 
   refreshOutboxJobs: async () => {
@@ -362,16 +379,17 @@ export const useCalendarStore = create<CalendarState>((set, get) => ({
 
   deleteEvent: async (localId, sendUpdates = 'none', recurrenceScope) => {
     const api = getCalendarApi()
+    const effectiveScope = recurrenceScope ?? 'ALL'
     const deleted = await api.deleteEvent({
       localId,
       sendUpdates,
-      recurrenceScope: recurrenceScope ?? 'ALL',
+      recurrenceScope: effectiveScope,
     })
     if (!deleted) {
       return
     }
     // For FUTURE/ALL scopes, multiple events may be affected — re-fetch the full list
-    if (recurrenceScope === 'FUTURE' || recurrenceScope === 'ALL') {
+    if (effectiveScope === 'FUTURE' || effectiveScope === 'ALL') {
       await get().hydrate()
     } else {
       const state = get()
@@ -386,16 +404,21 @@ export const useCalendarStore = create<CalendarState>((set, get) => ({
   },
 
   syncNow: async () => {
+    if (get().syncing) return
     if (get().googleConnected && !get().selectedCalendarId) {
       return
     }
 
     const api = getCalendarApi()
-    set({ syncing: true })
+    set({ syncing: true, error: null })
     try {
       const result = await api.syncNow()
       set({ lastSyncResult: result, outboxCount: result.outboxRemaining })
       await get().hydrate()
+    } catch (err) {
+      const message = err instanceof Error ? err.message : 'Sync failed.'
+      console.error('[CalendarStore] syncNow failed:', err)
+      set({ error: message })
     } finally {
       set({ syncing: false })
     }
@@ -441,15 +464,19 @@ export const useCalendarStore = create<CalendarState>((set, get) => ({
 
   disconnectGoogle: async () => {
     const api = getCalendarApi()
-    const status = await api.disconnectGoogle()
-    set({
-      googleConnected: status.connected,
-      accountEmail: status.accountEmail,
-      calendars: [],
-      selectedCalendarId: null,
-      selectedCalendarSummary: null,
-      selectingCalendar: false,
-    })
+    try {
+      const status = await api.disconnectGoogle()
+      set({
+        googleConnected: status.connected,
+        accountEmail: status.accountEmail,
+        calendars: [],
+        selectedCalendarId: null,
+        selectedCalendarSummary: null,
+        selectingCalendar: false,
+      })
+    } catch (err) {
+      console.error('[CalendarStore] disconnectGoogle failed:', err)
+    }
   },
 
   setSyncCalendar: async (calendarId) => {
@@ -472,6 +499,7 @@ export const useCalendarStore = create<CalendarState>((set, get) => ({
   },
 
   setShiftType: async (shiftType) => {
+    if (get().savingShiftSettings) return
     const api = getCalendarApi()
     const current = get().shiftSettings
     set({ savingShiftSettings: true })
@@ -482,6 +510,7 @@ export const useCalendarStore = create<CalendarState>((set, get) => ({
         dayWorkerCount: current.dayWorkerCount,
         teams: current.teams,
         dayWorkers: current.dayWorkers,
+        abbreviations: current.abbreviations,
       })
       set({ shiftSettings: cloneShiftSettings(next) })
     } finally {
@@ -490,6 +519,7 @@ export const useCalendarStore = create<CalendarState>((set, get) => ({
   },
 
   setShiftTeamMode: async (shiftTeamMode) => {
+    if (get().savingShiftSettings) return
     const api = getCalendarApi()
     const current = get().shiftSettings
     set({ savingShiftSettings: true })
@@ -500,6 +530,7 @@ export const useCalendarStore = create<CalendarState>((set, get) => ({
         dayWorkerCount: current.dayWorkerCount,
         teams: current.teams,
         dayWorkers: current.dayWorkers,
+        abbreviations: current.abbreviations,
       })
       set({ shiftSettings: cloneShiftSettings(next) })
     } finally {
@@ -508,6 +539,7 @@ export const useCalendarStore = create<CalendarState>((set, get) => ({
   },
 
   setShiftTeams: async (teams) => {
+    if (get().savingShiftSettings) return
     const api = getCalendarApi()
     const current = get().shiftSettings
     set({ savingShiftSettings: true })
@@ -518,6 +550,7 @@ export const useCalendarStore = create<CalendarState>((set, get) => ({
         dayWorkerCount: current.dayWorkerCount,
         teams,
         dayWorkers: current.dayWorkers,
+        abbreviations: current.abbreviations,
       })
       set({ shiftSettings: cloneShiftSettings(next) })
     } finally {
@@ -526,6 +559,7 @@ export const useCalendarStore = create<CalendarState>((set, get) => ({
   },
 
   setDayWorkers: async (dayWorkers) => {
+    if (get().savingShiftSettings) return
     const api = getCalendarApi()
     const current = get().shiftSettings
     set({ savingShiftSettings: true })
@@ -536,6 +570,7 @@ export const useCalendarStore = create<CalendarState>((set, get) => ({
         dayWorkerCount: current.dayWorkerCount,
         teams: current.teams,
         dayWorkers,
+        abbreviations: current.abbreviations,
       })
       set({ shiftSettings: cloneShiftSettings(next) })
     } finally {
@@ -544,6 +579,7 @@ export const useCalendarStore = create<CalendarState>((set, get) => ({
   },
 
   setShiftAssignments: async (teams, dayWorkers) => {
+    if (get().savingShiftSettings) return
     const api = getCalendarApi()
     const current = get().shiftSettings
     set({ savingShiftSettings: true })
@@ -554,6 +590,7 @@ export const useCalendarStore = create<CalendarState>((set, get) => ({
         dayWorkerCount: current.dayWorkerCount,
         teams,
         dayWorkers,
+        abbreviations: current.abbreviations,
       })
       set({ shiftSettings: cloneShiftSettings(next) })
     } finally {
@@ -562,6 +599,7 @@ export const useCalendarStore = create<CalendarState>((set, get) => ({
   },
 
   setDayWorkerCount: async (dayWorkerCount) => {
+    if (get().savingShiftSettings) return
     const api = getCalendarApi()
     const current = get().shiftSettings
     set({ savingShiftSettings: true })
@@ -572,6 +610,33 @@ export const useCalendarStore = create<CalendarState>((set, get) => ({
         dayWorkerCount,
         teams: current.teams,
         dayWorkers: current.dayWorkers,
+        abbreviations: current.abbreviations,
+      })
+      set({ shiftSettings: cloneShiftSettings(next) })
+    } finally {
+      set({ savingShiftSettings: false })
+    }
+  },
+
+  setShiftAbbreviation: async (name, char) => {
+    if (get().savingShiftSettings) return
+    const api = getCalendarApi()
+    const current = get().shiftSettings
+    const nextAbbreviations = { ...current.abbreviations }
+    if (char) {
+      nextAbbreviations[name] = char
+    } else {
+      delete nextAbbreviations[name]
+    }
+    set({ savingShiftSettings: true })
+    try {
+      const next = await api.setShiftSettings({
+        shiftType: current.shiftType,
+        shiftTeamMode: current.shiftTeamMode,
+        dayWorkerCount: current.dayWorkerCount,
+        teams: current.teams,
+        dayWorkers: current.dayWorkers,
+        abbreviations: nextAbbreviations,
       })
       set({ shiftSettings: cloneShiftSettings(next) })
     } finally {

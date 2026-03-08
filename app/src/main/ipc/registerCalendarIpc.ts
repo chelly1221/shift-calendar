@@ -1,24 +1,5 @@
 import { ipcMain } from 'electron'
 import { splitRRuleForFuture, withoutRRuleEnd } from '../../shared/rrule'
-import { appendFileSync, statSync, renameSync, unlinkSync } from 'node:fs'
-
-const DEBUG_LOG_PATH = '/tmp/future-split-debug.log'
-const DEBUG_LOG_MAX_BYTES = 10 * 1024 * 1024 // 10 MB
-
-function debugLog(message: string): void {
-  try {
-    try {
-      const size = statSync(DEBUG_LOG_PATH).size
-      if (size >= DEBUG_LOG_MAX_BYTES) {
-        try { unlinkSync(`${DEBUG_LOG_PATH}.1`) } catch { /* ignore */ }
-        renameSync(DEBUG_LOG_PATH, `${DEBUG_LOG_PATH}.1`)
-      }
-    } catch { /* file may not exist yet */ }
-    appendFileSync(DEBUG_LOG_PATH, `[${new Date().toISOString()}] ${message}\n`)
-  } catch {
-    // ignore
-  }
-}
 import {
   cancelOutboxJobInputSchema,
   calendarEventSchema,
@@ -67,8 +48,15 @@ import {
   isGoogleOAuthConfigured,
 } from '../google/oauthClient'
 import { cancelOutboxJob, enqueueOutboxOperation, getOutboxCount } from '../sync/outboxWorker'
-import { forcePushAllToGoogle, runSyncNow } from '../sync/syncEngine'
+import { forcePushAllToGoogle, reEnqueueShiftAbbreviationSync, runSyncNow } from '../sync/syncEngine'
 import { IPC_CHANNELS } from './channels'
+
+function wrapIpcError(error: unknown): Error {
+  if (error instanceof Error) {
+    return new Error(error.message)
+  }
+  return new Error(String(error))
+}
 
 export function registerCalendarIpc(): void {
   const googleCalendarService = createGoogleCalendarService()
@@ -102,6 +90,7 @@ export function registerCalendarIpc(): void {
   })
 
   ipcMain.handle(IPC_CHANNELS.upsertEvent, async (_event, payload: unknown) => {
+    try {
     const input = upsertCalendarEventSchema.parse(payload)
     if (!input.localId) {
       const created = calendarEventSchema.parse(await upsertCalendarEvent(input))
@@ -213,10 +202,10 @@ export function registerCalendarIpc(): void {
 
     if (recurrenceScope === 'FUTURE' && existing.recurrenceRule && !existing.recurringEventId) {
       // Real master event (has RRULE, no recurringEventId)
-      debugLog(`FUTURE branch 1: localId=${input.localId}, googleEventId=${existing.googleEventId}, recurrenceRule=${existing.recurrenceRule}`)
+      console.debug(`FUTURE branch 1: localId=${input.localId}, googleEventId=${existing.googleEventId}, recurrenceRule=${existing.recurrenceRule}`)
       try {
         const splitResult = await applyFutureSplitEdit(input)
-        debugLog(`FUTURE branch 1: split done. master=${splitResult.splitSourceEvent.localId}, future=${splitResult.futureEvent.localId}, futureRule=${splitResult.futureEvent.recurrenceRule}`)
+        console.debug(`FUTURE branch 1: split done. master=${splitResult.splitSourceEvent.localId}, future=${splitResult.futureEvent.localId}, futureRule=${splitResult.futureEvent.recurrenceRule}`)
         const masterGoogleId = splitResult.splitSourceEvent.googleEventId ?? existing.googleEventId
         const splitOutboxId = await enqueueOutboxOperation({
           eventLocalId: splitResult.splitSourceEvent.localId,
@@ -238,7 +227,7 @@ export function registerCalendarIpc(): void {
         })
         return splitResult.futureEvent
       } catch (error) {
-        debugLog(`FUTURE branch 1 ERROR: ${error instanceof Error ? error.message : String(error)}`)
+        console.debug(`FUTURE branch 1 ERROR: ${error instanceof Error ? error.message : String(error)}`)
         throw error
       }
     }
@@ -246,25 +235,26 @@ export function registerCalendarIpc(): void {
     if (recurrenceScope === 'FUTURE' && existing.recurringEventId) {
       // Instance of a Google-synced recurring series
       const masterGoogleEventId = existing.recurringEventId
-      debugLog(`FUTURE branch 2: instanceLocalId=${input.localId}, masterGoogleEventId=${masterGoogleEventId}`)
+      console.debug(`FUTURE branch 2: instanceLocalId=${input.localId}, masterGoogleEventId=${masterGoogleEventId}`)
 
       // Look up the master's RRULE so the future series inherits it
       const masterRow = await prisma.event.findFirst({
         where: { googleEventId: masterGoogleEventId, isDeleted: false },
         select: { localId: true, recurrenceJson: true },
+        orderBy: { localId: 'asc' },
       })
       let masterRRule: string | null = null
       const masterJson = masterRow?.recurrenceJson
       if (masterJson && typeof masterJson === 'object' && !Array.isArray(masterJson) && 'rrule' in masterJson && typeof masterJson.rrule === 'string') {
         masterRRule = masterJson.rrule
       }
-      debugLog(`FUTURE branch 2: masterRow=${masterRow?.localId ?? 'NOT_FOUND'}, masterRRule=${masterRRule}, inputRule=${input.recurrenceRule}, existingRule=${existing.recurrenceRule}`)
+      console.debug(`FUTURE branch 2: masterRow=${masterRow?.localId ?? 'NOT_FOUND'}, masterRRule=${masterRRule}, inputRule=${input.recurrenceRule}, existingRule=${existing.recurrenceRule}`)
 
       // Use input recurrenceRule, then fall back to master's RRULE, then existing (synced copy)
       const rawFutureRule = input.recurrenceRule || masterRRule || existing.recurrenceRule
 
       if (!rawFutureRule) {
-        debugLog('FUTURE branch 2: no RRULE found — falling through to fallback')
+        console.debug('FUTURE branch 2: no RRULE found — falling through to fallback')
         // No RRULE found anywhere — fall through to fallback
       } else {
         try {
@@ -310,7 +300,7 @@ export function registerCalendarIpc(): void {
               recurrenceRule: futureRecurrenceRule,
             }),
           )
-          debugLog(`FUTURE branch 2: futureEvent created localId=${futureEvent.localId}, rule=${futureEvent.recurrenceRule}`)
+          console.debug(`FUTURE branch 2: futureEvent created localId=${futureEvent.localId}, rule=${futureEvent.recurrenceRule}`)
 
           // Queue outbox: truncate master on Google
           const splitOutboxId = await enqueueOutboxOperation({
@@ -335,12 +325,13 @@ export function registerCalendarIpc(): void {
 
           return futureEvent
         } catch (error) {
-          debugLog(`FUTURE branch 2 ERROR: ${error instanceof Error ? error.message : String(error)}`)
+          console.debug(`FUTURE branch 2 ERROR: ${error instanceof Error ? error.message : String(error)}`)
           throw error
         }
       }
     }
 
+    console.warn('[IPC] FUTURE edit fallback: treating as RECUR_ALL for event', input.localId)
     const fallback = calendarEventSchema.parse(await upsertCalendarEvent(input))
     await enqueueOutboxOperation({
       eventLocalId: fallback.localId,
@@ -350,9 +341,13 @@ export function registerCalendarIpc(): void {
       },
     })
     return fallback
+    } catch (error) {
+      throw wrapIpcError(error)
+    }
   })
 
   ipcMain.handle(IPC_CHANNELS.deleteEvent, async (_event, payload: unknown) => {
+    try {
     const input = deleteCalendarEventSchema.parse(payload)
     const existing = await getCalendarEventByLocalId(input.localId)
     if (!existing) {
@@ -491,6 +486,9 @@ export function registerCalendarIpc(): void {
     }
 
     return false
+    } catch (error) {
+      throw wrapIpcError(error)
+    }
   })
 
   ipcMain.handle(IPC_CHANNELS.getOutboxCount, () => getOutboxCount())
@@ -562,6 +560,7 @@ export function registerCalendarIpc(): void {
   })
 
   ipcMain.handle(IPC_CHANNELS.connectGoogle, async () => {
+    try {
     await ensureSetting()
     if (!(await isGoogleOAuthConfigured())) {
       return googleConnectionStatusSchema.parse({
@@ -575,6 +574,9 @@ export function registerCalendarIpc(): void {
       connected: true,
       accountEmail: result.accountEmail,
     })
+    } catch (error) {
+      throw wrapIpcError(error)
+    }
   })
 
   ipcMain.handle(IPC_CHANNELS.disconnectGoogle, async () => {
@@ -642,7 +644,19 @@ export function registerCalendarIpc(): void {
   ipcMain.handle(IPC_CHANNELS.setShiftSettings, async (_event, payload: unknown) => {
     await ensureSetting()
     const input = setShiftSettingsInputSchema.parse(payload)
+    const oldSettings = await getShiftSettings()
     const settings = await setShiftSettings(input)
+
+    // Only re-sync if teams, dayWorkers, or abbreviations changed
+    const teamsChanged = JSON.stringify(oldSettings.teams) !== JSON.stringify(settings.teams)
+    const dayWorkersChanged = JSON.stringify(oldSettings.dayWorkers) !== JSON.stringify(settings.dayWorkers)
+    const abbreviationsChanged = JSON.stringify(oldSettings.abbreviations) !== JSON.stringify(settings.abbreviations)
+    if (teamsChanged || dayWorkersChanged || abbreviationsChanged) {
+      void reEnqueueShiftAbbreviationSync().catch((error) => {
+        console.error('[IPC] reEnqueueShiftAbbreviationSync failed:', error)
+      })
+    }
+
     return shiftSettingsSchema.parse(settings)
   })
 

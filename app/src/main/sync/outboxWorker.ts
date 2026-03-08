@@ -19,6 +19,7 @@ const MAX_ATTEMPTS = 8
 let timer: NodeJS.Timeout | null = null
 let isProcessing = false
 let pendingFlush = false
+let isStopped = false
 
 export function requestOutboxFlush(): void {
   void processOutboxNow().catch((error) => {
@@ -183,7 +184,7 @@ async function processJob(jobId: string): Promise<boolean> {
     if (remoteSnapshot?.googleUpdatedAtUtc && localEvent) {
       const remoteDt = DateTime.fromISO(remoteSnapshot.googleUpdatedAtUtc, { zone: 'utc' })
       const localDt = DateTime.fromISO(localEvent.localEditedAtUtc, { zone: 'utc' })
-      if (remoteDt.isValid && localDt.isValid && remoteDt.toMillis() >= localDt.toMillis()) {
+      if (remoteDt.isValid && localDt.isValid && remoteDt.toMillis() > localDt.toMillis()) {
         await upsertRemoteEvent(remoteSnapshot)
         await cancelJob(job.id, 'Cancelled: remote version is newer or equal.')
         return true
@@ -205,7 +206,7 @@ async function processJob(jobId: string): Promise<boolean> {
       const trimmed = worker.trim()
       if (trimmed && !allNames.includes(trimmed)) allNames.push(trimmed)
     }
-    shiftContext = { teams: settings.teams, allNames }
+    shiftContext = { teams: settings.teams, allNames, abbreviations: settings.abbreviations }
   }
 
   const pushResult = await google.pushLocalChange(operation, localEvent, payload, shiftContext)
@@ -245,13 +246,13 @@ export async function enqueueOutboxOperation(input: {
         eventLocalId: input.eventLocalId,
         operation: OutboxOperationType.PATCH,
         status: {
-          in: [OutboxStatus.QUEUED, OutboxStatus.FAILED, OutboxStatus.RUNNING],
+          in: [OutboxStatus.QUEUED, OutboxStatus.FAILED],
         },
       },
       orderBy: { createdAt: 'asc' },
     })
 
-    if (existing) {
+    if (existing && !existing.dependsOnOutboxId) {
       await prisma.outboxJob.update({
         where: { id: existing.id },
         data: {
@@ -331,6 +332,10 @@ export async function processOutboxNow(): Promise<number> {
 }
 
 async function doProcessOutbox(): Promise<number> {
+  if (isStopped) {
+    return 0
+  }
+
   const selectedCalendar = await getSelectedCalendar()
   if (!selectedCalendar.selectedCalendarId) {
     return 0
@@ -347,6 +352,7 @@ async function doProcessOutbox(): Promise<number> {
       status: OutboxStatus.FAILED,
       lastError: 'Recovered: job was stuck in RUNNING state.',
       attempts: { increment: 1 },
+      nextRetryAtUtc: new Date(Date.now() + 60_000),
     },
   })
 
@@ -423,6 +429,7 @@ export function startOutboxWorker(): void {
     return
   }
 
+  isStopped = false
   void processOutboxNow()
   timer = setInterval(() => {
     void processOutboxNow()
@@ -430,6 +437,7 @@ export function startOutboxWorker(): void {
 }
 
 export function stopOutboxWorker(): void {
+  isStopped = true
   if (timer) {
     clearInterval(timer)
     timer = null

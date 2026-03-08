@@ -42,15 +42,20 @@ async function createOAuthClient(redirectUri: string): Promise<OAuth2Client> {
 
 async function waitForAuthorizationCode(timeoutMs = 180_000): Promise<{ code: string; redirectUri: string }> {
   return new Promise((resolve, reject) => {
+    let settled = false
+    let timeoutId: ReturnType<typeof setTimeout>
     const server = createServer((request, response) => {
       const requestUrl = request.url ? new URL(request.url, 'http://127.0.0.1') : null
       const code = requestUrl?.searchParams.get('code')
       const error = requestUrl?.searchParams.get('error')
 
       if (error) {
+        if (settled) { response.writeHead(200); response.end(); return }
+        settled = true
         response.writeHead(400, { 'Content-Type': 'text/html; charset=utf-8' })
         response.end('<h2>Google authorization failed.</h2><p>You can close this window.</p>')
         server.close()
+        clearTimeout(timeoutId)
         reject(new Error(`Google OAuth error: ${error}`))
         return
       }
@@ -61,12 +66,16 @@ async function waitForAuthorizationCode(timeoutMs = 180_000): Promise<{ code: st
         return
       }
 
+      if (settled) { response.writeHead(200); response.end(); return }
+      settled = true
+
       response.writeHead(200, { 'Content-Type': 'text/html; charset=utf-8' })
       response.end('<h2>Google authorization complete.</h2><p>You can close this window.</p>')
 
       const address = server.address() as AddressInfo | null
       const redirectUri = address ? `http://127.0.0.1:${address.port}/oauth2callback` : ''
       server.close()
+      clearTimeout(timeoutId)
       resolve({ code, redirectUri })
     })
 
@@ -131,10 +140,14 @@ async function waitForAuthorizationCode(timeoutMs = 180_000): Promise<{ code: st
       }
     })
 
-    setTimeout(() => {
-      server.close()
-      reject(new Error('Google OAuth timed out.'))
-    }, timeoutMs).unref()
+    timeoutId = setTimeout(() => {
+      if (!settled) {
+        settled = true
+        server.close()
+        reject(new Error('Google OAuth timed out.'))
+      }
+    }, timeoutMs)
+    timeoutId.unref()
   })
 }
 
@@ -179,6 +192,15 @@ export async function getAuthorizedGoogleClient(): Promise<OAuth2Client> {
 
   const oauth = await createOAuthClient('http://127.0.0.1')
   oauth.setCredentials({ refresh_token: refreshToken })
+  oauth.on('tokens', async (tokens) => {
+    if (tokens.refresh_token) {
+      try {
+        await saveRefreshToken(tokens.refresh_token)
+      } catch (err) {
+        console.error('[OAuth] Failed to save rotated refresh token:', err)
+      }
+    }
+  })
   try {
     await oauth.getAccessToken()
   } catch (error) {

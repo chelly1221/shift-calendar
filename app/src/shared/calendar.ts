@@ -42,11 +42,12 @@ export const cancelOutboxJobInputSchema = z.object({
 })
 export type CancelOutboxJobInput = z.infer<typeof cancelOutboxJobInputSchema>
 
-export const sendUpdatesSchema = z.enum(['all', 'none'])
+export const sendUpdatesSchema = z.enum(['all', 'externalOnly', 'none'])
 export type SendUpdates = z.infer<typeof sendUpdatesSchema>
 
 export const recurrenceEditScopeSchema = z.enum(['THIS', 'ALL', 'FUTURE'])
 export type RecurrenceEditScope = z.infer<typeof recurrenceEditScopeSchema>
+export const KNOWN_EVENT_TYPES = ['일반', '근무', '휴가', '교육', '반복업무', '공휴일', '운용중지작업', '중요'] as const
 export const eventTypeSchema = z.string().trim().min(1).max(40)
 export type EventType = z.infer<typeof eventTypeSchema>
 
@@ -65,7 +66,7 @@ export const calendarEventSchema = z.object({
   recurringEventId: z.string().min(1).nullable(),
   originalStartTimeUtc: z.string().datetime().nullable(),
   organizerEmail: z.string().nullable(),
-  hangoutLink: z.string().url().nullable(),
+  hangoutLink: z.string().nullable(),
   googleUpdatedAtUtc: z.string().datetime().nullable(),
   localEditedAtUtc: z.string().datetime(),
   syncState: syncStateSchema,
@@ -168,6 +169,7 @@ export const shiftSettingsSchema = z.object({
   dayWorkerCount: dayWorkerCountSchema,
   teams: shiftTeamAssignmentsSchema,
   dayWorkers: dayWorkerMembersSchema,
+  abbreviations: z.record(z.string().min(1), z.string().length(1)).default({}),
 })
 export type ShiftSettings = z.infer<typeof shiftSettingsSchema>
 
@@ -198,6 +200,7 @@ export const defaultShiftSettings: ShiftSettings = {
     D: [],
   },
   dayWorkers: [],
+  abbreviations: {},
 }
 
 export interface CalendarApi {

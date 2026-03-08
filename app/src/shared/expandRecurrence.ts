@@ -76,9 +76,10 @@ function* generateOccurrences(options: OccurrenceGeneratorOptions): Generator<Da
   }
 
   if (freq === 'WEEKLY') {
-    const targetDays: WeekdayNumbers[] = byday.length > 0
+    const targetDays: WeekdayNumbers[] = (byday.length > 0
       ? byday.map((d) => WEEKDAY_TO_LUXON[d])
       : [masterStartLocal.weekday as WeekdayNumbers]
+    ).sort((a, b) => a - b)
     let weekStart = masterStartLocal.startOf('week')
     while (weekStart <= effectiveEnd) {
       for (const dayNum of targetDays) {
@@ -148,13 +149,28 @@ function* generateOccurrences(options: OccurrenceGeneratorOptions): Generator<Da
   }
 
   if (freq === 'YEARLY') {
-    let cursor = masterStartLocal
-    while (cursor <= effectiveEnd) {
+    const masterMonth = masterStartLocal.month
+    const masterDay = masterStartLocal.day
+    let cursorYear = masterStartLocal.year
+    while (true) {
       if (count !== null && yielded >= count) break
       if (yielded >= MAX_INSTANCES_PER_MASTER) break
-      yield cursor
-      yielded++
-      cursor = cursor.plus({ years: interval })
+      // For Feb 29 events, skip non-leap years
+      if (masterMonth === 2 && masterDay === 29 && !DateTime.local(cursorYear, 2, 29).isValid) {
+        cursorYear += interval
+        continue
+      }
+      const candidate = DateTime.local(
+        cursorYear, masterMonth, masterDay,
+        masterStartLocal.hour, masterStartLocal.minute, masterStartLocal.second,
+        { zone: masterStartLocal.zone },
+      )
+      if (!candidate.isValid || candidate > effectiveEnd) break
+      if (candidate >= masterStartLocal) {
+        yield candidate
+        yielded++
+      }
+      cursorYear += interval
     }
     return
   }
@@ -219,9 +235,19 @@ export function expandRecurringEvents(
 ): CalendarEvent[] {
   // Collect googleEventIds that already have child instances
   const masterIdsWithInstances = new Set<string>()
+  // Track cancelled/override instance timestamps per master googleEventId
+  const cancelledTimestamps = new Map<string, Set<string>>()
   for (const event of events) {
     if (event.recurringEventId) {
       masterIdsWithInstances.add(event.recurringEventId)
+      if (event.originalStartTimeUtc) {
+        let timestamps = cancelledTimestamps.get(event.recurringEventId)
+        if (!timestamps) {
+          timestamps = new Set<string>()
+          cancelledTimestamps.set(event.recurringEventId, timestamps)
+        }
+        timestamps.add(DateTime.fromISO(event.originalStartTimeUtc, { zone: 'utc' }).toMillis().toString())
+      }
     }
   }
 
@@ -274,6 +300,9 @@ export function expandRecurringEvents(
     const rangeEndLocal = DateTime.fromISO(rangeEndUtc, { zone: 'utc' }).setZone(zone)
     const untilLocal = untilStr ? DateTime.fromISO(untilStr, { zone: 'utc' }).setZone(zone) : null
 
+    // Build set of cancelled/override timestamps for this master
+    const masterCancelledTs = event.googleEventId ? cancelledTimestamps.get(event.googleEventId) : undefined
+
     for (const occurrenceLocal of generateOccurrences({
       freq,
       interval,
@@ -288,8 +317,11 @@ export function expandRecurringEvents(
       const occStartUtc = occurrenceLocal.toUTC()
       const occEndUtc = DateTime.fromMillis(occurrenceLocal.toMillis() + durationMs, { zone: 'utc' })
 
+      // Skip occurrences that match a cancelled/override instance
+      if (masterCancelledTs?.has(occStartUtc.toMillis().toString())) continue
+
       // Skip occurrences before range
-      if (occEndUtc.toISO()! < rangeStartUtc) continue
+      if (occEndUtc.toMillis() < DateTime.fromISO(rangeStartUtc).toMillis()) continue
 
       const occStartUtcIso = occStartUtc.toISO()!
       const occEndUtcIso = occEndUtc.toISO()!

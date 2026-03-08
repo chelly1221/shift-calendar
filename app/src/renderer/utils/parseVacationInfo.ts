@@ -17,7 +17,7 @@ export function parseVacationInfo(description: string): {
   let vacationType: string | null = null
   const remainingLines: string[] = []
 
-  for (const line of description.split('\n')) {
+  for (const line of description.split(/\r?\n/)) {
     if (line.startsWith(VACATION_TARGET_PREFIX)) {
       targets = line
         .slice(VACATION_TARGET_PREFIX.length)

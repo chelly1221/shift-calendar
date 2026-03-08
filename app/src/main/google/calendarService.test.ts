@@ -178,12 +178,24 @@ describe('eventType 동기화 - toRemoteSnapshot 라운드트립', () => {
     expect(snapshot?.eventType).toBe('일반')
   })
 
-  it('cancelled 이벤트는 eventType이 일반이고 isDeleted=true', () => {
+  it('cancelled 이벤트는 extendedProperties의 eventType을 보존하고 isDeleted=true', () => {
     const googleEvent = makeGoogleEvent({
       status: 'cancelled',
       extendedProperties: {
         private: { shiftCalendarEventType: '근무' },
       },
+    })
+    const snapshot = toRemoteSnapshot(googleEvent)
+
+    expect(snapshot).not.toBeNull()
+    expect(snapshot?.isDeleted).toBe(true)
+    expect(snapshot?.eventType).toBe('근무')
+  })
+
+  it('cancelled 이벤트에 extendedProperties가 없으면 기본값 일반', () => {
+    const googleEvent = makeGoogleEvent({
+      status: 'cancelled',
+      extendedProperties: undefined,
     })
     const snapshot = toRemoteSnapshot(googleEvent)
 

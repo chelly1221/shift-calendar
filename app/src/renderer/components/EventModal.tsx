@@ -72,6 +72,10 @@ function dateToEndUtc(dateStr: string, tz: string): string {
 function formatTimeText(raw: string): string {
   const digits = raw.replace(/\D/g, '').slice(0, 4)
   if (digits.length <= 2) return digits
+  const hh = parseInt(digits.slice(0, 2), 10)
+  const mm = parseInt(digits.slice(2), 10)
+  if (hh > 23) return `23:${digits.slice(2) || '00'}`
+  if (mm > 59) return `${digits.slice(0, 2)}:59`
   return `${digits.slice(0, 2)}:${digits.slice(2)}`
 }
 
@@ -150,6 +154,7 @@ export function EventModal({ open, value, memberNames, onClose, onSave, onDelete
   const [recurrence, setRecurrence] = useState<RecurrenceValue>(parseRRule(null))
   const [sendUpdates, setSendUpdates] = useState<SendUpdates>('none')
   const [recurrenceScope, setRecurrenceScope] = useState<'THIS' | 'ALL' | 'FUTURE'>('ALL')
+  const [saving, setSaving] = useState(false)
   const mouseDownTarget = useRef<EventTarget | null>(null)
 
   useEffect(() => {
@@ -250,6 +255,8 @@ export function EventModal({ open, value, memberNames, onClose, onSave, onDelete
           className="event-form"
           onSubmit={async (event) => {
             event.preventDefault()
+            if (saving) return
+            setSaving(true)
 
             const startAtUtc = dateToStartUtc(startDate, timeZone)
             let endAtUtc = dateToEndUtc(endDate, timeZone)
@@ -265,6 +272,7 @@ export function EventModal({ open, value, memberNames, onClose, onSave, onDelete
               hasExistingEvent
               && hasRecurringContext
               && normalizedEventType !== normalizedOriginalType
+              && recurrenceScope !== 'THIS'
 
             const resolvedVacationType = isCustomVacationType
               ? (customVacationTypeText.trim() || null)
@@ -302,53 +310,72 @@ export function EventModal({ open, value, memberNames, onClose, onSave, onDelete
               effectiveSummary = parts.length > 0 ? parts.join(' ') : '휴가'
             }
 
-            await onSave({
-              localId,
-              googleEventId,
-              eventType: normalizedEventType,
-              summary: effectiveSummary,
-              description: finalDescription,
-              location: location.trim(),
-              startAtUtc,
-              endAtUtc,
-              timeZone,
-              attendees: attendees
-                .split(',')
-                .map((email) => email.trim())
-                .filter((email) => email.length > 0),
-              recurrenceRule: recurrenceToRRule(
-                recurrence.preset === 'MONTHLY' && recurrence.monthlyPattern === 'BY_MONTH_DAY'
-                  ? { ...recurrence, monthDay: DateTime.fromISO(startAtUtc).toLocal().day }
-                  : recurrence,
-              ),
-              recurringEventId,
-              originalStartTimeUtc,
-              sendUpdates,
-              recurrenceScope: forceAllForTypeChange
-                ? 'ALL'
-                : hasExistingEvent && hasRecurringContext
-                  ? recurrenceScope
-                  : 'ALL',
-            })
+            try {
+              await onSave({
+                localId,
+                googleEventId,
+                eventType: normalizedEventType,
+                summary: effectiveSummary,
+                description: finalDescription,
+                location: location.trim(),
+                startAtUtc,
+                endAtUtc,
+                timeZone,
+                attendees: attendees
+                  .split(',')
+                  .map((email) => email.trim())
+                  .filter((email) => email.length > 0),
+                recurrenceRule: recurrenceToRRule(
+                  recurrence.preset === 'MONTHLY' && recurrence.monthlyPattern === 'BY_MONTH_DAY'
+                    ? { ...recurrence, monthDay: DateTime.fromISO(startAtUtc).toLocal().day }
+                    : recurrence,
+                ),
+                recurringEventId,
+                originalStartTimeUtc,
+                sendUpdates,
+                recurrenceScope: forceAllForTypeChange
+                  ? 'ALL'
+                  : hasExistingEvent && hasRecurringContext
+                    ? recurrenceScope
+                    : 'ALL',
+              })
+            } catch (err) {
+              console.error('Failed to save event:', err)
+              alert('이벤트 저장에 실패했습니다.')
+              return
+            } finally {
+              setSaving(false)
+            }
           }}
         >
           <label className="field-label" htmlFor="eventType">
             타입
           </label>
-          <select
-            id="eventType"
-            value={eventType}
-            onChange={(event) => setEventType(event.target.value)}
-            required
-          >
-            <option value="일반">일반</option>
-            <option value="근무">근무</option>
-            <option value="반복업무">반복업무</option>
-            <option value="운용중지작업">운용중지작업</option>
-            <option value="중요">중요</option>
-            <option value="휴가">휴가</option>
-            <option value="교육">교육</option>
-          </select>
+          {eventType === '공휴일' ? (
+            <span className="readonly-type">공휴일 (수정 불가)</span>
+          ) : (
+            <select
+              id="eventType"
+              value={eventType}
+              onChange={(event) => {
+                const newType = event.target.value
+                setEventType(newType)
+                // Reset recurrence if the new type hides the picker
+                if (newType === '교육' || newType === '휴가' || newType === '중요' || newType === '일반') {
+                  setRecurrence(parseRRule(null))
+                }
+              }}
+              required
+            >
+              <option value="일반">일반</option>
+              <option value="근무">근무</option>
+              <option value="반복업무">반복업무</option>
+              <option value="운용중지작업">운용중지작업</option>
+              <option value="중요">중요</option>
+              <option value="휴가">휴가</option>
+              <option value="교육">교육</option>
+            </select>
+          )}
 
           {eventType !== '휴가' ? (
             <>
@@ -578,11 +605,16 @@ export function EventModal({ open, value, memberNames, onClose, onSave, onDelete
                   if (!localId) {
                     return
                   }
-                  await onDelete(
-                    localId,
-                    sendUpdates,
-                    hasRecurringContext ? recurrenceScope : undefined,
-                  )
+                  try {
+                    await onDelete(
+                      localId,
+                      sendUpdates,
+                      hasRecurringContext ? recurrenceScope : undefined,
+                    )
+                  } catch (err) {
+                    console.error('Failed to delete event:', err)
+                    alert('이벤트 삭제에 실패했습니다.')
+                  }
                 }}
               >
                 삭제
@@ -590,8 +622,8 @@ export function EventModal({ open, value, memberNames, onClose, onSave, onDelete
             ) : (
               <span />
             )}
-            <button type="submit" className="primary-button">
-              저장
+            <button type="submit" className="primary-button" disabled={saving}>
+              {saving ? '저장 중...' : '저장'}
             </button>
           </div>
         </form>

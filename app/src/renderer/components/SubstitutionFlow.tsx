@@ -22,6 +22,7 @@ export function SubstitutionFlow({ anchor, memberNames, onComplete, onDismiss }:
   const closingTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null)
 
   const startClosing = useCallback(() => {
+    if (closingTimerRef.current) return
     setPhase('CLOSING')
     closingTimerRef.current = setTimeout(() => {
       onDismiss()
@@ -52,18 +53,16 @@ export function SubstitutionFlow({ anchor, memberNames, onComplete, onDismiss }:
     const el = flowCardRef.current
     if (!el) return
     el.style.transform = ''
-    requestAnimationFrame(() => {
-      const rect = el.getBoundingClientRect()
-      let dx = 0
-      let dy = 0
-      if (rect.right > window.innerWidth - 12) dx = window.innerWidth - 12 - rect.right
-      if (rect.left < 12) dx = 12 - rect.left
-      if (rect.bottom > window.innerHeight - 12) dy = window.innerHeight - 12 - rect.bottom
-      if (rect.top < 12) dy = 12 - rect.top
-      if (dx !== 0 || dy !== 0) {
-        el.style.transform = `translate(${dx}px, ${dy}px)`
-      }
-    })
+    const rect = el.getBoundingClientRect()
+    let dx = 0
+    let dy = 0
+    if (rect.right > window.innerWidth - 12) dx = window.innerWidth - 12 - rect.right
+    if (rect.left < 12) dx = 12 - rect.left
+    if (rect.bottom > window.innerHeight - 12) dy = window.innerHeight - 12 - rect.bottom
+    if (rect.top < 12) dy = 12 - rect.top
+    if (dx !== 0 || dy !== 0) {
+      el.style.transform = `translate(${dx}px, ${dy}px)`
+    }
   }, [phase])
 
   const currentStep = phase === 'SUBSTITUTE' ? 0 : phase === 'TYPE' ? 1 : phase === 'ORIGINAL' ? 2 : 0
@@ -166,7 +165,7 @@ export function SubstitutionFlow({ anchor, memberNames, onComplete, onDismiss }:
                 <span>원근무자 선택</span>
               </div>
               <div className="radial-flow-pill-grid is-member-grid">
-                {memberNames.map((name) => (
+                {memberNames.filter((name) => name !== substitute).map((name) => (
                   <button
                     key={name}
                     type="button"

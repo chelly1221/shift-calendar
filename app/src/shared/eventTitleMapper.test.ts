@@ -258,6 +258,37 @@ describe('buildUniqueCharMap', () => {
     // 서로 달라야 함
     expect(map.get('김민수')).not.toBe(map.get('김민지'))
   })
+
+  it('커스텀 오버라이드가 우선 적용된다', () => {
+    const map = buildUniqueCharMap(['채정원', '김영희'], { '채정원': '원' })
+    expect(map.get('채정원')).toBe('원')
+    expect(map.get('김영희')).toBe('김')
+  })
+
+  it('커스텀 오버라이드 글자가 다른 이름의 후보에서 제외된다', () => {
+    // '채'를 김영희에게 오버라이드하면 채정원은 다른 글자를 선택해야 함
+    const map = buildUniqueCharMap(['채정원', '김영희'], { '김영희': '채' })
+    expect(map.get('김영희')).toBe('채')
+    expect(map.get('채정원')).not.toBe('채')
+  })
+
+  it('커스텀 오버라이드에 allNames에 없는 이름이면 무시한다', () => {
+    const map = buildUniqueCharMap(['채정원'], { '없는사람': '홍' })
+    expect(map.has('없는사람')).toBe(false)
+    expect(map.get('채정원')).toBe('채')
+  })
+
+  it('빈 오버라이드 객체면 기존 동작과 동일하다', () => {
+    const map = buildUniqueCharMap(['채정원', '김영희'], {})
+    expect(map.get('채정원')).toBe('채')
+    expect(map.get('김영희')).toBe('김')
+  })
+
+  it('undefined 오버라이드면 기존 동작과 동일하다', () => {
+    const map = buildUniqueCharMap(['채정원', '김영희'], undefined)
+    expect(map.get('채정원')).toBe('채')
+    expect(map.get('김영희')).toBe('김')
+  })
 })
 
 describe('parseShiftAbbreviations', () => {
@@ -347,9 +378,9 @@ describe('resolveAbbreviationToName', () => {
     expect(resolveAbbreviationToName('홍', allNames)).toBeNull()
   })
 
-  it('중복 글자면 null을 반환한다', () => {
+  it('중복 글자면 첫 번째 매칭을 반환한다', () => {
     const names = ['채정원', '정민수']
-    expect(resolveAbbreviationToName('정', names)).toBeNull() // 2명 모두 '정' 포함
+    expect(resolveAbbreviationToName('정', names)).toBe('채정원') // 2명 모두 '정' 포함 → 첫 번째 매칭
     expect(resolveAbbreviationToName('채', names)).toBe('채정원')
   })
 
@@ -360,6 +391,23 @@ describe('resolveAbbreviationToName', () => {
   it('이름의 중간/끝 글자로도 매칭한다', () => {
     expect(resolveAbbreviationToName('원', allNames)).toBe('채정원')
     expect(resolveAbbreviationToName('희', allNames)).toBe('김영희')
+  })
+
+  it('customOverrides에서 이름에 없는 글자로도 매칭한다', () => {
+    const overrides = { '채정원': 'X', '김영희': 'Y' }
+    expect(resolveAbbreviationToName('X', allNames, overrides)).toBe('채정원')
+    expect(resolveAbbreviationToName('Y', allNames, overrides)).toBe('김영희')
+  })
+
+  it('customOverrides가 일반 매칭보다 우선한다', () => {
+    // '채' 는 채정원의 이름에도 있지만, override로 다른 사람에게 배정 가능
+    const overrides = { '김영희': '채' }
+    expect(resolveAbbreviationToName('채', allNames, overrides)).toBe('김영희')
+  })
+
+  it('customOverrides에 없는 글자는 기존 로직으로 fallback', () => {
+    const overrides = { '채정원': 'X' }
+    expect(resolveAbbreviationToName('희', allNames, overrides)).toBe('김영희')
   })
 })
 
@@ -572,6 +620,21 @@ describe('buildShiftGoogleSummary', () => {
     const abbrevs = parseShiftAbbreviations(result)
     expect(abbrevs.get('A')).toBeDefined()
     expect(abbrevs.get('B')).toBeDefined()
+  })
+
+  it('커스텀 오버라이드가 약어에 반영된다', () => {
+    const desc = '대체근무자: 홍길동\n근무종류: 대리근무\n원근무자: 채정원'
+    const overrides = { '홍길동': '동' }
+    const result = buildShiftGoogleSummary('A/B', desc, teams, allNames, overrides)
+    const abbrevs = parseShiftAbbreviations(result)
+    expect(abbrevs.get('A')).toContain('동')
+  })
+
+  it('커스텀 오버라이드 undefined이면 기존 동작과 동일하다', () => {
+    const desc = '대체근무자: 홍길동\n근무종류: 대리근무\n원근무자: 채정원'
+    const withOverride = buildShiftGoogleSummary('A/B', desc, teams, allNames, undefined)
+    const without = buildShiftGoogleSummary('A/B', desc, teams, allNames)
+    expect(withOverride).toBe(without)
   })
 })
 

@@ -7,6 +7,7 @@ const RRULE_KEY_ORDER = [
   'INTERVAL',
   'BYDAY',
   'BYMONTHDAY',
+  'BYMONTH',
   'BYSETPOS',
   'UNTIL',
   'COUNT',
@@ -84,6 +85,11 @@ export function parseUntilToUtcIso(untilValue: string | null | undefined): strin
     const month = Number.parseInt(untilValue.slice(4, 6), 10) - 1
     const day = Number.parseInt(untilValue.slice(6, 8), 10)
     return new Date(Date.UTC(year, month, day, 0, 0, 0)).toISOString()
+  }
+
+  if (/^\d{8}T\d{6}$/.test(untilValue)) {
+    // Floating datetime without Z suffix - treat as UTC
+    return parseUntilToUtcIso(untilValue + 'Z')
   }
 
   if (/^\d{8}T\d{6}Z$/i.test(untilValue)) {

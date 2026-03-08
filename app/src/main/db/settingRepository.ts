@@ -1,5 +1,5 @@
 import { DateTime } from 'luxon'
-import type { ShiftSettings, ShiftTeamAssignments, ShiftTeamMode, ShiftType } from '../../shared/calendar'
+import { defaultShiftSettings, type ShiftSettings, type ShiftTeamAssignments, type ShiftTeamMode, type ShiftType } from '../../shared/calendar'
 import { prisma } from './prisma'
 
 function defaultSyncWindow() {
@@ -17,34 +17,21 @@ function unboundedSyncWindow() {
   }
 }
 
-const DEFAULT_SHIFT_SETTINGS: ShiftSettings = {
-  shiftType: 'DAY_NIGHT_OFF_OFF',
-  shiftTeamMode: 'PAIR',
-  dayWorkerCount: 2,
-  teams: {
-    A: [],
-    B: [],
-    C: [],
-    D: [],
-  },
-  dayWorkers: [],
-}
-
 const MAX_DAY_WORKER_COUNT = 5
 
 function normalizeShiftType(value: unknown): ShiftType {
-  return value === 'DAY_NIGHT_OFF_OFF' ? value : DEFAULT_SHIFT_SETTINGS.shiftType
+  return value === 'DAY_NIGHT_OFF_OFF' ? value : defaultShiftSettings.shiftType
 }
 
 function normalizeShiftTeamMode(value: unknown): ShiftTeamMode {
   return value === 'SINGLE' || value === 'PAIR'
     ? value
-    : DEFAULT_SHIFT_SETTINGS.shiftTeamMode
+    : defaultShiftSettings.shiftTeamMode
 }
 
 function normalizeDayWorkerCount(value: unknown): number {
   if (typeof value !== 'number' || !Number.isInteger(value)) {
-    return DEFAULT_SHIFT_SETTINGS.dayWorkerCount
+    return defaultShiftSettings.dayWorkerCount
   }
   if (value < 1) {
     return 1
@@ -95,6 +82,23 @@ function applyShiftTeamMode(members: string[], mode: ShiftTeamMode): string[] {
   return mode === 'SINGLE' ? members.slice(0, 1) : members.slice(0, 2)
 }
 
+function normalizeAbbreviations(value: unknown): Record<string, string> {
+  if (typeof value !== 'object' || value === null) {
+    return {}
+  }
+  const record = value as Record<string, unknown>
+  const result: Record<string, string> = {}
+  const usedChars = new Set<string>()
+  for (const [key, val] of Object.entries(record)) {
+    const trimmedKey = key.trim()
+    if (typeof val === 'string' && val.length === 1 && trimmedKey && !usedChars.has(val)) {
+      result[trimmedKey] = val
+      usedChars.add(val)
+    }
+  }
+  return result
+}
+
 function normalizeShiftPayload(
   value: unknown,
   mode: ShiftTeamMode,
@@ -102,6 +106,7 @@ function normalizeShiftPayload(
   dayWorkerCount: number
   teams: ShiftTeamAssignments
   dayWorkers: string[]
+  abbreviations: Record<string, string>
 } {
   const record = typeof value === 'object' && value !== null
     ? (value as Record<string, unknown>)
@@ -120,6 +125,7 @@ function normalizeShiftPayload(
       D: applyShiftTeamMode(teams.D, mode),
     },
     dayWorkers: normalizeMembers(record['dayWorkers'], dayWorkerCount),
+    abbreviations: normalizeAbbreviations(record['abbreviations']),
   }
 }
 
@@ -141,12 +147,12 @@ export async function ensureSetting(): Promise<{
     create: {
       id: 1,
       ...defaults,
-      shiftType: DEFAULT_SHIFT_SETTINGS.shiftType,
-      shiftTeamMode: DEFAULT_SHIFT_SETTINGS.shiftTeamMode,
+      shiftType: defaultShiftSettings.shiftType,
+      shiftTeamMode: defaultShiftSettings.shiftTeamMode,
       shiftTeamsJson: {
-        teams: DEFAULT_SHIFT_SETTINGS.teams,
-        dayWorkers: DEFAULT_SHIFT_SETTINGS.dayWorkers,
-        dayWorkerCount: DEFAULT_SHIFT_SETTINGS.dayWorkerCount,
+        teams: defaultShiftSettings.teams,
+        dayWorkers: defaultShiftSettings.dayWorkers,
+        dayWorkerCount: defaultShiftSettings.dayWorkerCount,
       },
     },
     update: {},
@@ -166,6 +172,7 @@ export async function ensureSetting(): Promise<{
 }
 
 export async function setSyncToken(syncToken: string | null): Promise<void> {
+  await ensureSetting()
   await prisma.setting.update({
     where: { id: 1 },
     data: { syncToken },
@@ -185,6 +192,7 @@ export async function markSyncWindowUnbounded(): Promise<void> {
 }
 
 export async function setAccountEmail(accountEmail: string | null): Promise<void> {
+  await ensureSetting()
   await prisma.setting.update({
     where: { id: 1 },
     data: { accountEmail },
@@ -217,6 +225,7 @@ export async function getShiftSettings(): Promise<ShiftSettings> {
     dayWorkerCount: shiftPayload.dayWorkerCount,
     teams: shiftPayload.teams,
     dayWorkers: shiftPayload.dayWorkers,
+    abbreviations: shiftPayload.abbreviations,
   }
 }
 
@@ -227,6 +236,7 @@ export async function setShiftSettings(input: ShiftSettings): Promise<ShiftSetti
       teams: input.teams,
       dayWorkers: input.dayWorkers,
       dayWorkerCount: input.dayWorkerCount,
+      abbreviations: input.abbreviations,
     },
     shiftTeamMode,
   )
@@ -236,6 +246,7 @@ export async function setShiftSettings(input: ShiftSettings): Promise<ShiftSetti
     dayWorkerCount: shiftPayload.dayWorkerCount,
     teams: shiftPayload.teams,
     dayWorkers: shiftPayload.dayWorkers,
+    abbreviations: shiftPayload.abbreviations,
   }
 
   await prisma.setting.update({
@@ -247,6 +258,7 @@ export async function setShiftSettings(input: ShiftSettings): Promise<ShiftSetti
         teams: nextSettings.teams,
         dayWorkers: nextSettings.dayWorkers,
         dayWorkerCount: nextSettings.dayWorkerCount,
+        abbreviations: nextSettings.abbreviations,
       },
     },
   })
@@ -308,6 +320,12 @@ export async function setSelectedCalendar(input: {
       },
     })
     return
+  }
+
+  const runningCount = await prisma.outboxJob.count({ where: { status: 'RUNNING' } })
+  if (runningCount > 0) {
+    console.warn(`[Settings] ${runningCount} RUNNING outbox jobs exist during calendar switch - waiting briefly`)
+    await new Promise(resolve => setTimeout(resolve, 2000))
   }
 
   const pendingCount = await prisma.outboxJob.count({

@@ -10,17 +10,17 @@ interface FallbackTokenStore {
   refreshToken?: string
 }
 
-let cachedKeytar: Promise<typeof import('keytar') | null> | null = null
+let cachedKeytar: typeof import('keytar') | null | undefined = undefined
 
 async function loadKeytar(): Promise<typeof import('keytar') | null> {
-  if (cachedKeytar) {
+  if (cachedKeytar !== undefined) return cachedKeytar
+  try {
+    cachedKeytar = await import('keytar')
     return cachedKeytar
+  } catch {
+    // Don't cache failure - allow retry next time
+    return null
   }
-
-  cachedKeytar = import('keytar')
-    .then((module) => module)
-    .catch(() => null)
-  return cachedKeytar
 }
 
 async function readFallbackTokenStore(): Promise<FallbackTokenStore> {
@@ -47,7 +47,9 @@ export async function saveRefreshToken(refreshToken: string): Promise<void> {
       await keytar.setPassword(SERVICE_NAME, ACCOUNT_NAME, refreshToken)
       return
     } catch {
-      // Fall through to file-based storage if keyring service is unavailable.
+      // Keytar save failed, fall through to file store
+      // Also try to delete stale keytar entry to prevent inconsistency
+      try { await keytar.deletePassword(SERVICE_NAME, ACCOUNT_NAME) } catch { /* ignore */ }
     }
   }
 
@@ -79,11 +81,14 @@ export async function clearRefreshToken(): Promise<boolean> {
   if (keytar) {
     try {
       deleted = await keytar.deletePassword(SERVICE_NAME, ACCOUNT_NAME)
-    } catch {
-      deleted = false
+    } catch (err) {
+      console.error('[TokenStore] Failed to delete from keytar:', err)
     }
   }
-
-  await writeFallbackTokenStore({})
+  try {
+    await writeFallbackTokenStore({})
+  } catch (err) {
+    console.error('[TokenStore] Failed to clear fallback store:', err)
+  }
   return deleted
 }

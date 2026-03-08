@@ -156,7 +156,7 @@ export function SyncModal({
   const syncCalendarValue = selectedCalendarId && calendars.some((calendar) => calendar.id === selectedCalendarId)
     ? selectedCalendarId
     : ''
-  const isCalendarSelected = Boolean(selectedCalendarId)
+  const isCalendarSelected = Boolean(syncCalendarValue)
   const canSyncNow = isOnline && googleConnected && isCalendarSelected && !syncing && !forcePushing
   const canForcePush = isOnline && googleConnected && isCalendarSelected && !syncing && !forcePushing
   const readinessText = !isOnline
@@ -165,9 +165,11 @@ export function SyncModal({
       ? 'Google 계정 연결 필요'
       : !isCalendarSelected
         ? '동기화 달력 선택 필요'
-        : syncing
-          ? '동기화 진행 중'
-          : '즉시 동기화 가능'
+        : forcePushing
+          ? '전체 동기화 진행 중'
+          : syncing
+            ? '동기화 진행 중'
+            : '즉시 동기화 가능'
 
   const saveOAuthConfig = async () => {
     const trimmedId = oauthClientId.trim()
@@ -198,7 +200,6 @@ export function SyncModal({
     })
     try {
       await onCancelOutboxJob(jobId)
-      await onRefreshOutboxJobs()
     } finally {
       setRemovingJobIds((prev) => {
         const next = new Set(prev)
@@ -290,7 +291,7 @@ export function SyncModal({
                   <button
                     type="button"
                     className="primary-button"
-                    onClick={() => void onSyncNow()}
+                    onClick={() => void onSyncNow().catch((err) => { console.error(err); window.alert('동기화 실패') })}
                     disabled={!canSyncNow}
                   >
                     {syncing ? '동기화 중...' : '지금 동기화'}
@@ -300,7 +301,7 @@ export function SyncModal({
                     className="ghost-button sync-force-push-button"
                     onClick={() => {
                       if (window.confirm('로컬 캘린더 기준으로 구글 캘린더를 강제 업데이트합니다.\n이 작업은 되돌릴 수 없습니다. 계속하시겠습니까?')) {
-                        void onForcePushAll()
+                        void onForcePushAll().catch((err) => { console.error(err); window.alert('강제 푸시 실패') })
                       }
                     }}
                     disabled={!canForcePush}
@@ -377,7 +378,7 @@ export function SyncModal({
                   <p className="settings-value">{googleConnected ? accountEmail ?? '연결됨' : '연결 안 됨'}</p>
                 </div>
                 {googleConnected ? (
-                  <button type="button" className="ghost-button" onClick={() => void onDisconnectGoogle()}>
+                  <button type="button" className="ghost-button" onClick={() => void onDisconnectGoogle().catch((err) => { console.error(err); window.alert('연결 해제 실패') })}>
                     연결 해제
                   </button>
                 ) : (

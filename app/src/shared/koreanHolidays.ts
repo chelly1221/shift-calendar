@@ -10,6 +10,7 @@ const PUBLIC_HOLIDAY_KEYWORDS: string[] = [
   // 고정 공휴일
   '새해',
   '신정',
+  '1월1일',
   '삼일절',
   '어린이날',
   '현충일',
@@ -18,6 +19,7 @@ const PUBLIC_HOLIDAY_KEYWORDS: string[] = [
   '한글날',
   '크리스마스',
   '성탄절',
+  '기독탄신일',
   // 음력 공휴일
   '설날',
   '설날전날',
@@ -33,6 +35,8 @@ const PUBLIC_HOLIDAY_KEYWORDS: string[] = [
   '대체공휴일',
   '대체휴일',
   '임시공휴일',
+  '선거',
+  '투표',
 ]
 
 function normalize(text: string): string {

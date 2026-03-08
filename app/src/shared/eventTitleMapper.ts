@@ -10,10 +10,23 @@ export interface SubstitutionBlock {
 
 // --- Shift abbreviation helpers ---
 
-const SHIFT_ABBREV_RE = /([A-D])\(([^)]+)\)/g
+const SHIFT_ABBREV_RE = /(?<=^|[/／\s])([A-D])\(([^)]+)\)/g
 
-export function buildUniqueCharMap(allNames: string[]): Map<string, string> {
+export function buildUniqueCharMap(allNames: string[], customOverrides?: Record<string, string>): Map<string, string> {
   if (allNames.length === 0) return new Map()
+
+  const result = new Map<string, string>()
+  const usedChars = new Set<string>()
+
+  // Apply custom overrides first
+  if (customOverrides) {
+    for (const [name, char] of Object.entries(customOverrides)) {
+      if (char && allNames.includes(name)) {
+        result.set(name, char)
+        usedChars.add(char)
+      }
+    }
+  }
 
   const charOwners = new Map<string, Set<string>>()
   for (const name of allNames) {
@@ -27,9 +40,7 @@ export function buildUniqueCharMap(allNames: string[]): Map<string, string> {
     }
   }
 
-  // First pass: assign each name its best candidate (unique > fewest owners)
-  const result = new Map<string, string>()
-  const usedChars = new Set<string>()
+  // Assign remaining names their best candidate (unique > fewest owners)
   // Sort candidates by uniqueness — names with a truly unique char go first
   const namesByPriority = [...allNames].sort((a, b) => {
     const aHasUnique = [...a].some((c) => (charOwners.get(c)?.size ?? Infinity) === 1)
@@ -89,12 +100,19 @@ export function parseShiftAbbreviations(summary: string): Map<ShiftTeamKey, stri
 }
 
 export function stripShiftAbbreviations(summary: string): string {
-  return summary.replace(/([A-D])\([^)]+\)/g, '$1').trim()
+  return summary.replace(/(?<=^|[/／\s])([A-D])\([^)]+\)/g, '$1').trim()
 }
 
-export function resolveAbbreviationToName(char: string, allNames: string[]): string | null {
+export function resolveAbbreviationToName(char: string, allNames: string[], customOverrides?: Record<string, string>): string | null {
+  // Check custom overrides first — exact char match takes priority
+  if (customOverrides) {
+    const overrideMatch = Object.entries(customOverrides).find(
+      ([name, c]) => c === char && allNames.includes(name),
+    )
+    if (overrideMatch) return overrideMatch[0]
+  }
   const matches = allNames.filter((name) => name.includes(char))
-  return matches.length === 1 ? matches[0] : null
+  return matches.length >= 1 ? matches[0] : null
 }
 
 export function parseSubstitutionBlocks(description: string): SubstitutionBlock[] {
@@ -132,6 +150,7 @@ export function buildShiftGoogleSummary(
   description: string,
   teams: ShiftTeamAssignments,
   allNames: string[],
+  customOverrides?: Record<string, string>,
 ): string {
   const clean = stripShiftAbbreviations(summary)
   if (allNames.length === 0) return clean
@@ -139,7 +158,7 @@ export function buildShiftGoogleSummary(
   const substitutions = parseSubstitutionBlocks(description)
   if (substitutions.length === 0) return clean
 
-  const charMap = buildUniqueCharMap(allNames)
+  const charMap = buildUniqueCharMap(allNames, customOverrides)
 
   // Build a map: teamKey → list of abbreviation chars for substitutes in that team
   const teamAbbrevs = new Map<ShiftTeamKey, string[]>()
@@ -209,7 +228,7 @@ function parseNames(raw: string): string[] {
 }
 
 function hasMetadataLine(description: string, prefix: string): boolean {
-  return description.split('\n').some((line) => line.startsWith(prefix))
+  return description.split(/\r?\n/).some((line) => line.startsWith(prefix))
 }
 
 function prependMetadataLine(description: string, line: string): string {
@@ -241,7 +260,7 @@ export function inferEventMetadata(
       }
       if (!hasMetadataLine(desc, VACATION_TYPE_PREFIX)) {
         // Insert after target line
-        const lines = desc.split('\n')
+        const lines = desc.split(/\r?\n/)
         const targetIdx = lines.findIndex((l) => l.startsWith(VACATION_TARGET_PREFIX))
         if (targetIdx >= 0) {
           lines.splice(targetIdx + 1, 0, `${VACATION_TYPE_PREFIX}${vacationType}`)
@@ -274,7 +293,7 @@ export function inferEventMetadata(
   if (currentEventType === '교육') {
     // Round-trip cleanup: strip target names from summary prefix
     const targetLine = description
-      .split('\n')
+      .split(/\r?\n/)
       .find((l) => l.startsWith(EDUCATION_TARGET_PREFIX))
     if (targetLine) {
       const targets = parseNames(targetLine.slice(EDUCATION_TARGET_PREFIX.length))
@@ -306,7 +325,7 @@ export function inferEventMetadata(
         desc = prependMetadataLine(desc, `${VACATION_TARGET_PREFIX}${names.join(', ')}`)
       }
       if (!hasMetadataLine(desc, VACATION_TYPE_PREFIX)) {
-        const lines = desc.split('\n')
+        const lines = desc.split(/\r?\n/)
         const targetIdx = lines.findIndex((l) => l.startsWith(VACATION_TARGET_PREFIX))
         if (targetIdx >= 0) {
           lines.splice(targetIdx + 1, 0, `${VACATION_TYPE_PREFIX}${vacationType}`)
@@ -337,7 +356,7 @@ export function toGoogleSummary(
 ): string {
   if (eventType === '교육') {
     const targetLine = description
-      .split('\n')
+      .split(/\r?\n/)
       .find((l) => l.startsWith(EDUCATION_TARGET_PREFIX))
     if (targetLine) {
       const targets = parseNames(targetLine.slice(EDUCATION_TARGET_PREFIX.length))

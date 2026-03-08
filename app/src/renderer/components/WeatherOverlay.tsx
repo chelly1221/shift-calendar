@@ -1,4 +1,4 @@
-import { type CSSProperties, useEffect, useMemo, useState } from 'react'
+import { type CSSProperties, useEffect, useMemo, useRef, useState } from 'react'
 import Particles, { initParticlesEngine } from '@tsparticles/react'
 import { loadSlim } from '@tsparticles/slim'
 import { loadSnowPreset } from '@tsparticles/preset-snow'
@@ -17,6 +17,9 @@ function ensureParticlesEngine(): Promise<void> {
     engineInitPromise = initParticlesEngine(async (engine) => {
       await loadSlim(engine)
       await loadSnowPreset(engine)
+    }).catch((err) => {
+      engineInitPromise = null
+      throw err
     })
   }
 
@@ -122,19 +125,28 @@ export function WeatherOverlay({ mode }: WeatherOverlayProps) {
   useEffect(() => {
     let disposed = false
 
-    void ensureParticlesEngine().then(() => {
-      if (!disposed) {
-        setIsReady(true)
-      }
-    })
+    void ensureParticlesEngine()
+      .then(() => {
+        if (!disposed) {
+          setIsReady(true)
+        }
+      })
+      .catch((err) => {
+        console.error('[WeatherOverlay] Particles engine init failed:', err)
+      })
 
     return () => {
       disposed = true
     }
   }, [])
 
+  const isInitialMount = useRef(true)
   useEffect(() => {
     if (mode !== 'rain') {
+      return
+    }
+    if (isInitialMount.current) {
+      isInitialMount.current = false
       return
     }
     setRainRows(createRainRows())

@@ -25,6 +25,7 @@ export interface RemoteEventSnapshot {
 function normalizeDate(dateIso: string): Date {
   const parsed = new Date(dateIso)
   if (Number.isNaN(parsed.getTime())) {
+    console.warn(`[EventRepository] Invalid date string normalized to current time: "${dateIso}"`)
     return new Date()
   }
   return parsed
@@ -324,8 +325,18 @@ export async function applyFutureSplitForDelete(
     throw new Error('FUTURE delete split requires recurring master event with RRULE.')
   }
 
+  // Cannot split by recurringEventId when master has no googleEventId
+  // Just mark the source as deleted
+  if (!source.googleEventId) {
+    const updated = await prisma.event.update({
+      where: { localId: source.localId },
+      data: { isDeleted: true, localEditedAtUtc: new Date(), syncState: SyncState.PENDING },
+    })
+    return { splitSourceEvent: toCalendarEvent(updated) }
+  }
+
   const splitRule = splitRRuleForFuture(sourceRule, splitStartUtc)
-  const now = new Date()
+  const cutoffTime = new Date()
   const splitStart = new Date(splitStartUtc)
 
   const result = await prisma.$transaction(async (tx) => {
@@ -333,7 +344,7 @@ export async function applyFutureSplitForDelete(
       where: { localId: source.localId },
       data: {
         recurrenceJson: toRecurrenceJson(splitRule),
-        localEditedAtUtc: now,
+        localEditedAtUtc: cutoffTime,
         syncState: SyncState.PENDING,
       },
     })
@@ -346,7 +357,7 @@ export async function applyFutureSplitForDelete(
       },
       data: {
         isDeleted: true,
-        localEditedAtUtc: now,
+        localEditedAtUtc: cutoffTime,
         syncState: SyncState.PENDING,
       },
     })
@@ -357,6 +368,7 @@ export async function applyFutureSplitForDelete(
         recurringEventId: source.googleEventId,
         startAtUtc: { gte: splitStart },
         isDeleted: true,
+        localEditedAtUtc: { gte: cutoffTime },
         googleEventId: { not: null },
       },
       select: { localId: true, googleEventId: true },
@@ -370,7 +382,7 @@ export async function applyFutureSplitForDelete(
             operation: OutboxOperationType.DELETE,
             payloadJson: { googleEventId: instance.googleEventId },
             status: OutboxStatus.QUEUED,
-            nextRetryAtUtc: now,
+            nextRetryAtUtc: cutoffTime,
           },
         })
       }
@@ -444,15 +456,17 @@ export async function upsertRemoteEvent(snapshot: RemoteEventSnapshot): Promise<
   if (existing?.syncState === SyncState.PENDING) {
     const remoteMs = googleUpdatedAt.getTime()
     const localMs = existing.localEditedAtUtc.getTime()
-    if (localMs > remoteMs) {
-      return
+    if (localMs >= remoteMs) {
+      return  // Skip remote update, local is newer or equal
     }
   }
 
   const snapshotType = normalizeEventType(snapshot.eventType)
-  const preservedEventType = (existing?.eventType && existing.eventType !== '일반')
-    ? existing.eventType
-    : snapshotType
+  const preservedEventType = (snapshotType !== '일반')
+    ? snapshotType
+    : (existing?.eventType && existing.eventType !== '일반')
+      ? existing.eventType
+      : snapshotType
 
   const baseData = {
     summary: snapshot.summary,
@@ -527,15 +541,17 @@ async function upsertRemoteEventInTx(tx: TxClient, snapshot: RemoteEventSnapshot
   if (existing?.syncState === SyncState.PENDING) {
     const remoteMs = googleUpdatedAt.getTime()
     const localMs = existing.localEditedAtUtc.getTime()
-    if (localMs > remoteMs) {
-      return
+    if (localMs >= remoteMs) {
+      return  // Skip remote update, local is newer or equal
     }
   }
 
   const snapshotType = normalizeEventType(snapshot.eventType)
-  const preservedEventType = (existing?.eventType && existing.eventType !== '일반')
-    ? existing.eventType
-    : snapshotType
+  const preservedEventType = (snapshotType !== '일반')
+    ? snapshotType
+    : (existing?.eventType && existing.eventType !== '일반')
+      ? existing.eventType
+      : snapshotType
 
   const baseData = {
     summary: snapshot.summary,

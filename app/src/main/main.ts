@@ -14,7 +14,7 @@ import { ensureSetting } from './db/settingRepository'
 import { IPC_CHANNELS } from './ipc/channels'
 import { registerCalendarIpc } from './ipc/registerCalendarIpc'
 import { prisma } from './db/prisma'
-import { startOutboxWorker } from './sync/outboxWorker'
+import { startOutboxWorker, stopOutboxWorker } from './sync/outboxWorker'
 import { runSyncNow } from './sync/syncEngine'
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url))
@@ -34,7 +34,6 @@ process.env.VITE_PUBLIC = VITE_DEV_SERVER_URL
   : RENDERER_DIST
 
 let syncTimer: NodeJS.Timeout | null = null
-let isSyncing = false
 
 interface WindowViewportCorrectionPayload {
   active: boolean
@@ -83,10 +82,12 @@ function getWindowViewportCorrection(window: BrowserWindow): WindowViewportCorre
 }
 
 function sendWindowMaximizeChanged(window: BrowserWindow): void {
+  if (window.isDestroyed() || window.webContents.isDestroyed()) return
   window.webContents.send(IPC_CHANNELS.windowMaximizeChanged, isWindowExpandedForUi(window))
 }
 
 function sendWindowViewportCorrection(window: BrowserWindow): void {
+  if (window.isDestroyed() || window.webContents.isDestroyed()) return
   window.webContents.send(
     IPC_CHANNELS.windowViewportCorrection,
     getWindowViewportCorrection(window),
@@ -165,64 +166,85 @@ function createMainWindow(): BrowserWindow {
     sendWindowUiState(window)
   })
 
+  window.webContents.setWindowOpenHandler(() => ({ action: 'deny' }))
+
   if (VITE_DEV_SERVER_URL) {
-    window.loadURL(VITE_DEV_SERVER_URL)
+    window.loadURL(VITE_DEV_SERVER_URL).catch((err) => console.error('Failed to load dev URL:', err))
   } else {
-    window.loadFile(path.join(RENDERER_DIST, 'index.html'))
+    window.loadFile(path.join(RENDERER_DIST, 'index.html')).catch((err) => console.error('Failed to load file:', err))
   }
 
   return window
 }
 
-app.whenReady().then(async () => {
-  app.setName('교대근무 일정관리')
-  await ensureSetting()
-
-  registerCalendarIpc()
-
-  ipcMain.on(IPC_CHANNELS.windowMinimize, (event) => {
-    BrowserWindow.fromWebContents(event.sender)?.minimize()
-  })
-  ipcMain.on(IPC_CHANNELS.windowMaximize, (event) => {
-    const win = BrowserWindow.fromWebContents(event.sender)
-    if (win) {
-      toggleWindowMaximize(win)
+const gotTheLock = app.requestSingleInstanceLock()
+if (!gotTheLock) {
+  app.quit()
+} else {
+  app.on('second-instance', () => {
+    // Focus the existing window
+    const wins = BrowserWindow.getAllWindows()
+    if (wins.length > 0) {
+      if (wins[0].isMinimized()) wins[0].restore()
+      wins[0].focus()
     }
   })
-  ipcMain.on(IPC_CHANNELS.windowClose, (event) => {
-    BrowserWindow.fromWebContents(event.sender)?.close()
-  })
 
-  startOutboxWorker()
-  void runSyncNow().catch((error) => {
-    console.error('Initial sync failed:', error)
-  })
+  app.whenReady().then(async () => {
+    app.setName('교대근무 일정관리')
 
-  syncTimer = setInterval(() => {
-    if (isSyncing) return
-    isSyncing = true
-    void runSyncNow()
-      .catch((error) => {
+    try {
+      await ensureSetting()
+
+      // Migrate legacy SyncState values that are no longer in the Prisma enum
+      await prisma.$executeRawUnsafe(
+        `UPDATE Event SET syncState = 'PENDING' WHERE syncState NOT IN ('CLEAN', 'PENDING', 'ERROR')`,
+      )
+    } catch (err) {
+      console.error('Database initialization failed:', err)
+    }
+
+    registerCalendarIpc()
+
+    ipcMain.on(IPC_CHANNELS.windowMinimize, (event) => {
+      BrowserWindow.fromWebContents(event.sender)?.minimize()
+    })
+    ipcMain.on(IPC_CHANNELS.windowMaximize, (event) => {
+      const win = BrowserWindow.fromWebContents(event.sender)
+      if (win) {
+        toggleWindowMaximize(win)
+      }
+    })
+    ipcMain.on(IPC_CHANNELS.windowClose, (event) => {
+      BrowserWindow.fromWebContents(event.sender)?.close()
+    })
+
+    startOutboxWorker()
+    void runSyncNow().catch((error) => {
+      console.error('Initial sync failed:', error)
+    })
+
+    syncTimer = setInterval(() => {
+      void runSyncNow().catch((error) => {
         console.error('Scheduled sync failed:', error)
       })
-      .finally(() => {
-        isSyncing = false
-      })
-  }, 60_000)
+    }, 60_000)
 
-  createMainWindow()
-})
-
-app.on('window-all-closed', () => {
-  if (syncTimer) {
-    clearInterval(syncTimer)
-    syncTimer = null
-  }
-  app.quit()
-})
-
-app.on('before-quit', () => {
-  void prisma.$disconnect().catch(() => {
-    // Non-fatal: best-effort cleanup
+    createMainWindow()
   })
-})
+
+  app.on('window-all-closed', () => {
+    if (syncTimer) {
+      clearInterval(syncTimer)
+      syncTimer = null
+    }
+    stopOutboxWorker()
+    app.quit()
+  })
+
+  app.on('before-quit', () => {
+    void prisma.$disconnect().catch(() => {
+      // Non-fatal: best-effort cleanup
+    })
+  })
+}

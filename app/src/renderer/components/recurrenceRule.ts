@@ -14,6 +14,7 @@ export interface RecurrenceValue {
   monthDay: number
   bySetPos: number
   monthlyByDay: MonthlyByDay
+  byMonth: number | null
   endMode: RecurrenceEndMode
   untilDate: string
   count: number
@@ -57,10 +58,10 @@ function clampCount(count: number): number {
 }
 
 function clampSetPos(setPos: number): number {
-  if (![1, 2, 3, 4, -1].includes(setPos)) {
-    return 1
+  if (setPos >= -4 && setPos <= 4 && setPos !== 0) {
+    return setPos
   }
-  return setPos
+  return 1
 }
 
 function defaultUntilDate(): string {
@@ -77,6 +78,7 @@ function defaultRecurrenceValue(): RecurrenceValue {
     monthDay: 1,
     bySetPos: 1,
     monthlyByDay: 'MO',
+    byMonth: null,
     endMode: 'NEVER',
     untilDate: defaultUntilDate(),
     count: 10,
@@ -89,7 +91,7 @@ function parseWeekdays(byDayValue: string | undefined): WeekdayCode[] {
   }
   return byDayValue
     .split(',')
-    .map((day) => day.trim().toUpperCase())
+    .map((day) => day.trim().toUpperCase().replace(/^[+-]?\d+/, ''))
     .filter((day): day is WeekdayCode => WEEKDAY_ORDER.includes(day as WeekdayCode))
 }
 
@@ -148,6 +150,14 @@ export function parseRRule(rule: string | null | undefined): RecurrenceValue {
     }
   }
 
+  const byMonthStr = segments.get('BYMONTH')
+  if (byMonthStr) {
+    const month = Number.parseInt(byMonthStr.split(',')[0], 10)
+    if (Number.isFinite(month) && month >= 1 && month <= 12) {
+      value.byMonth = month
+    }
+  }
+
   const count = Number.parseInt(segments.get('COUNT') ?? '0', 10)
   if (Number.isFinite(count) && count > 0) {
     value.endMode = 'COUNT'
@@ -182,6 +192,10 @@ export function recurrenceToRRule(value: RecurrenceValue): string | null {
       segments.set('BYDAY', byDay)
       segments.set('BYSETPOS', `${clampSetPos(value.bySetPos)}`)
     }
+  }
+
+  if (value.byMonth !== null && value.byMonth >= 1 && value.byMonth <= 12) {
+    segments.set('BYMONTH', `${value.byMonth}`)
   }
 
   if (value.endMode === 'COUNT') {

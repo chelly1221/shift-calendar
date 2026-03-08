@@ -71,7 +71,7 @@ export function SettingsModal({
                 value={shiftType}
                 onChange={(event) => {
                   const nextType = event.target.value as ShiftType
-                  void onSetShiftType(nextType)
+                  void onSetShiftType(nextType).catch((err) => { console.error('설정 저장 실패:', err) })
                 }}
                 disabled={savingShiftSettings}
               >
@@ -87,7 +87,12 @@ export function SettingsModal({
                 value={shiftTeamMode}
                 onChange={(event) => {
                   const nextMode = event.target.value as ShiftTeamMode
-                  void onSetShiftTeamMode(nextMode)
+                  if (nextMode === 'SINGLE' && shiftTeamMode === 'PAIR') {
+                    if (!window.confirm('SINGLE 모드로 전환하면 각 팀의 두 번째 팀원이 제거됩니다. 계속하시겠습니까?')) {
+                      return
+                    }
+                  }
+                  void onSetShiftTeamMode(nextMode).catch((err) => { console.error('설정 저장 실패:', err) })
                 }}
                 disabled={savingShiftSettings}
               >
@@ -106,7 +111,7 @@ export function SettingsModal({
                 value={dayWorkerCount}
                 onChange={(event) => {
                   const nextCount = Number(event.target.value) as DayWorkerCount
-                  void onSetDayWorkerCount(nextCount)
+                  void onSetDayWorkerCount(nextCount).catch((err) => { console.error('설정 저장 실패:', err) })
                 }}
                 disabled={savingShiftSettings}
               >

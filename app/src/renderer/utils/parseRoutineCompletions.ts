@@ -2,11 +2,17 @@ const ROUTINE_COMPLETED_PREFIX = '반복완료: '
 
 const ISO_DATE_PATTERN = /^\d{4}-\d{2}-\d{2}$/
 
+function isValidDate(dateStr: string): boolean {
+  if (!ISO_DATE_PATTERN.test(dateStr)) return false
+  const d = new Date(dateStr + 'T00:00:00Z')
+  return !isNaN(d.getTime()) && d.toISOString().startsWith(dateStr)
+}
+
 function normalizeDates(values: string[]): string[] {
   const unique = new Set<string>()
   for (const value of values) {
     const trimmed = value.trim()
-    if (!ISO_DATE_PATTERN.test(trimmed)) {
+    if (!isValidDate(trimmed)) {
       continue
     }
     unique.add(trimmed)
@@ -21,7 +27,7 @@ export function parseRoutineCompletions(description: string): {
   let completedDates: string[] = []
   const remainingLines: string[] = []
 
-  for (const line of description.split('\n')) {
+  for (const line of description.split(/\r?\n/)) {
     if (line.startsWith(ROUTINE_COMPLETED_PREFIX)) {
       completedDates = normalizeDates(
         line

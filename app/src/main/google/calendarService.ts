@@ -154,7 +154,7 @@ export function toRemoteSnapshot(event: calendar_v3.Schema$Event): RemoteEventSn
   if (isDeleted) {
     return {
       googleEventId,
-      eventType: '일반',
+      eventType: extractEventType(event),
       summary: '',
       description: '',
       location: '',
@@ -210,6 +210,7 @@ export function toRemoteSnapshot(event: calendar_v3.Schema$Event): RemoteEventSn
 export interface ShiftContext {
   teams: ShiftTeamAssignments
   allNames: string[]
+  abbreviations?: Record<string, string>
 }
 
 export function toGoogleEventRequest(
@@ -223,10 +224,10 @@ export function toGoogleEventRequest(
 
   return {
     summary: event.eventType === '근무' && shiftContext
-      ? buildShiftGoogleSummary(event.summary, event.description ?? '', shiftContext.teams, shiftContext.allNames)
+      ? buildShiftGoogleSummary(event.summary, event.description ?? '', shiftContext.teams, shiftContext.allNames, shiftContext.abbreviations)
       : toGoogleSummary(event.summary, event.description ?? '', event.eventType),
-    description: event.description || undefined,
-    location: event.location || undefined,
+    description: event.description || '',
+    location: event.location || '',
     start: wholeDayEvent
       ? { date: startLocal.toISODate() ?? undefined }
       : {
@@ -387,13 +388,17 @@ function toGoogleCalendarItem(entry: calendar_v3.Schema$CalendarListEntry): Goog
 
 export function createGoogleCalendarService(): GoogleCalendarService {
   let cachedClient: calendar_v3.Calendar | null = null
+  let clientPromise: Promise<calendar_v3.Calendar> | null = null
 
   async function getClient(): Promise<calendar_v3.Calendar> {
-    if (!cachedClient) {
-      const auth = await getAuthorizedGoogleClient()
+    if (cachedClient) return cachedClient
+    if (clientPromise) return clientPromise
+    clientPromise = getAuthorizedGoogleClient().then((auth) => {
       cachedClient = google.calendar({ version: 'v3', auth })
-    }
-    return cachedClient
+      clientPromise = null
+      return cachedClient
+    })
+    return clientPromise
   }
 
   return {
@@ -544,9 +549,10 @@ export function createGoogleCalendarService(): GoogleCalendarService {
         })
         return toRemoteSnapshot(response.data)
       } catch (error) {
-        const status = (error as { code?: number; status?: number }).code
-          ?? (error as { status?: number }).status
-        if (status === 404) {
+        const status = (error as { code?: number; status?: number; response?: { status?: number } }).code
+          ?? (error as any).status
+          ?? (error as any).response?.status
+        if (status === 404 || status === 410) {
           return null
         }
         throw error

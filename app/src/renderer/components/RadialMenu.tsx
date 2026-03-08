@@ -23,7 +23,9 @@ function serializeTimeMemo(timeMemo: string, description: string): string {
 function formatTimeText(raw: string): string {
   const digits = raw.replace(/\D/g, '').slice(0, 4)
   if (digits.length <= 2) return digits
-  return `${digits.slice(0, 2)}:${digits.slice(2)}`
+  const hh = Math.min(parseInt(digits.slice(0, 2), 10), 23)
+  const mm = Math.min(parseInt(digits.slice(2), 10) || 0, 59)
+  return `${String(hh).padStart(2, '0')}:${String(mm).padStart(2, '0')}`
 }
 
 function formatDateText(raw: string): string {
@@ -221,6 +223,7 @@ export function RadialMenu({ anchor, dateStr, memberNames, onComplete, onDismiss
   ])
 
   const startClosing = useCallback(() => {
+    if (closingTimerRef.current) return
     setPhase('CLOSING')
     closingTimerRef.current = setTimeout(() => {
       onDismiss()
@@ -571,7 +574,7 @@ export function RadialMenu({ anchor, dateStr, memberNames, onComplete, onDismiss
                       onBlur={() => {
                         const normalized = normalizeDateText(draftStartDate)
                         setDraftStartDate(normalized)
-                        if (draftEndDate && normalized > draftEndDate) setDraftEndDate(normalized)
+                        if (draftEndDate && normalized.length === 10 && draftEndDate.length === 10 && normalized > draftEndDate) setDraftEndDate(normalized)
                       }}
                       placeholder="YYYY-MM-DD"
                     />
