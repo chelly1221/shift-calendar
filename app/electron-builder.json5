@@ -9,7 +9,13 @@
   },
   "files": [
     "dist",
-    "dist-electron"
+    "dist-electron",
+    "node_modules/.prisma/**"
+  ],
+  "asarUnpack": [
+    "node_modules/.prisma/**",
+    "node_modules/better-sqlite3/**",
+    "node_modules/keytar/**"
   ],
   "win": {
     "target": [
