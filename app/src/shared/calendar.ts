@@ -222,4 +222,6 @@ export interface CalendarApi {
   setShiftSettings: (payload: SetShiftSettingsInput) => Promise<ShiftSettings>
   getGoogleOAuthConfig: () => Promise<GoogleOAuthConfig>
   setGoogleOAuthConfig: (payload: SetGoogleOAuthConfigInput) => Promise<GoogleOAuthConfig>
+  exportDatabase: () => Promise<boolean>
+  importDatabase: () => Promise<boolean>
 }

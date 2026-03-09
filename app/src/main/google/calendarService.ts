@@ -397,6 +397,9 @@ export function createGoogleCalendarService(): GoogleCalendarService {
       cachedClient = google.calendar({ version: 'v3', auth })
       clientPromise = null
       return cachedClient
+    }).catch((err) => {
+      clientPromise = null
+      throw err
     })
     return clientPromise
   }

@@ -16,12 +16,6 @@
       "filter": ["**/*"]
     }
   ],
-  "extraResources": [
-    {
-      "from": "dev.db",
-      "to": "seed.db"
-    }
-  ],
   "asarUnpack": [
     "node_modules/.prisma/**",
     "node_modules/better-sqlite3/**",
@@ -52,5 +46,8 @@
     "perMachine": false,
     "allowToChangeInstallationDirectory": true,
     "deleteAppDataOnUninstall": false
+  },
+  "extraMetadata": {
+    "name": "sitecalendar"
   }
 }

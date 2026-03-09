@@ -1,4 +1,4 @@
-import { useEffect } from 'react'
+import { useCallback, useEffect } from 'react'
 import type { DayWorkerCount, ShiftTeamMode, ShiftType } from '../../shared/calendar'
 import type { WeatherOverlayMode } from './WeatherOverlay'
 
@@ -29,6 +29,19 @@ export function SettingsModal({
   onSetDayWorkerCount,
   onSetWeatherPreviewMode,
 }: SettingsModalProps) {
+  const handleExportDatabase = useCallback(() => {
+    void window.calendarApi.exportDatabase().catch((err) => {
+      console.error('DB 내보내기 실패:', err)
+    })
+  }, [])
+
+  const handleImportDatabase = useCallback(() => {
+    if (!window.confirm('현재 데이터가 선택한 파일로 대체됩니다. 계속하시겠습니까?')) return
+    void window.calendarApi.importDatabase().catch((err) => {
+      console.error('DB 가져오기 실패:', err)
+    })
+  }, [])
+
   useEffect(() => {
     if (!open) {
       return
@@ -160,6 +173,27 @@ export function SettingsModal({
               </button>
             </div>
             <p className="settings-hint">실시간 모드는 김포공항 현재 날씨(강수/적설) 기준으로 자동 반영됩니다.</p>
+          </section>
+
+          <section className="settings-section">
+            <p className="settings-label">데이터 관리</p>
+            <div className="settings-inline-actions" role="group" aria-label="데이터 관리">
+              <button
+                type="button"
+                className="ghost-button"
+                onClick={handleExportDatabase}
+              >
+                내보내기
+              </button>
+              <button
+                type="button"
+                className="ghost-button"
+                onClick={handleImportDatabase}
+              >
+                가져오기
+              </button>
+            </div>
+            <p className="settings-hint">데이터베이스 파일을 내보내거나 가져올 수 있습니다. 가져오기 시 앱이 재시작됩니다.</p>
           </section>
         </div>
       </section>

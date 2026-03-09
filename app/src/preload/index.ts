@@ -55,6 +55,10 @@ const calendarApi: CalendarApi = {
     ipcRenderer.invoke(IPC_CHANNELS.getGoogleOAuthConfig) as Promise<GoogleOAuthConfig>,
   setGoogleOAuthConfig: (payload: SetGoogleOAuthConfigInput) =>
     ipcRenderer.invoke(IPC_CHANNELS.setGoogleOAuthConfig, payload) as Promise<GoogleOAuthConfig>,
+  exportDatabase: () =>
+    ipcRenderer.invoke(IPC_CHANNELS.exportDatabase) as Promise<boolean>,
+  importDatabase: () =>
+    ipcRenderer.invoke(IPC_CHANNELS.importDatabase) as Promise<boolean>,
 }
 
 contextBridge.exposeInMainWorld('calendarApi', calendarApi)

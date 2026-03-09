@@ -1,8 +1,8 @@
 import { PrismaClient } from '@prisma/client'
 import { PrismaBetterSqlite3 } from '@prisma/adapter-better-sqlite3'
 import Database from 'better-sqlite3'
-import { copyFileSync, existsSync, mkdirSync, statSync, unlinkSync } from 'node:fs'
-import { dirname, join } from 'node:path'
+import { copyFileSync, existsSync, mkdirSync, unlinkSync } from 'node:fs'
+import { dirname } from 'node:path'
 
 declare global {
   // eslint-disable-next-line no-var
@@ -98,74 +98,61 @@ CREATE INDEX IF NOT EXISTS "Event_isDeleted_startAtUtc_idx" ON "Event"("isDelete
 CREATE INDEX IF NOT EXISTS "OutboxJob_status_nextRetryAtUtc_idx" ON "OutboxJob"("status", "nextRetryAtUtc");
 CREATE INDEX IF NOT EXISTS "OutboxJob_eventLocalId_status_idx" ON "OutboxJob"("eventLocalId", "status");
     `)
+
+    // Add columns that may be missing from imported or older databases.
+    const columnMigrations = [
+      'ALTER TABLE "Setting" ADD COLUMN "googleClientId" TEXT',
+      'ALTER TABLE "Setting" ADD COLUMN "googleClientSecret" TEXT',
+    ]
+    for (const sql of columnMigrations) {
+      try { db.exec(sql) } catch { /* column already exists */ }
+    }
   } finally {
     db.close()
   }
 }
 
-/**
- * Check whether a seed database should replace the current database.
- * Returns true when the file doesn't exist or is an empty-schema stub
- * (< 1 MB, indicating no real data).
- */
-function needsSeed(dbPath: string): boolean {
-  if (!existsSync(dbPath)) return true
-  try {
-    const size = statSync(dbPath).size
-    // An empty-schema SQLite db with our tables is ~32 KB.
-    // The real seed with events is ~19 MB. Use 1 MB as threshold.
-    return size < 1_000_000
-  } catch {
-    return true
-  }
-}
-
-/**
- * If userData has no database yet (or only an empty-schema stub),
- * copy the bundled seed database (extraResources/seed.db) so the
- * app starts with existing data.
- * Falls back to creating empty tables via ensureSchema.
- */
-function seedIfNeeded(dbPath: string): void {
-  if (dbPath === ':memory:') return
-  if (!needsSeed(dbPath)) return
-
-  try {
-    mkdirSync(dirname(dbPath), { recursive: true })
-  } catch {
-    // directory already exists
-  }
-
-  // In packaged builds process.resourcesPath points to <app>/resources
-  const resourcesPath = process.resourcesPath
-  if (resourcesPath) {
-    const seedPath = join(resourcesPath, 'seed.db')
-    if (existsSync(seedPath)) {
-      // Remove empty stub and WAL files before overwriting
-      for (const suffix of ['', '-wal', '-shm']) {
-        try { unlinkSync(dbPath + suffix) } catch { /* not found */ }
-      }
-      copyFileSync(seedPath, dbPath)
-      console.log('[prisma] Seeded database from bundled seed.db')
-      return
-    }
-  }
-
-  // No seed available — create empty schema
-  ensureSchema(dbPath)
-}
-
 const databaseUrl = process.env.DATABASE_URL ?? 'file:./dev.db'
 const resolvedPath = resolveSqlitePathFromDatabaseUrl(databaseUrl)
 
-// Seed or create schema on first launch.
+/** Resolved absolute path to the SQLite database file. */
+export const dbFilePath = resolvedPath
+
+/** Path for staging an imported DB file (applied on next launch). */
+export const dbImportStagingPath = resolvedPath + '.import'
+
+/**
+ * If a staged import file exists, replace the current DB with it.
+ * Must run BEFORE any SQLite connection is opened.
+ */
+function applyPendingImport(dbPath: string): void {
+  const stagingPath = dbPath + '.import'
+  if (!existsSync(stagingPath)) return
+  console.debug('[prisma] Found pending import, applying...')
+  // Remove existing DB and WAL/SHM files
+  for (const suffix of ['', '-wal', '-shm']) {
+    try { unlinkSync(dbPath + suffix) } catch { /* not found */ }
+  }
+  copyFileSync(stagingPath, dbPath)
+  unlinkSync(stagingPath)
+  console.debug('[prisma] Applied pending database import to:', dbPath)
+}
+
+// Apply pending import before opening any connection.
+try {
+  applyPendingImport(resolvedPath)
+} catch (err) {
+  console.error('[prisma] Failed to apply pending database import:', err)
+}
+
+// Ensure schema on first launch.
 // Wrapped in try-catch so that test environments with incompatible
 // native binaries (e.g. WSL running Windows-compiled better-sqlite3)
 // can still import this module.
 try {
-  seedIfNeeded(resolvedPath)
+  ensureSchema(resolvedPath)
 } catch (err) {
-  console.warn('[prisma] Database seed/migration skipped:', err)
+  console.warn('[prisma] Database schema creation skipped:', err)
 }
 
 const adapter = new PrismaBetterSqlite3({

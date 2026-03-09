@@ -172,6 +172,12 @@ const fallbackApi: CalendarApi = {
   async setGoogleOAuthConfig() {
     return { clientId: null, clientSecret: null, configured: false }
   },
+  async exportDatabase() {
+    return false
+  },
+  async importDatabase() {
+    return false
+  },
 }
 
 function getCalendarApi(): CalendarApi {

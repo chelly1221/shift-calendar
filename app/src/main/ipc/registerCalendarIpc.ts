@@ -1,4 +1,7 @@
-import { ipcMain } from 'electron'
+import { app, dialog, ipcMain } from 'electron'
+import Database from 'better-sqlite3'
+import { copyFileSync, statSync, unlinkSync } from 'node:fs'
+import { loadRefreshToken, saveRefreshToken } from '../security/tokenStore'
 import { splitRRuleForFuture, withoutRRuleEnd } from '../../shared/rrule'
 import {
   cancelOutboxJobInputSchema,
@@ -28,7 +31,7 @@ import {
   removeCalendarEvent,
   upsertCalendarEvent,
 } from '../db/eventRepository'
-import { prisma } from '../db/prisma'
+import { dbFilePath, dbImportStagingPath, prisma } from '../db/prisma'
 import {
   ensureSetting,
   getAccountEmail,
@@ -79,6 +82,8 @@ export function registerCalendarIpc(): void {
   ipcMain.removeHandler(IPC_CHANNELS.setShiftSettings)
   ipcMain.removeHandler(IPC_CHANNELS.getGoogleOAuthConfig)
   ipcMain.removeHandler(IPC_CHANNELS.setGoogleOAuthConfig)
+  ipcMain.removeHandler(IPC_CHANNELS.exportDatabase)
+  ipcMain.removeHandler(IPC_CHANNELS.importDatabase)
 
   ipcMain.handle(IPC_CHANNELS.listEvents, async (_event, payload?: unknown) => {
     const input =
@@ -678,5 +683,85 @@ export function registerCalendarIpc(): void {
       clientSecret: '********',
       configured: true,
     })
+  })
+
+  ipcMain.handle(IPC_CHANNELS.exportDatabase, async () => {
+    const result = await dialog.showSaveDialog({
+      title: '데이터베이스 내보내기',
+      defaultPath: 'calendar-backup.db',
+      filters: [{ name: 'SQLite Database', extensions: ['db'] }],
+    })
+    if (result.canceled || !result.filePath) return false
+    // 기존 파일이 있으면 삭제 (VACUUM INTO는 덮어쓰기 불가)
+    try { unlinkSync(result.filePath) } catch { /* not found */ }
+    const db = new Database(dbFilePath)
+    try {
+      const escaped = result.filePath.replace(/'/g, "''")
+      db.exec(`VACUUM INTO '${escaped}'`)
+    } finally {
+      db.close()
+    }
+    // 내보낸 DB에 refresh token + 환경변수 OAuth 설정 포함
+    const exportDb = new Database(result.filePath)
+    try {
+      exportDb.exec('CREATE TABLE IF NOT EXISTS "_export_tokens" ("key" TEXT PRIMARY KEY, "value" TEXT)')
+      const refreshToken = await loadRefreshToken()
+      if (refreshToken) {
+        exportDb.prepare('INSERT OR REPLACE INTO "_export_tokens" ("key", "value") VALUES (?, ?)').run('refreshToken', refreshToken)
+      }
+      // 환경변수에서 OAuth 설정이 있으면 DB Setting에 기록
+      const envClientId = process.env.GOOGLE_CLIENT_ID?.trim()
+      const envClientSecret = process.env.GOOGLE_CLIENT_SECRET?.trim()
+      if (envClientId && envClientSecret) {
+        exportDb.prepare('UPDATE "Setting" SET "googleClientId" = ?, "googleClientSecret" = ? WHERE "id" = 1').run(envClientId, envClientSecret)
+      }
+      // accountEmail이 NULL이면 현재 연결된 계정 정보 기록
+      const setting = exportDb.prepare('SELECT "accountEmail" FROM "Setting" WHERE "id" = 1').get() as { accountEmail: string | null } | undefined
+      if (!setting?.accountEmail) {
+        const email = await getAccountEmail()
+        if (email) {
+          exportDb.prepare('UPDATE "Setting" SET "accountEmail" = ? WHERE "id" = 1').run(email)
+        }
+      }
+    } finally {
+      exportDb.close()
+    }
+    return true
+  })
+
+  ipcMain.handle(IPC_CHANNELS.importDatabase, async () => {
+    const result = await dialog.showOpenDialog({
+      title: '데이터베이스 가져오기',
+      filters: [{ name: 'SQLite Database', extensions: ['db'] }],
+      properties: ['openFile'],
+    })
+    if (result.canceled || result.filePaths.length === 0) return false
+    const srcPath = result.filePaths[0]
+    const srcSize = statSync(srcPath).size
+    copyFileSync(srcPath, dbImportStagingPath)
+    const stagedSize = statSync(dbImportStagingPath).size
+    if (stagedSize !== srcSize) {
+      throw new Error(`Staging file size mismatch: expected ${srcSize}, got ${stagedSize}`)
+    }
+    // staging DB에서 refresh token 복원 후 임시 테이블 삭제
+    const importDb = new Database(dbImportStagingPath)
+    try {
+      const row = importDb.prepare('SELECT "value" FROM "_export_tokens" WHERE "key" = ?').get('refreshToken') as { value: string } | undefined
+      if (row?.value) {
+        await saveRefreshToken(row.value)
+      }
+      importDb.exec('DROP TABLE IF EXISTS "_export_tokens"')
+    } catch {
+      // _export_tokens 테이블이 없는 DB도 허용
+    } finally {
+      importDb.close()
+    }
+    dialog.showMessageBoxSync({
+      type: 'info',
+      title: '가져오기 준비 완료',
+      message: '앱을 다시 실행하면 가져온 데이터가 적용됩니다.',
+    })
+    app.exit(0)
+    return true
   })
 }
