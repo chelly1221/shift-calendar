@@ -619,6 +619,7 @@ export function CalendarPage() {
     setShiftAbbreviation,
   } = useCalendarStore()
 
+  const [today, setToday] = useState(() => DateTime.local().toISODate()!)
   const [routineDoneOverrides, setRoutineDoneOverrides] = useState<Map<string, boolean>>(new Map())
   const [editingEvent, setEditingEvent] = useState<EditableEvent | null>(null)
   const [radialMenu, setRadialMenu] = useState<{ anchor: { x: number; y: number }; dateStr: string } | null>(null)
@@ -852,6 +853,22 @@ export function CalendarPage() {
   }, [])
 
   useEffect(() => {
+    function scheduleMidnightUpdate() {
+      const now = DateTime.local()
+      const nextMidnight = now.plus({ days: 1 }).startOf('day')
+      const msUntilMidnight = nextMidnight.toMillis() - now.toMillis()
+      return window.setTimeout(() => {
+        const newToday = DateTime.local().toISODate()!
+        setToday(newToday)
+        setTodayShiftOverrides(loadTodayShiftOverride(newToday))
+        timerId = scheduleMidnightUpdate()
+      }, msUntilMidnight + 500)
+    }
+    let timerId = scheduleMidnightUpdate()
+    return () => window.clearTimeout(timerId)
+  }, [])
+
+  useEffect(() => {
     setShiftTeamDrafts(cloneShiftTeams(shiftSettings.teams))
     setDayWorkerDrafts([...shiftSettings.dayWorkers])
   }, [shiftSettings])
@@ -1074,13 +1091,13 @@ export function CalendarPage() {
   const todayContextEvents = useMemo(() => {
     const { rangeStartUtc, rangeEndUtc } = buildTodayContextRange()
     return expandEventsInRange(allEvents, rangeStartUtc, rangeEndUtc)
-  }, [allEvents])
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [allEvents, today])
 
   const todayEvents = useMemo(() => {
-    const today = DateTime.local().toISODate()
     return todayContextEvents
       .filter((event) => event.eventType !== '근무' && event.eventType !== '휴가' && DateTime.fromISO(event.startAtUtc).toLocal().toISODate() === today)
-  }, [todayContextEvents])
+  }, [todayContextEvents, today])
   const todayCount = todayEvents.length
 
   const publicHolidayMap = useMemo(() => {
@@ -1109,7 +1126,6 @@ export function CalendarPage() {
   }, [events, todayContextEvents, visibleMonth])
 
   const todayShiftSummary = useMemo(() => {
-    const today = DateTime.local().toISODate()
     const todayShiftEvents = todayContextEvents.filter(
       (event) => event.eventType === '근무' && DateTime.fromISO(event.startAtUtc).toLocal().toISODate() === today,
     )
@@ -1219,7 +1235,7 @@ export function CalendarPage() {
       dayOverridden: todayShiftOverrides?.dayText !== undefined,
       nightOverridden: todayShiftOverrides?.nightText !== undefined,
     }
-  }, [todayContextEvents, shiftTeamDrafts, dayWorkerDrafts, publicHolidayMap, todayShiftOverrides])
+  }, [todayContextEvents, shiftTeamDrafts, dayWorkerDrafts, publicHolidayMap, todayShiftOverrides, today])
 
   const upcomingEventsByDate = useMemo(() => {
     const now = DateTime.now()
