@@ -339,7 +339,7 @@ function parseShiftBadgeSelection(badgeEl: HTMLElement): ShiftBadgeSelection | n
   if (
     !eventLocalId
     || !Number.isInteger(substitutionIndex)
-    || substitutionIndex < 0
+    || substitutionIndex < -1
     || !team
     || !substitute
     || !original
@@ -1713,7 +1713,13 @@ export function CalendarPage() {
         targetEvent.summary, targetEvent.description ?? '',
         shiftSettings.teams, allMemberNames, shiftSettings.abbreviations,
       )
-      if (!trimmed || (trimmed === currentGoogleSummary || trimmed === targetEvent.summary.trim())) {
+      // Reconstruct what was initially shown as the draft
+      const storedHasAbbrevs = parseShiftAbbreviations(targetEvent.summary).size > 0
+      const generatedHasAbbrevs = parseShiftAbbreviations(currentGoogleSummary).size > 0
+      const initialDraft = (storedHasAbbrevs && !generatedHasAbbrevs)
+        ? targetEvent.summary.trim()
+        : currentGoogleSummary
+      if (!trimmed || trimmed === initialDraft) {
         setEditingShiftSummary(null)
         return
       }
@@ -1776,6 +1782,16 @@ export function CalendarPage() {
         }
       }
 
+      // Handle removed abbreviations: teams that had old abbreviations but not in new
+      for (const [teamKey] of oldAbbrevs) {
+        if (newAbbrevs.has(teamKey)) continue
+        const subIndices = teamSubIndices.get(teamKey) ?? []
+        for (let i = subIndices.length - 1; i >= 0; i--) {
+          parsed.substitutions.splice(subIndices[i], 1)
+          descriptionChanged = true
+        }
+      }
+
       const cleanSummary = stripShiftAbbreviations(trimmed)
       await saveEventWithUndo({
         ...toEditableEvent(targetEvent),
@@ -1819,9 +1835,27 @@ export function CalendarPage() {
     }
 
     const parsed = parseShiftDescriptionState(targetEvent.description ?? '')
+
+    if (editingShiftBadge.substitutionIndex === -1) {
+      // Abbreviation-only badge — promote to description block and strip from summary
+      parsed.substitutions.push({
+        substitute,
+        type: editingShiftBadge.type,
+        original,
+      })
+      const cleanSummary = stripShiftAbbreviations(targetEvent.summary)
+      await saveEventWithUndo({
+        ...toEditableEvent(targetEvent),
+        summary: cleanSummary,
+        description: serializeShiftDescriptionState(parsed),
+        sendUpdates: 'none',
+      })
+      setEditingShiftBadge(null)
+      return
+    }
+
     if (
-      editingShiftBadge.substitutionIndex < 0
-      || editingShiftBadge.substitutionIndex >= parsed.substitutions.length
+      editingShiftBadge.substitutionIndex >= parsed.substitutions.length
     ) {
       setEditingShiftBadge(null)
       return
@@ -1852,9 +1886,21 @@ export function CalendarPage() {
     }
 
     const parsed = parseShiftDescriptionState(targetEvent.description ?? '')
+
+    if (editingShiftBadge.substitutionIndex === -1) {
+      // Abbreviation-only badge (from title, no description block) — strip from summary
+      const cleanSummary = stripShiftAbbreviations(targetEvent.summary)
+      await saveEventWithUndo({
+        ...toEditableEvent(targetEvent),
+        summary: cleanSummary,
+        sendUpdates: 'none',
+      })
+      setEditingShiftBadge(null)
+      return
+    }
+
     if (
-      editingShiftBadge.substitutionIndex < 0
-      || editingShiftBadge.substitutionIndex >= parsed.substitutions.length
+      editingShiftBadge.substitutionIndex >= parsed.substitutions.length
     ) {
       setEditingShiftBadge(null)
       return

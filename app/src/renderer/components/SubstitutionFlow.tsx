@@ -18,6 +18,7 @@ export function SubstitutionFlow({ anchor, memberNames, onComplete, onDismiss }:
   const [substitute, setSubstitute] = useState<string | null>(null)
   const [workType, setWorkType] = useState<'대리근무' | '대체근무' | null>(null)
 
+  const containerRef = useRef<HTMLDivElement>(null)
   const flowCardRef = useRef<HTMLDivElement>(null)
   const closingTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null)
 
@@ -47,23 +48,20 @@ export function SubstitutionFlow({ anchor, memberNames, onComplete, onDismiss }:
     return () => document.removeEventListener('keydown', handleKeyDown, true)
   }, [startClosing])
 
-  // Clamp flow card within viewport
+  // Clamp container position within viewport (not using transform, which the animation overrides)
   useLayoutEffect(() => {
     if (phase === 'CLOSING') return
-    const el = flowCardRef.current
-    if (!el) return
-    el.style.transform = ''
-    const rect = el.getBoundingClientRect()
-    let dx = 0
-    let dy = 0
-    if (rect.right > window.innerWidth - 12) dx = window.innerWidth - 12 - rect.right
-    if (rect.left < 12) dx = 12 - rect.left
-    if (rect.bottom > window.innerHeight - 12) dy = window.innerHeight - 12 - rect.bottom
-    if (rect.top < 12) dy = 12 - rect.top
-    if (dx !== 0 || dy !== 0) {
-      el.style.transform = `translate(${dx}px, ${dy}px)`
+    const container = containerRef.current
+    const card = flowCardRef.current
+    if (!container || !card) return
+    const rect = card.getBoundingClientRect()
+    if (rect.right > window.innerWidth - 12) {
+      container.style.left = `${Math.max(12, anchor.x - (rect.right - window.innerWidth + 12))}px`
     }
-  }, [phase])
+    if (rect.bottom > window.innerHeight - 12) {
+      container.style.top = `${Math.max(12, anchor.y - (rect.bottom - window.innerHeight + 12))}px`
+    }
+  }, [phase, anchor.x, anchor.y])
 
   const currentStep = phase === 'SUBSTITUTE' ? 0 : phase === 'TYPE' ? 1 : phase === 'ORIGINAL' ? 2 : 0
   const isClosing = phase === 'CLOSING'
@@ -77,6 +75,7 @@ export function SubstitutionFlow({ anchor, memberNames, onComplete, onDismiss }:
         }}
       />
       <div
+        ref={containerRef}
         className={`radial-menu-container${isClosing ? ' is-closing' : ''}`}
         style={{ left: anchor.x, top: anchor.y }}
       >
