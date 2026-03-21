@@ -11,6 +11,7 @@ import { WEEKDAY_OPTIONS } from './recurrenceRule'
 interface RecurrencePickerProps {
   value: RecurrenceValue
   onChange: (nextValue: RecurrenceValue) => void
+  eventType?: string
 }
 
 const PRESET_OPTIONS: { value: RecurrencePreset; label: string }[] = [
@@ -75,7 +76,7 @@ function toggleWeeklyDay(value: RecurrenceValue, day: WeekdayCode): RecurrenceVa
   }
 }
 
-export function RecurrencePicker({ value, onChange }: RecurrencePickerProps) {
+export function RecurrencePicker({ value, onChange, eventType }: RecurrencePickerProps) {
   const isActive = value.preset !== 'NONE'
 
   return (
@@ -198,6 +199,20 @@ export function RecurrencePicker({ value, onChange }: RecurrencePickerProps) {
                   </select>
                 </div>
               ) : null}
+            </div>
+          ) : null}
+
+          {/* ── Skip weekends & holidays (반복업무 only) ── */}
+          {eventType === '반복업무' ? (
+            <div className="recurrence-section">
+              <label className="recurrence-skip-label">
+                <input
+                  type="checkbox"
+                  checked={value.skipWeekendsAndHolidays}
+                  onChange={(e) => onChange({ ...value, skipWeekendsAndHolidays: e.target.checked })}
+                />
+                <span>주말/공휴일 → 다음 평일로 이동</span>
+              </label>
             </div>
           ) : null}
 

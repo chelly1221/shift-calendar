@@ -16,6 +16,7 @@ function makeCalendarEvent(overrides?: Partial<CalendarEvent>): CalendarEvent {
     timeZone: 'Asia/Seoul',
     attendees: [],
     recurrenceRule: null,
+    skipWeekendsAndHolidays: false,
     recurringEventId: null,
     originalStartTimeUtc: null,
     organizerEmail: null,

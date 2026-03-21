@@ -30,6 +30,7 @@ interface GoogleApiErrorShape {
 }
 
 const EVENT_TYPE_PRIVATE_KEY = 'shiftCalendarEventType'
+const SKIP_WEEKENDS_HOLIDAYS_KEY = 'skipWeekendsAndHolidays'
 
 export interface SyncPage {
   events: RemoteEventSnapshot[]
@@ -140,6 +141,10 @@ export function extractEventType(event: calendar_v3.Schema$Event): string {
   return trimmed || '일반'
 }
 
+function extractSkipWeekendsAndHolidays(event: calendar_v3.Schema$Event): boolean {
+  return event.extendedProperties?.private?.[SKIP_WEEKENDS_HOLIDAYS_KEY] === 'true'
+}
+
 export function toRemoteSnapshot(event: calendar_v3.Schema$Event): RemoteEventSnapshot | null {
   const googleEventId = event.id
   if (!googleEventId) {
@@ -162,6 +167,7 @@ export function toRemoteSnapshot(event: calendar_v3.Schema$Event): RemoteEventSn
       endAtUtc: updatedAtUtc,
       timeZone: 'UTC',
       recurrenceRule: null,
+      skipWeekendsAndHolidays: false,
       recurringEventId: null,
       originalStartTimeUtc: null,
       attendees: [],
@@ -195,6 +201,7 @@ export function toRemoteSnapshot(event: calendar_v3.Schema$Event): RemoteEventSn
     endAtUtc: end.utcIso,
     timeZone: start.timeZone,
     recurrenceRule: extractRecurrenceRule(event.recurrence),
+    skipWeekendsAndHolidays: extractSkipWeekendsAndHolidays(event),
     recurringEventId: event.recurringEventId ?? null,
     originalStartTimeUtc: originalStart?.utcIso ?? null,
     attendees: (event.attendees ?? [])
@@ -245,6 +252,7 @@ export function toGoogleEventRequest(
     extendedProperties: {
       private: {
         [EVENT_TYPE_PRIVATE_KEY]: event.eventType,
+        ...(event.skipWeekendsAndHolidays ? { [SKIP_WEEKENDS_HOLIDAYS_KEY]: 'true' } : {}),
       },
     },
   }

@@ -18,6 +18,7 @@ export interface RecurrenceValue {
   endMode: RecurrenceEndMode
   untilDate: string
   count: number
+  skipWeekendsAndHolidays: boolean
 }
 
 export const WEEKDAY_OPTIONS: { code: WeekdayCode; label: string }[] = [
@@ -82,6 +83,7 @@ function defaultRecurrenceValue(): RecurrenceValue {
     endMode: 'NEVER',
     untilDate: defaultUntilDate(),
     count: 10,
+    skipWeekendsAndHolidays: false,
   }
 }
 

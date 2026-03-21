@@ -26,6 +26,7 @@ interface CalendarState {
   events: CalendarEvent[]
   renderRangeStartUtc: string
   renderRangeEndUtc: string
+  holidayDates: Set<string>
   outboxCount: number
   outboxJobs: OutboxJobItem[]
   loadingOutboxJobs: boolean
@@ -43,6 +44,7 @@ interface CalendarState {
   shiftSettings: ShiftSettings
   savingShiftSettings: boolean
   error: string | null
+  setHolidayDates: (holidayDates: Set<string>) => void
   setEventRenderRange: (rangeStartUtc: string, rangeEndUtc: string) => void
   hydrate: () => Promise<void>
   refreshOutboxJobs: () => Promise<void>
@@ -107,6 +109,7 @@ const fallbackApi: CalendarApi = {
       timeZone: payload.timeZone,
       attendees: payload.attendees ?? [],
       recurrenceRule: payload.recurrenceRule ?? null,
+      skipWeekendsAndHolidays: payload.skipWeekendsAndHolidays ?? false,
       recurringEventId: payload.recurringEventId ?? null,
       originalStartTimeUtc: payload.originalStartTimeUtc ?? null,
       organizerEmail: null,
@@ -221,7 +224,7 @@ function eventOverlapsRange(event: CalendarEvent, rangeStartUtc: string, rangeEn
   return eventEnd >= rangeStart && eventStart <= rangeEnd
 }
 
-function expandForRenderRange(events: CalendarEvent[], rangeStartUtc: string, rangeEndUtc: string): CalendarEvent[] {
+function expandForRenderRange(events: CalendarEvent[], rangeStartUtc: string, rangeEndUtc: string, holidayDates?: Set<string>): CalendarEvent[] {
   const candidates = events.filter((event) => {
     if (event.recurrenceRule && !event.recurringEventId) {
       return true
@@ -229,7 +232,7 @@ function expandForRenderRange(events: CalendarEvent[], rangeStartUtc: string, ra
     return eventOverlapsRange(event, rangeStartUtc, rangeEndUtc)
   })
 
-  const expanded = expandRecurringEvents(candidates, rangeStartUtc, rangeEndUtc)
+  const expanded = expandRecurringEvents(candidates, rangeStartUtc, rangeEndUtc, holidayDates)
   return sortByStart(expanded.filter((event) => eventOverlapsRange(event, rangeStartUtc, rangeEndUtc)))
 }
 
@@ -261,6 +264,19 @@ export const useCalendarStore = create<CalendarState>((set, get) => ({
   shiftSettings: cloneShiftSettings(defaultShiftSettingsValue),
   savingShiftSettings: false,
   error: null,
+  holidayDates: new Set<string>(),
+  setHolidayDates: (holidayDates) => {
+    const state = get()
+    // Skip if holiday dates haven't changed to prevent infinite re-render loop
+    if (
+      state.holidayDates.size === holidayDates.size
+      && [...holidayDates].every((d) => state.holidayDates.has(d))
+    ) {
+      return
+    }
+    const expanded = expandForRenderRange(state.allEvents, state.renderRangeStartUtc, state.renderRangeEndUtc, holidayDates)
+    set({ holidayDates, events: expanded })
+  },
   setEventRenderRange: (rangeStartUtc, rangeEndUtc) => {
     const state = get()
     if (
@@ -269,7 +285,7 @@ export const useCalendarStore = create<CalendarState>((set, get) => ({
     ) {
       return
     }
-    const expanded = expandForRenderRange(state.allEvents, rangeStartUtc, rangeEndUtc)
+    const expanded = expandForRenderRange(state.allEvents, rangeStartUtc, rangeEndUtc, state.holidayDates)
     set({
       renderRangeStartUtc: rangeStartUtc,
       renderRangeEndUtc: rangeEndUtc,
@@ -301,7 +317,7 @@ export const useCalendarStore = create<CalendarState>((set, get) => ({
         }
 
         const state = get()
-        const expanded = expandForRenderRange(allEvents, state.renderRangeStartUtc, state.renderRangeEndUtc)
+        const expanded = expandForRenderRange(allEvents, state.renderRangeStartUtc, state.renderRangeEndUtc, state.holidayDates)
 
         set({
           allEvents: sortByStart(allEvents),
@@ -356,7 +372,7 @@ export const useCalendarStore = create<CalendarState>((set, get) => ({
       const nextAllEvents = upsertEventInMemory(state.allEvents, saved)
       return {
         allEvents: nextAllEvents,
-        events: expandForRenderRange(nextAllEvents, state.renderRangeStartUtc, state.renderRangeEndUtc),
+        events: expandForRenderRange(nextAllEvents, state.renderRangeStartUtc, state.renderRangeEndUtc, state.holidayDates),
       }
     })
 
@@ -400,7 +416,7 @@ export const useCalendarStore = create<CalendarState>((set, get) => ({
     } else {
       const state = get()
       const allEvents = state.allEvents.filter((event) => event.localId !== localId)
-      const events = expandForRenderRange(allEvents, state.renderRangeStartUtc, state.renderRangeEndUtc)
+      const events = expandForRenderRange(allEvents, state.renderRangeStartUtc, state.renderRangeEndUtc, state.holidayDates)
       const [outboxCount, outboxJobs] = await Promise.all([
         api.getOutboxCount(),
         api.listOutboxJobs({ limit: 80, includeCompleted: false }).catch(() => []),

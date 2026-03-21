@@ -136,6 +136,7 @@ function createDraft(startAtUtc?: string, endAtUtc?: string): EditableEvent {
     timeZone: zone,
     attendees: [],
     recurrenceRule: null,
+    skipWeekendsAndHolidays: false,
     sendUpdates: 'none',
     recurrenceScope: 'ALL',
   }
@@ -156,6 +157,7 @@ function toEditableEvent(event: CalendarEvent): EditableEvent {
       timeZone: event.timeZone,
       attendees: event.attendees,
       recurrenceRule: event.recurrenceRule,
+      skipWeekendsAndHolidays: event.skipWeekendsAndHolidays,
       recurringEventId: event.recurringEventId,
       originalStartTimeUtc: event.startAtUtc,
       sendUpdates: 'none',
@@ -175,6 +177,7 @@ function toEditableEvent(event: CalendarEvent): EditableEvent {
     timeZone: event.timeZone,
     attendees: event.attendees,
     recurrenceRule: event.recurrenceRule,
+    skipWeekendsAndHolidays: event.skipWeekendsAndHolidays,
     recurringEventId: event.recurringEventId,
     originalStartTimeUtc: event.originalStartTimeUtc,
     sendUpdates: 'none',
@@ -568,7 +571,7 @@ function eventOverlapsRange(event: CalendarEvent, rangeStartUtc: string, rangeEn
   return eventEnd >= rangeStart && eventStart <= rangeEnd
 }
 
-function expandEventsInRange(events: CalendarEvent[], rangeStartUtc: string, rangeEndUtc: string): CalendarEvent[] {
+function expandEventsInRange(events: CalendarEvent[], rangeStartUtc: string, rangeEndUtc: string, holidayDates?: Set<string>): CalendarEvent[] {
   const candidates = events.filter((event) => {
     if (event.recurrenceRule && !event.recurringEventId) {
       return true
@@ -576,7 +579,7 @@ function expandEventsInRange(events: CalendarEvent[], rangeStartUtc: string, ran
     return eventOverlapsRange(event, rangeStartUtc, rangeEndUtc)
   })
 
-  return expandRecurringEvents(candidates, rangeStartUtc, rangeEndUtc)
+  return expandRecurringEvents(candidates, rangeStartUtc, rangeEndUtc, holidayDates)
     .filter((event) => eventOverlapsRange(event, rangeStartUtc, rangeEndUtc))
     .sort((left, right) => left.startAtUtc.localeCompare(right.startAtUtc))
 }
@@ -617,6 +620,7 @@ export function CalendarPage() {
     connectGoogle,
     disconnectGoogle,
     setShiftAbbreviation,
+    setHolidayDates,
   } = useCalendarStore()
 
   const [today, setToday] = useState(() => DateTime.local().toISODate()!)
@@ -1088,29 +1092,17 @@ export function CalendarPage() {
     return () => document.removeEventListener('keydown', handleKeyDown, true)
   }, [undoLastEventMutation])
 
-  const todayContextEvents = useMemo(() => {
-    const { rangeStartUtc, rangeEndUtc } = buildTodayContextRange()
-    return expandEventsInRange(allEvents, rangeStartUtc, rangeEndUtc)
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [allEvents, today])
-
-  const todayEvents = useMemo(() => {
-    return todayContextEvents
-      .filter((event) => event.eventType !== '근무' && event.eventType !== '휴가' && DateTime.fromISO(event.startAtUtc).toLocal().toISODate() === today)
-  }, [todayContextEvents, today])
-  const todayCount = todayEvents.length
-
+  // Compute holiday dates from raw (unshifted) allEvents first.
+  // Only 공휴일 events are used, so this is independent of 반복업무 shifting.
   const publicHolidayMap = useMemo(() => {
     const map = new Map<string, string>()
 
     // Google 동기화 데이터 기반: 공휴일 이벤트 중 법정공휴일만 수집
-    for (const sourceEvents of [events, todayContextEvents]) {
-      for (const event of sourceEvents) {
-        if (event.eventType !== '공휴일') continue
-        if (!isPublicHolidayName(event.summary)) continue
-        const isoDate = DateTime.fromISO(event.startAtUtc).toLocal().toISODate()
-        if (isoDate && !map.has(isoDate)) map.set(isoDate, event.summary)
-      }
+    for (const event of allEvents) {
+      if (event.eventType !== '공휴일') continue
+      if (!isPublicHolidayName(event.summary)) continue
+      const isoDate = DateTime.fromISO(event.startAtUtc).toLocal().toISODate()
+      if (isoDate && !map.has(isoDate)) map.set(isoDate, event.summary)
     }
 
     // 오프라인 fallback: 표시 월 기준 전후 연도 고정 날짜 공휴일
@@ -1123,7 +1115,26 @@ export function CalendarPage() {
     }
 
     return map
-  }, [events, todayContextEvents, visibleMonth])
+  }, [allEvents, visibleMonth])
+
+  const holidayDateSet = useMemo(() => new Set(publicHolidayMap.keys()), [publicHolidayMap])
+
+  // Sync holiday dates to store so recurring event expansion can shift to business days
+  useEffect(() => {
+    setHolidayDates(holidayDateSet)
+  }, [holidayDateSet, setHolidayDates])
+
+  const todayContextEvents = useMemo(() => {
+    const { rangeStartUtc, rangeEndUtc } = buildTodayContextRange()
+    return expandEventsInRange(allEvents, rangeStartUtc, rangeEndUtc, holidayDateSet)
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [allEvents, today, holidayDateSet])
+
+  const todayEvents = useMemo(() => {
+    return todayContextEvents
+      .filter((event) => event.eventType !== '근무' && event.eventType !== '휴가' && DateTime.fromISO(event.startAtUtc).toLocal().toISODate() === today)
+  }, [todayContextEvents, today])
+  const todayCount = todayEvents.length
 
   const todayShiftSummary = useMemo(() => {
     const todayShiftEvents = todayContextEvents.filter(

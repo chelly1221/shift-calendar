@@ -206,6 +206,7 @@ export function RadialMenu({ anchor, dateStr, memberNames, onComplete, onDismiss
       timeZone: zone,
       attendees: [],
       recurrenceRule,
+      skipWeekendsAndHolidays: recurrence.skipWeekendsAndHolidays,
       sendUpdates: 'none',
       recurrenceScope: 'ALL',
     })

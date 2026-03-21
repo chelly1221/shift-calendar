@@ -13,6 +13,7 @@ export interface RemoteEventSnapshot {
   endAtUtc: string
   timeZone: string
   recurrenceRule: string | null
+  skipWeekendsAndHolidays: boolean
   recurringEventId: string | null
   originalStartTimeUtc: string | null
   attendees: string[]
@@ -69,11 +70,16 @@ function parseAttendeesJson(attendeesJson: Prisma.JsonValue | null): string[] {
 
 function toRecurrenceJson(
   recurrenceRule: string | null | undefined,
+  skipWeekendsAndHolidays?: boolean,
 ): Prisma.InputJsonValue | Prisma.NullableJsonNullValueInput {
   if (!recurrenceRule) {
     return Prisma.JsonNull
   }
-  return { rrule: recurrenceRule } as Prisma.InputJsonValue
+  const json: Record<string, unknown> = { rrule: recurrenceRule }
+  if (skipWeekendsAndHolidays) {
+    json.skipWeekendsAndHolidays = true
+  }
+  return json as Prisma.InputJsonValue
 }
 
 function parseRecurrenceRule(recurrenceJson: Prisma.JsonValue | null): string | null {
@@ -84,6 +90,13 @@ function parseRecurrenceRule(recurrenceJson: Prisma.JsonValue | null): string | 
     return recurrenceJson.rrule
   }
   return null
+}
+
+function parseSkipWeekendsAndHolidays(recurrenceJson: Prisma.JsonValue | null): boolean {
+  if (!recurrenceJson || typeof recurrenceJson !== 'object' || Array.isArray(recurrenceJson)) {
+    return false
+  }
+  return 'skipWeekendsAndHolidays' in recurrenceJson && recurrenceJson.skipWeekendsAndHolidays === true
 }
 
 function toIsoOrNull(value: Date | null): string | null {
@@ -131,6 +144,7 @@ function toCalendarEvent(event: {
     endAtUtc: event.endAtUtc.toISOString(),
     timeZone: event.timeZone,
     recurrenceRule: parseRecurrenceRule(event.recurrenceJson),
+    skipWeekendsAndHolidays: parseSkipWeekendsAndHolidays(event.recurrenceJson),
     recurringEventId: event.recurringEventId,
     originalStartTimeUtc: toIsoOrNull(event.originalStartTimeUtc),
     attendees: parseAttendeesJson(event.attendeesJson),
@@ -195,7 +209,7 @@ export async function upsertCalendarEvent(input: UpsertCalendarEventInput): Prom
     startAtUtc: normalizeDate(input.startAtUtc),
     endAtUtc: normalizeDate(endAtUtc),
     timeZone: input.timeZone,
-    recurrenceJson: toRecurrenceJson(input.recurrenceRule),
+    recurrenceJson: toRecurrenceJson(input.recurrenceRule, input.skipWeekendsAndHolidays),
     recurringEventId: input.recurringEventId ?? null,
     originalStartTimeUtc: toOptionalDate(input.originalStartTimeUtc) ?? null,
     attendeesJson: toAttendeesJson(input.attendees),
@@ -211,7 +225,7 @@ export async function upsertCalendarEvent(input: UpsertCalendarEventInput): Prom
     startAtUtc: normalizeDate(input.startAtUtc),
     endAtUtc: normalizeDate(endAtUtc),
     timeZone: input.timeZone,
-    recurrenceJson: toRecurrenceJson(input.recurrenceRule),
+    recurrenceJson: toRecurrenceJson(input.recurrenceRule, input.skipWeekendsAndHolidays),
     attendeesJson: toAttendeesJson(input.attendees),
     localEditedAtUtc: now,
     syncState: SyncState.PENDING,
@@ -268,13 +282,14 @@ export async function applyFutureSplitEdit(input: UpsertCalendarEventInput): Pro
   const rawFutureRule = input.recurrenceRule ?? sourceRule
   const futureRule = withoutRRuleEnd(rawFutureRule)
   const nextEndAtUtc = ensureEndAfterStart(input.startAtUtc, input.endAtUtc)
+  const sourceSkip = parseSkipWeekendsAndHolidays(source.recurrenceJson)
   const now = new Date()
 
   const result = await prisma.$transaction(async (tx) => {
     const splitSourceEvent = await tx.event.update({
       where: { localId: source.localId },
       data: {
-        recurrenceJson: toRecurrenceJson(splitRule),
+        recurrenceJson: toRecurrenceJson(splitRule, sourceSkip),
         localEditedAtUtc: now,
         syncState: SyncState.PENDING,
         isDeleted: false,
@@ -290,7 +305,7 @@ export async function applyFutureSplitEdit(input: UpsertCalendarEventInput): Pro
         startAtUtc: normalizeDate(input.startAtUtc),
         endAtUtc: normalizeDate(nextEndAtUtc),
         timeZone: input.timeZone,
-        recurrenceJson: toRecurrenceJson(futureRule),
+        recurrenceJson: toRecurrenceJson(futureRule, input.skipWeekendsAndHolidays ?? sourceSkip),
         attendeesJson: toAttendeesJson(input.attendees),
         organizerEmail: source.organizerEmail,
         hangoutLink: source.hangoutLink,
@@ -336,6 +351,7 @@ export async function applyFutureSplitForDelete(
   }
 
   const splitRule = splitRRuleForFuture(sourceRule, splitStartUtc)
+  const sourceSkipFlag = parseSkipWeekendsAndHolidays(source.recurrenceJson)
   const cutoffTime = new Date()
   const splitStart = new Date(splitStartUtc)
 
@@ -343,7 +359,7 @@ export async function applyFutureSplitForDelete(
     const splitSourceEvent = await tx.event.update({
       where: { localId: source.localId },
       data: {
-        recurrenceJson: toRecurrenceJson(splitRule),
+        recurrenceJson: toRecurrenceJson(splitRule, sourceSkipFlag),
         localEditedAtUtc: cutoffTime,
         syncState: SyncState.PENDING,
       },
@@ -475,7 +491,7 @@ export async function upsertRemoteEvent(snapshot: RemoteEventSnapshot): Promise<
     startAtUtc: normalizeDate(snapshot.startAtUtc),
     endAtUtc: normalizeDate(snapshot.endAtUtc),
     timeZone: snapshot.timeZone,
-    recurrenceJson: toRecurrenceJson(snapshot.recurrenceRule),
+    recurrenceJson: toRecurrenceJson(snapshot.recurrenceRule, snapshot.skipWeekendsAndHolidays),
     recurringEventId: snapshot.recurringEventId,
     originalStartTimeUtc: snapshot.originalStartTimeUtc
       ? normalizeDate(snapshot.originalStartTimeUtc)
@@ -560,7 +576,7 @@ async function upsertRemoteEventInTx(tx: TxClient, snapshot: RemoteEventSnapshot
     startAtUtc: normalizeDate(snapshot.startAtUtc),
     endAtUtc: normalizeDate(snapshot.endAtUtc),
     timeZone: snapshot.timeZone,
-    recurrenceJson: toRecurrenceJson(snapshot.recurrenceRule),
+    recurrenceJson: toRecurrenceJson(snapshot.recurrenceRule, snapshot.skipWeekendsAndHolidays),
     recurringEventId: snapshot.recurringEventId,
     originalStartTimeUtc: snapshot.originalStartTimeUtc
       ? normalizeDate(snapshot.originalStartTimeUtc)

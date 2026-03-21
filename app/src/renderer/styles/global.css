@@ -89,66 +89,11 @@ body {
 
 .weather-overlay-rain {
   background: transparent;
+  transform: translateZ(0);
 }
 
 .weather-overlay-snow {
   background: transparent;
-}
-
-.weather-rain {
-  position: absolute;
-  left: 0;
-  width: 100%;
-  height: 100%;
-  pointer-events: none;
-}
-
-.weather-rain-front-row {
-  z-index: 2;
-}
-
-.weather-rain-back-row {
-  z-index: 1;
-  bottom: 60px;
-  opacity: 0.5;
-}
-
-.weather-rain-drop {
-  position: absolute;
-  bottom: 100%;
-  width: 15px;
-  height: 120px;
-  pointer-events: none;
-  animation-name: weather-rain-drop;
-  animation-timing-function: linear;
-  animation-iteration-count: infinite;
-}
-
-.weather-rain-stem {
-  width: 2px;
-  height: 60%;
-  margin-left: 7px;
-  background: linear-gradient(
-    to bottom,
-    rgba(79, 195, 247, 0) 0%,
-    rgba(129, 212, 250, 0.86) 66%,
-    rgba(179, 229, 252, 0.98) 100%
-  );
-  animation-name: weather-rain-stem;
-  animation-timing-function: linear;
-  animation-iteration-count: infinite;
-}
-
-.weather-rain-splat {
-  width: 15px;
-  height: 10px;
-  border-top: 2px dotted rgba(129, 212, 250, 0.95);
-  border-radius: 50%;
-  opacity: 1;
-  transform: scale(0);
-  animation-name: weather-rain-splat;
-  animation-timing-function: linear;
-  animation-iteration-count: infinite;
 }
 
 .weather-overlay-canvas {
@@ -167,64 +112,6 @@ body {
   filter: saturate(138%) contrast(130%) brightness(114%);
 }
 
-@keyframes weather-rain-drop {
-  0% {
-    transform: translate(0, 0);
-  }
-
-  75% {
-    transform: translate(0, 84vh);
-  }
-
-  100% {
-    transform: translate(0, 84vh);
-  }
-}
-
-@keyframes weather-rain-stem {
-  0% {
-    opacity: 1;
-  }
-
-  65% {
-    opacity: 1;
-  }
-
-  75% {
-    opacity: 0;
-  }
-
-  100% {
-    opacity: 0;
-  }
-}
-
-@keyframes weather-rain-splat {
-  0% {
-    opacity: 0;
-    transform: scale(0);
-  }
-
-  70% {
-    opacity: 0;
-    transform: scale(0);
-  }
-
-  80% {
-    opacity: 1;
-    transform: scale(1);
-  }
-
-  90% {
-    opacity: 0.5;
-    transform: scale(1.3);
-  }
-
-  100% {
-    opacity: 0;
-    transform: scale(1.5);
-  }
-}
 
 /* ── Custom Titlebar ── */
 .titlebar {
@@ -1668,6 +1555,19 @@ textarea {
 .recurrence-section {
   display: grid;
   gap: 8px;
+}
+
+.recurrence-skip-label {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  font-size: 12px;
+  color: var(--ink-700);
+  cursor: pointer;
+}
+
+.recurrence-skip-label input[type="checkbox"] {
+  accent-color: var(--primary, #3b82f6);
 }
 
 .recurrence-section-label {

@@ -123,6 +123,7 @@ function defaultEventDraft(): EditableEvent {
     endAtUtc: end.toUTC().toISO() ?? new Date().toISOString(),
     attendees: [],
     recurrenceRule: null,
+    skipWeekendsAndHolidays: false,
     timeZone: zone,
     sendUpdates: 'none',
     recurrenceScope: 'ALL',
@@ -222,7 +223,7 @@ export function EventModal({ open, value, memberNames, onClose, onSave, onDelete
     setEndDate(toEndDateInput(source.endAtUtc))
     setTimeZone(source.timeZone)
     setAttendees(source.attendees.join(', '))
-    setRecurrence(parseRRule(source.recurrenceRule))
+    setRecurrence({ ...parseRRule(source.recurrenceRule), skipWeekendsAndHolidays: source.skipWeekendsAndHolidays ?? false })
     setSendUpdates(source.sendUpdates)
     setRecurrenceScope(source.recurrenceScope)
   }, [open, value])
@@ -330,6 +331,7 @@ export function EventModal({ open, value, memberNames, onClose, onSave, onDelete
                     ? { ...recurrence, monthDay: DateTime.fromISO(startAtUtc).toLocal().day }
                     : recurrence,
                 ),
+                skipWeekendsAndHolidays: recurrence.skipWeekendsAndHolidays,
                 recurringEventId,
                 originalStartTimeUtc,
                 sendUpdates,
@@ -574,7 +576,7 @@ export function EventModal({ open, value, memberNames, onClose, onSave, onDelete
           ) : null}
 
           {eventType !== '교육' && eventType !== '휴가' && eventType !== '중요' && eventType !== '일반' ? (
-            <RecurrencePicker value={recurrence} onChange={setRecurrence} />
+            <RecurrencePicker value={recurrence} onChange={setRecurrence} eventType={eventType} />
           ) : null}
 
           {hasExistingEvent && hasRecurringContext ? (

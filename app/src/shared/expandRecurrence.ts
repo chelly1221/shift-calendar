@@ -1,5 +1,6 @@
 import { DateTime, type WeekdayNumbers } from 'luxon'
 import type { CalendarEvent } from './calendar'
+import { FIXED_PUBLIC_HOLIDAY_MMDD } from './koreanHolidays'
 import { parseRRuleSegments, parseUntilToUtcIso } from './rrule'
 import type { WeekdayCode } from './rrule'
 
@@ -228,10 +229,30 @@ function nthWeekdayOfMonth(
   return null
 }
 
+/**
+ * 주말(토/일) 또는 공휴일이면 다음 평일로 이동한 DateTime을 반환합니다.
+ * holidayDates는 'YYYY-MM-DD' 형태의 Set입니다.
+ */
+function shiftToNextBusinessDay(dt: DateTime, holidayDates: Set<string>): DateTime {
+  let shifted = dt
+  const MAX_SHIFT = 14 // 연휴 최대 안전 한도
+  for (let i = 0; i < MAX_SHIFT; i++) {
+    const wd = shifted.weekday // 6=Sat, 7=Sun
+    const isoDate = shifted.toISODate()
+    const mmdd = isoDate ? isoDate.slice(5) : '' // "MM-DD"
+    if (wd !== 6 && wd !== 7 && !holidayDates.has(isoDate!) && !FIXED_PUBLIC_HOLIDAY_MMDD.has(mmdd)) {
+      break
+    }
+    shifted = shifted.plus({ days: 1 })
+  }
+  return shifted
+}
+
 export function expandRecurringEvents(
   events: CalendarEvent[],
   rangeStartUtc: string,
   rangeEndUtc: string,
+  holidayDates?: Set<string>,
 ): CalendarEvent[] {
   // Collect googleEventIds that already have child instances
   const masterIdsWithInstances = new Set<string>()
@@ -303,38 +324,67 @@ export function expandRecurringEvents(
     // Build set of cancelled/override timestamps for this master
     const masterCancelledTs = event.googleEventId ? cancelledTimestamps.get(event.googleEventId) : undefined
 
+    const shouldShift = event.skipWeekendsAndHolidays && holidayDates
+    // Track shifted dates to deduplicate (multiple occurrences shifted to same business day)
+    const shiftedDatesSeen = shouldShift ? new Set<string>() : null
+
+    // When skipWeekendsAndHolidays is enabled with COUNT, the generator must produce
+    // more candidates than COUNT because deduplication may discard some.
+    // Pass count=null to the generator and count non-duplicate results externally.
+    const generatorCount = shouldShift ? null : count
+    let emittedCount = 0
+
     for (const occurrenceLocal of generateOccurrences({
       freq,
       interval,
       masterStartLocal,
       rangeEndLocal,
-      count,
+      count: generatorCount,
       untilLocal,
       byday,
       bymonthday,
       bysetpos,
     })) {
-      const occStartUtc = occurrenceLocal.toUTC()
-      const occEndUtc = DateTime.fromMillis(occurrenceLocal.toMillis() + durationMs, { zone: 'utc' })
+      // When managing COUNT externally, stop once we've emitted enough
+      if (shouldShift && count !== null && emittedCount >= count) break
 
-      // Skip occurrences that match a cancelled/override instance
-      if (masterCancelledTs?.has(occStartUtc.toMillis().toString())) continue
+      // Apply business day shift if enabled
+      const effectiveLocal = shouldShift
+        ? shiftToNextBusinessDay(occurrenceLocal, holidayDates!)
+        : occurrenceLocal
+
+      const occStartUtc = effectiveLocal.toUTC()
+      const occEndUtc = DateTime.fromMillis(effectiveLocal.toMillis() + durationMs, { zone: 'utc' })
+
+      // Skip occurrences that match a cancelled/override instance (use original time for matching)
+      const originalUtcMs = occurrenceLocal.toUTC().toMillis().toString()
+      if (masterCancelledTs?.has(originalUtcMs)) continue
 
       // Skip occurrences before range
       if (occEndUtc.toMillis() < DateTime.fromISO(rangeStartUtc).toMillis()) continue
 
+      // Deduplicate: skip if another occurrence already shifted to same date
+      if (shiftedDatesSeen) {
+        const shiftedDate = effectiveLocal.toISODate()!
+        if (shiftedDatesSeen.has(shiftedDate)) continue
+        shiftedDatesSeen.add(shiftedDate)
+      }
+
       const occStartUtcIso = occStartUtc.toISO()!
       const occEndUtcIso = occEndUtc.toISO()!
 
+      // Use original (unshifted) time for virtualLocalId to keep stable IDs
+      const originalStartUtcIso = occurrenceLocal.toUTC().toISO()!
       const isFirstOccurrence = occurrenceLocal.toMillis() === masterStartLocal.toMillis()
 
       result.push({
         ...event,
-        localId: isFirstOccurrence ? event.localId : makeVirtualLocalId(event.localId, occStartUtcIso),
+        localId: isFirstOccurrence ? event.localId : makeVirtualLocalId(event.localId, originalStartUtcIso),
         startAtUtc: occStartUtcIso,
         endAtUtc: occEndUtcIso,
-        originalStartTimeUtc: isFirstOccurrence ? event.originalStartTimeUtc : occStartUtcIso,
+        originalStartTimeUtc: isFirstOccurrence ? event.originalStartTimeUtc : originalStartUtcIso,
       })
+      emittedCount++
     }
   }
 
