@@ -142,7 +142,7 @@ function createDraft(startAtUtc?: string, endAtUtc?: string): EditableEvent {
   }
 }
 
-function toEditableEvent(event: CalendarEvent): EditableEvent {
+function toEditableEvent(event: CalendarEvent, allEvents?: CalendarEvent[]): EditableEvent {
   if (isVirtualInstance(event.localId)) {
     const masterLocalId = extractMasterLocalId(event.localId)
     return {
@@ -159,9 +159,24 @@ function toEditableEvent(event: CalendarEvent): EditableEvent {
       recurrenceRule: event.recurrenceRule,
       skipWeekendsAndHolidays: event.skipWeekendsAndHolidays,
       recurringEventId: event.recurringEventId,
-      originalStartTimeUtc: event.startAtUtc,
+      // Preserve the unshifted original date from expansion (used for FUTURE split boundary).
+      // Falls back to shifted startAtUtc only if originalStartTimeUtc is unavailable.
+      originalStartTimeUtc: event.originalStartTimeUtc ?? event.startAtUtc,
       sendUpdates: 'none',
       recurrenceScope: 'THIS',
+    }
+  }
+
+  // For Google-synced instances (recurringEventId set, no recurrenceRule),
+  // inherit the master's recurrenceRule and skipWeekendsAndHolidays so the
+  // RecurrencePicker can display correctly when editing with ALL/FUTURE scope.
+  let recurrenceRule = event.recurrenceRule
+  let skipWeekendsAndHolidays = event.skipWeekendsAndHolidays
+  if (event.recurringEventId && !recurrenceRule && allEvents) {
+    const master = allEvents.find((e) => e.googleEventId === event.recurringEventId)
+    if (master) {
+      recurrenceRule = master.recurrenceRule
+      skipWeekendsAndHolidays = master.skipWeekendsAndHolidays
     }
   }
 
@@ -176,8 +191,8 @@ function toEditableEvent(event: CalendarEvent): EditableEvent {
     endAtUtc: event.endAtUtc,
     timeZone: event.timeZone,
     attendees: event.attendees,
-    recurrenceRule: event.recurrenceRule,
-    skipWeekendsAndHolidays: event.skipWeekendsAndHolidays,
+    recurrenceRule,
+    skipWeekendsAndHolidays,
     recurringEventId: event.recurringEventId,
     originalStartTimeUtc: event.originalStartTimeUtc,
     sendUpdates: 'none',
@@ -953,7 +968,7 @@ export function CalendarPage() {
 
           try {
             await saveEvent({
-              ...toEditableEvent(group.sourceEvent),
+              ...toEditableEvent(group.sourceEvent, allEvents),
               description: nextDescription,
               sendUpdates: 'none',
               recurrenceScope: 'ALL',
@@ -1649,7 +1664,7 @@ export function CalendarPage() {
       }
     }
 
-    const editable = toEditableEvent(targetEvent)
+    const editable = toEditableEvent(targetEvent, allEvents)
     if (isVirtualInstance(localId)) {
       editable.recurrenceScope = 'THIS'
     }
@@ -1692,7 +1707,7 @@ export function CalendarPage() {
 
     try {
       await saveEventWithUndo({
-        ...toEditableEvent(sourceEvent),
+        ...toEditableEvent(sourceEvent, allEvents),
         description: nextDescription,
         sendUpdates: 'none',
         recurrenceScope: 'ALL',
@@ -1706,7 +1721,7 @@ export function CalendarPage() {
       return
     }
 
-  }, [saveEventWithUndo])
+  }, [saveEventWithUndo, allEvents])
 
   const saveShiftSummaryInlineEdit = useCallback(async () => {
     if (savingShiftSummaryRef.current) return
@@ -1805,7 +1820,7 @@ export function CalendarPage() {
 
       const cleanSummary = stripShiftAbbreviations(trimmed)
       await saveEventWithUndo({
-        ...toEditableEvent(targetEvent),
+        ...toEditableEvent(targetEvent, allEvents),
         summary: cleanSummary,
         ...(descriptionChanged ? { description: serializeShiftDescriptionState(parsed) } : {}),
         sendUpdates: 'none',
@@ -1814,7 +1829,7 @@ export function CalendarPage() {
     } finally {
       savingShiftSummaryRef.current = false
     }
-  }, [editingShiftSummary, saveEventWithUndo, shiftSettings.teams, allMemberNames, shiftSettings.abbreviations])
+  }, [editingShiftSummary, saveEventWithUndo, shiftSettings.teams, allMemberNames, shiftSettings.abbreviations, allEvents])
 
   useEffect(() => {
     if (!editingShiftSummary) return
@@ -1856,7 +1871,7 @@ export function CalendarPage() {
       })
       const cleanSummary = stripShiftAbbreviations(targetEvent.summary)
       await saveEventWithUndo({
-        ...toEditableEvent(targetEvent),
+        ...toEditableEvent(targetEvent, allEvents),
         summary: cleanSummary,
         description: serializeShiftDescriptionState(parsed),
         sendUpdates: 'none',
@@ -1879,12 +1894,12 @@ export function CalendarPage() {
     }
 
     await saveEventWithUndo({
-      ...toEditableEvent(targetEvent),
+      ...toEditableEvent(targetEvent, allEvents),
       description: serializeShiftDescriptionState(parsed),
       sendUpdates: 'none',
     })
     setEditingShiftBadge(null)
-  }, [editingShiftBadge, saveEventWithUndo])
+  }, [editingShiftBadge, saveEventWithUndo, allEvents])
 
   const deleteShiftBadgeInlineEdit = useCallback(async () => {
     if (!editingShiftBadge) {
@@ -1902,7 +1917,7 @@ export function CalendarPage() {
       // Abbreviation-only badge (from title, no description block) — strip from summary
       const cleanSummary = stripShiftAbbreviations(targetEvent.summary)
       await saveEventWithUndo({
-        ...toEditableEvent(targetEvent),
+        ...toEditableEvent(targetEvent, allEvents),
         summary: cleanSummary,
         sendUpdates: 'none',
       })
@@ -1919,12 +1934,12 @@ export function CalendarPage() {
 
     parsed.substitutions.splice(editingShiftBadge.substitutionIndex, 1)
     await saveEventWithUndo({
-      ...toEditableEvent(targetEvent),
+      ...toEditableEvent(targetEvent, allEvents),
       description: serializeShiftDescriptionState(parsed),
       sendUpdates: 'none',
     })
     setEditingShiftBadge(null)
-  }, [editingShiftBadge, saveEventWithUndo])
+  }, [editingShiftBadge, saveEventWithUndo, allEvents])
 
   const flushShiftAssignmentsSave = useCallback(() => {
     const pending = pendingShiftSaveRef.current
@@ -2237,7 +2252,7 @@ export function CalendarPage() {
               ) : (
                 todayEvents.map((event) => (
                   <li key={event.localId} className="today-item">
-                    <button type="button" onClick={() => setEditingEvent(toEditableEvent(event))}>
+                    <button type="button" onClick={() => setEditingEvent(toEditableEvent(event, allEvents))}>
                       <span>{event.summary}</span>
                       {(() => {
                         const local = DateTime.fromISO(event.startAtUtc).toLocal()
@@ -2267,7 +2282,7 @@ export function CalendarPage() {
                     <ul className="upcoming-date-events">
                       {group.events.map((event) => (
                         <li key={event.localId} className="upcoming-item">
-                          <button type="button" onClick={() => setEditingEvent(toEditableEvent(event))}>
+                          <button type="button" onClick={() => setEditingEvent(toEditableEvent(event, allEvents))}>
                             <span>{event.summary}</span>
                             {(() => {
                               const local = DateTime.fromISO(event.startAtUtc).toLocal()
@@ -2313,7 +2328,7 @@ export function CalendarPage() {
                     : event.summary
                   return (
                     <li key={event.localId} className="vacation-item">
-                      <button type="button" onClick={() => setEditingEvent(toEditableEvent(event))}>
+                      <button type="button" onClick={() => setEditingEvent(toEditableEvent(event, allEvents))}>
                         <span>
                           {nameOnly}
                           {vType && (
@@ -2351,7 +2366,7 @@ export function CalendarPage() {
                   const { targets } = parseEducationTargets(event.description ?? '')
                   return (
                     <li key={event.localId} className="education-item">
-                      <button type="button" onClick={() => setEditingEvent(toEditableEvent(event))}>
+                      <button type="button" onClick={() => setEditingEvent(toEditableEvent(event, allEvents))}>
                         <span className="education-item-content">
                           {targets.length > 0 ? (
                             <span className="education-item-names">{targets.join(', ')}</span>
@@ -2558,7 +2573,7 @@ export function CalendarPage() {
               (ev) => ev.eventType === '근무' && DateTime.fromISO(ev.startAtUtc).toLocal().toISODate() === dateStr,
             )
             if (shiftEvent) {
-              setEditingEvent(toEditableEvent(shiftEvent))
+              setEditingEvent(toEditableEvent(shiftEvent, allEvents))
               return
             }
           }
@@ -2750,7 +2765,7 @@ export function CalendarPage() {
                 return
               }
               cancelInlineTitleEdit()
-              setEditingEvent(toEditableEvent(selected))
+              setEditingEvent(toEditableEvent(selected, allEvents))
             }
             ;(arg.el as any)._tipCleanup = () => {
               if (rafId) { cancelAnimationFrame(rafId); rafId = 0 }
@@ -3083,7 +3098,7 @@ export function CalendarPage() {
           memberNames={allMemberNames}
           onComplete={async (substitute, type, original) => {
             const ev = substitutionFlow.shiftEvent
-            const editable = toEditableEvent(ev)
+            const editable = toEditableEvent(ev, allEvents)
             const lines: string[] = []
             if (editable.description) lines.push(editable.description)
             lines.push(`대체근무자: ${substitute}`)

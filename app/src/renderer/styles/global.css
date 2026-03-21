@@ -1557,18 +1557,6 @@ textarea {
   gap: 8px;
 }
 
-.recurrence-skip-label {
-  display: flex;
-  align-items: center;
-  gap: 6px;
-  font-size: 12px;
-  color: var(--ink-700);
-  cursor: pointer;
-}
-
-.recurrence-skip-label input[type="checkbox"] {
-  accent-color: var(--primary, #3b82f6);
-}
 
 .recurrence-section-label {
   font-size: 11px;

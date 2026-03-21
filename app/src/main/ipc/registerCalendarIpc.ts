@@ -2,7 +2,7 @@ import { app, dialog, ipcMain } from 'electron'
 import Database from 'better-sqlite3'
 import { copyFileSync, statSync, unlinkSync } from 'node:fs'
 import { loadRefreshToken, saveRefreshToken } from '../security/tokenStore'
-import { splitRRuleForFuture, withoutRRuleEnd } from '../../shared/rrule'
+import { parseRRuleSegments, splitRRuleForFuture, withoutRRuleEnd } from '../../shared/rrule'
 import {
   cancelOutboxJobInputSchema,
   calendarEventSchema,
@@ -129,20 +129,110 @@ export function registerCalendarIpc(): void {
     const nextEventType = input.eventType.trim()
     const currentEventType = existing.eventType.trim()
     const isRecurringTypeChange = hasRecurringContext && nextEventType !== currentEventType
-    const recurrenceScope = isRecurringTypeChange ? 'ALL' : input.recurrenceScope
+    // skipWeekendsAndHolidays is a series-level setting — force ALL scope
+    // to prevent THIS-scope from corrupting the master's startAtUtc with a shifted date.
+    const skipChanged = Boolean(input.skipWeekendsAndHolidays) !== Boolean(existing.skipWeekendsAndHolidays)
+    const recurrenceScope = isRecurringTypeChange ? 'ALL'
+      : (skipChanged && hasRecurringContext) ? 'ALL'
+      : input.recurrenceScope
+
+    // When skip changes, propagate to the master's recurrenceJson as a side-effect.
+    // Don't return early — let the normal ALL/THIS/FUTURE flow proceed.
+    if (skipChanged && hasRecurringContext) {
+      let masterLocalId = existing.localId
+      let masterRule = existing.recurrenceRule
+      if (existing.recurringEventId && !existing.recurrenceRule) {
+        const masterRow = await prisma.event.findFirst({
+          where: { googleEventId: existing.recurringEventId, isDeleted: false },
+          select: { localId: true, recurrenceJson: true },
+        })
+        if (masterRow) {
+          masterLocalId = masterRow.localId
+          const json = masterRow.recurrenceJson
+          if (json && typeof json === 'object' && !Array.isArray(json) && 'rrule' in json && typeof json.rrule === 'string') {
+            masterRule = json.rrule
+          }
+        }
+      }
+      if (masterRule) {
+        const recurrenceJson = input.skipWeekendsAndHolidays
+          ? { rrule: masterRule, skipWeekendsAndHolidays: true }
+          : { rrule: masterRule }
+        await prisma.event.update({
+          where: { localId: masterLocalId },
+          data: { recurrenceJson, localEditedAtUtc: new Date(), syncState: 'PENDING' },
+        })
+      }
+    }
 
     if (!hasRecurringContext || recurrenceScope === 'ALL') {
-      const saved = calendarEventSchema.parse(await upsertCalendarEvent(input))
+      // For ALL scope on a recurring master, preserve its original startAtUtc/endAtUtc.
+      // The input may carry a shifted date from a virtual instance (skipWeekendsAndHolidays),
+      // which would corrupt the master's recurrence origin.
+      const isMaster = Boolean(existing.recurrenceRule) && !existing.recurringEventId
+      let preservedStartAtUtc = existing.startAtUtc
+      let preservedEndAtUtc = existing.endAtUtc
+
+      // When skipChanged forced ALL scope on a Google instance (not the master),
+      // the master's recurrenceJson was already updated (lines above). We need to:
+      // 1. Preserve the master's startAtUtc/endAtUtc (not the instance's)
+      // 2. Return the master event so the store can update it in memory
+      let resolvedMasterLocalId: string | null = null
+      if (skipChanged && !isMaster && existing.recurringEventId) {
+        const masterRow = await prisma.event.findFirst({
+          where: { googleEventId: existing.recurringEventId, isDeleted: false },
+          select: { localId: true, startAtUtc: true, endAtUtc: true },
+        })
+        if (masterRow) {
+          resolvedMasterLocalId = masterRow.localId
+          preservedStartAtUtc = masterRow.startAtUtc.toISOString()
+          preservedEndAtUtc = masterRow.endAtUtc.toISOString()
+        }
+      }
+
+      // Self-healing: if master's startAtUtc weekday doesn't match WEEKLY BYDAY,
+      // recalculate to the first valid occurrence (fixes previously corrupted data).
+      if (isMaster && existing.recurrenceRule && existing.skipWeekendsAndHolidays) {
+        const segments = parseRRuleSegments(existing.recurrenceRule)
+        const freq = segments.get('FREQ')
+        const byday = segments.get('BYDAY')
+        if (freq === 'WEEKLY' && byday) {
+          const WEEKDAY_ISO: Record<string, number> = { MO: 1, TU: 2, WE: 3, TH: 4, FR: 5, SA: 6, SU: 7 }
+          const targetDays = byday.split(',').map((d) => WEEKDAY_ISO[d.trim().toUpperCase()]).filter(Boolean)
+          const startDt = new Date(preservedStartAtUtc)
+          const currentDay = startDt.getUTCDay() === 0 ? 7 : startDt.getUTCDay() // ISO weekday
+          if (targetDays.length > 0 && !targetDays.includes(currentDay)) {
+            // Find the nearest matching weekday (forward)
+            for (let offset = 1; offset <= 7; offset++) {
+              const candidateDay = ((currentDay - 1 + offset) % 7) + 1
+              if (targetDays.includes(candidateDay)) {
+                const durationMs = new Date(preservedEndAtUtc).getTime() - startDt.getTime()
+                startDt.setUTCDate(startDt.getUTCDate() + offset)
+                preservedStartAtUtc = startDt.toISOString()
+                preservedEndAtUtc = new Date(startDt.getTime() + durationMs).toISOString()
+                console.debug(`[IPC] Self-healed master startAtUtc: weekday ${currentDay} → ${candidateDay}`)
+                break
+              }
+            }
+          }
+        }
+      }
+
+      const shouldPreserveStart = (isMaster && recurrenceScope === 'ALL') || resolvedMasterLocalId
+      const effectiveInput = shouldPreserveStart
+        ? { ...input, startAtUtc: preservedStartAtUtc, endAtUtc: preservedEndAtUtc }
+        : input
+      const saved = calendarEventSchema.parse(await upsertCalendarEvent(effectiveInput))
       const targetGoogleEventId =
         hasRecurringContext && recurrenceScope === 'ALL' && saved.recurringEventId
           ? saved.recurringEventId
           : saved.googleEventId ?? input.googleEventId ?? null
       await enqueueOutboxOperation({
-        eventLocalId: saved.localId,
+        eventLocalId: resolvedMasterLocalId ?? saved.localId,
         operation: hasRecurringContext ? 'RECUR_ALL' : 'PATCH',
         payload: {
           sendUpdates: input.sendUpdates,
-          googleEventId: targetGoogleEventId,
+          googleEventId: resolvedMasterLocalId ? existing.recurringEventId : (targetGoogleEventId ?? null),
           recurringEventId: saved.recurringEventId ?? input.recurringEventId ?? null,
           originalStartTimeUtc: saved.originalStartTimeUtc ?? input.originalStartTimeUtc ?? null,
         },
@@ -169,6 +259,16 @@ export function registerCalendarIpc(): void {
 
       if (isRecurringTypeChange && seriesGoogleEventId) {
         await applyEventTypeToRecurringSeries(seriesGoogleEventId, saved.eventType)
+      }
+
+      // When skipChanged on a Google instance, return the master event so the
+      // store's upsertEventInMemory updates the master (not just the instance),
+      // enabling immediate UI re-expansion with the correct skip flag.
+      if (resolvedMasterLocalId) {
+        const masterEvent = await getCalendarEventByLocalId(resolvedMasterLocalId)
+        if (masterEvent) {
+          return calendarEventSchema.parse(masterEvent)
+        }
       }
       return saved
     }
@@ -207,9 +307,17 @@ export function registerCalendarIpc(): void {
 
     if (recurrenceScope === 'FUTURE' && existing.recurrenceRule && !existing.recurringEventId) {
       // Real master event (has RRULE, no recurringEventId)
-      console.debug(`FUTURE branch 1: localId=${input.localId}, googleEventId=${existing.googleEventId}, recurrenceRule=${existing.recurrenceRule}`)
+      // For shifted virtual instances, use the unshifted originalStartTimeUtc as the split boundary
+      // to avoid splitting at a shifted date that doesn't align with the actual recurrence.
+      const futureSplitStartUtc = (existing.skipWeekendsAndHolidays && input.originalStartTimeUtc)
+        ? input.originalStartTimeUtc
+        : input.startAtUtc
+      const futureInput = (futureSplitStartUtc !== input.startAtUtc)
+        ? { ...input, startAtUtc: futureSplitStartUtc, endAtUtc: futureSplitStartUtc }
+        : input
+      console.debug(`FUTURE branch 1: localId=${input.localId}, googleEventId=${existing.googleEventId}, recurrenceRule=${existing.recurrenceRule}, splitAt=${futureSplitStartUtc}`)
       try {
-        const splitResult = await applyFutureSplitEdit(input)
+        const splitResult = await applyFutureSplitEdit(futureInput)
         console.debug(`FUTURE branch 1: split done. master=${splitResult.splitSourceEvent.localId}, future=${splitResult.futureEvent.localId}, futureRule=${splitResult.futureEvent.recurrenceRule}`)
         const masterGoogleId = splitResult.splitSourceEvent.googleEventId ?? existing.googleEventId
         const splitOutboxId = await enqueueOutboxOperation({
@@ -218,7 +326,7 @@ export function registerCalendarIpc(): void {
           payload: {
             sendUpdates: input.sendUpdates,
             googleEventId: masterGoogleId,
-            splitStartUtc: input.startAtUtc,
+            splitStartUtc: futureSplitStartUtc,
           },
         })
 
@@ -249,9 +357,11 @@ export function registerCalendarIpc(): void {
         orderBy: { localId: 'asc' },
       })
       let masterRRule: string | null = null
+      let masterSkipWeekendsAndHolidays = false
       const masterJson = masterRow?.recurrenceJson
       if (masterJson && typeof masterJson === 'object' && !Array.isArray(masterJson) && 'rrule' in masterJson && typeof masterJson.rrule === 'string') {
         masterRRule = masterJson.rrule
+        masterSkipWeekendsAndHolidays = 'skipWeekendsAndHolidays' in masterJson && masterJson.skipWeekendsAndHolidays === true
       }
       console.debug(`FUTURE branch 2: masterRow=${masterRow?.localId ?? 'NOT_FOUND'}, masterRRule=${masterRRule}, inputRule=${input.recurrenceRule}, existingRule=${existing.recurrenceRule}`)
 
@@ -264,16 +374,22 @@ export function registerCalendarIpc(): void {
       } else {
         try {
           const futureRecurrenceRule = withoutRRuleEnd(rawFutureRule)
-          const splitStartUtc = input.startAtUtc
+          // Use unshifted date for split boundary when skipWeekendsAndHolidays is active
+          const splitStartUtc = (masterSkipWeekendsAndHolidays && input.originalStartTimeUtc)
+            ? input.originalStartTimeUtc
+            : input.startAtUtc
           const now = new Date()
 
           // Truncate master's RRULE locally (add UNTIL before splitStartUtc)
           if (masterRow) {
             const splitRule = splitRRuleForFuture(rawFutureRule, splitStartUtc)
+            const splitRecurrenceJson = masterSkipWeekendsAndHolidays
+              ? { rrule: splitRule, skipWeekendsAndHolidays: true }
+              : { rrule: splitRule }
             await prisma.event.update({
               where: { localId: masterRow.localId },
               data: {
-                recurrenceJson: { rrule: splitRule },
+                recurrenceJson: splitRecurrenceJson,
                 localEditedAtUtc: now,
                 syncState: 'PENDING',
               },
@@ -294,10 +410,13 @@ export function registerCalendarIpc(): void {
             },
           })
 
-          // Create the new future recurring event
+          // Create the new future recurring event (inherit master's skip flag if input doesn't override)
+          // Use the unshifted split start as the new series origin so expansion generates correct occurrences
           const futureEvent = calendarEventSchema.parse(
             await upsertCalendarEvent({
               ...input,
+              startAtUtc: splitStartUtc,
+              skipWeekendsAndHolidays: input.skipWeekendsAndHolidays || masterSkipWeekendsAndHolidays,
               localId: undefined,
               googleEventId: null,
               recurringEventId: null,

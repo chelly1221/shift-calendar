@@ -205,14 +205,23 @@ export function RecurrencePicker({ value, onChange, eventType }: RecurrencePicke
           {/* ── Skip weekends & holidays (반복업무 only) ── */}
           {eventType === '반복업무' ? (
             <div className="recurrence-section">
-              <label className="recurrence-skip-label">
-                <input
-                  type="checkbox"
-                  checked={value.skipWeekendsAndHolidays}
-                  onChange={(e) => onChange({ ...value, skipWeekendsAndHolidays: e.target.checked })}
-                />
-                <span>주말/공휴일 → 다음 평일로 이동</span>
-              </label>
+              <span className="recurrence-section-label">평일로 자동연기</span>
+              <div className="recurrence-end-pills">
+                <button
+                  type="button"
+                  className={value.skipWeekendsAndHolidays ? 'recurrence-pill is-selected' : 'recurrence-pill'}
+                  onClick={() => onChange({ ...value, skipWeekendsAndHolidays: true })}
+                >
+                  사용
+                </button>
+                <button
+                  type="button"
+                  className={!value.skipWeekendsAndHolidays ? 'recurrence-pill is-selected' : 'recurrence-pill'}
+                  onClick={() => onChange({ ...value, skipWeekendsAndHolidays: false })}
+                >
+                  사용 안 함
+                </button>
+              </div>
             </div>
           ) : null}
 

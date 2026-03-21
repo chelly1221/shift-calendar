@@ -272,17 +272,38 @@ export function expandRecurringEvents(
     }
   }
 
+  // Identify masters that need virtual expansion despite having Google instances
+  // (skipWeekendsAndHolidays requires virtual expansion to apply the shift)
+  const mastersNeedingVirtualExpansion = new Set<string>()
+  for (const event of events) {
+    if (
+      event.recurrenceRule
+      && !event.recurringEventId
+      && event.skipWeekendsAndHolidays
+      && holidayDates
+      && event.googleEventId
+      && masterIdsWithInstances.has(event.googleEventId)
+    ) {
+      mastersNeedingVirtualExpansion.add(event.googleEventId)
+    }
+  }
+
   const result: CalendarEvent[] = []
 
   for (const event of events) {
-    // Not a master event → keep as-is
+    // Not a master event → keep as-is (but skip Google instances for masters being re-expanded)
     if (!event.recurrenceRule || event.recurringEventId) {
+      if (event.recurringEventId && mastersNeedingVirtualExpansion.has(event.recurringEventId)) {
+        // Skip Google instances — virtual expansion with shift will replace them
+        continue
+      }
       result.push(event)
       continue
     }
 
-    // Master has real instances from Google → keep master as-is (instances are separate rows)
-    if (event.googleEventId && masterIdsWithInstances.has(event.googleEventId)) {
+    // Master has real instances from Google and does NOT need shift → keep master as-is
+    if (event.googleEventId && masterIdsWithInstances.has(event.googleEventId)
+      && !mastersNeedingVirtualExpansion.has(event.googleEventId)) {
       result.push(event)
       continue
     }
@@ -321,18 +342,31 @@ export function expandRecurringEvents(
     const rangeEndLocal = DateTime.fromISO(rangeEndUtc, { zone: 'utc' }).setZone(zone)
     const untilLocal = untilStr ? DateTime.fromISO(untilStr, { zone: 'utc' }).setZone(zone) : null
 
-    // Build set of cancelled/override timestamps for this master
-    const masterCancelledTs = event.googleEventId ? cancelledTimestamps.get(event.googleEventId) : undefined
+    // Build set of cancelled/override timestamps for this master.
+    // When re-expanding a Google-synced master for shift, skip cancelled timestamp filtering
+    // because ALL Google instances (not just cancelled ones) contribute to cancelledTimestamps.
+    const isVirtualReExpansion = event.googleEventId && mastersNeedingVirtualExpansion.has(event.googleEventId)
+    const masterCancelledTs = !isVirtualReExpansion && event.googleEventId
+      ? cancelledTimestamps.get(event.googleEventId)
+      : undefined
 
     const shouldShift = event.skipWeekendsAndHolidays && holidayDates
-    // Track shifted dates to deduplicate (multiple occurrences shifted to same business day)
-    const shiftedDatesSeen = shouldShift ? new Set<string>() : null
 
     // When skipWeekendsAndHolidays is enabled with COUNT, the generator must produce
     // more candidates than COUNT because deduplication may discard some.
     // Pass count=null to the generator and count non-duplicate results externally.
     const generatorCount = shouldShift ? null : count
-    let emittedCount = 0
+
+    interface Candidate {
+      occurrenceLocal: DateTime
+      effectiveLocal: DateTime
+      wasShifted: boolean
+    }
+
+    // Collect candidates (with shift applied), then deduplicate in a second pass
+    // so that natural (non-shifted) instances are preferred over shifted ones.
+    const candidates: Candidate[] = []
+    const rangeStartMs = DateTime.fromISO(rangeStartUtc).toMillis()
 
     for (const occurrenceLocal of generateOccurrences({
       freq,
@@ -345,31 +379,55 @@ export function expandRecurringEvents(
       bymonthday,
       bysetpos,
     })) {
-      // When managing COUNT externally, stop once we've emitted enough
-      if (shouldShift && count !== null && emittedCount >= count) break
-
-      // Apply business day shift if enabled
       const effectiveLocal = shouldShift
         ? shiftToNextBusinessDay(occurrenceLocal, holidayDates!)
         : occurrenceLocal
 
-      const occStartUtc = effectiveLocal.toUTC()
-      const occEndUtc = DateTime.fromMillis(effectiveLocal.toMillis() + durationMs, { zone: 'utc' })
+      const wasShifted = effectiveLocal.toMillis() !== occurrenceLocal.toMillis()
 
-      // Skip occurrences that match a cancelled/override instance (use original time for matching)
+      // Skip occurrences that match a cancelled/override instance
       const originalUtcMs = occurrenceLocal.toUTC().toMillis().toString()
       if (masterCancelledTs?.has(originalUtcMs)) continue
 
       // Skip occurrences before range
-      if (occEndUtc.toMillis() < DateTime.fromISO(rangeStartUtc).toMillis()) continue
+      const occEndMs = effectiveLocal.toMillis() + durationMs
+      if (occEndMs < rangeStartMs) continue
 
-      // Deduplicate: skip if another occurrence already shifted to same date
-      if (shiftedDatesSeen) {
-        const shiftedDate = effectiveLocal.toISODate()!
-        if (shiftedDatesSeen.has(shiftedDate)) continue
-        shiftedDatesSeen.add(shiftedDate)
+      candidates.push({ occurrenceLocal, effectiveLocal, wasShifted })
+
+      // For non-shift mode, respect count naturally
+      if (!shouldShift && count !== null && candidates.length >= count) break
+      // For shift mode, generate enough candidates (overshoot to handle dedup losses)
+      if (shouldShift && count !== null && candidates.length >= count * 3) break
+    }
+
+    // Dedup pass: prefer natural instances; drop shifted instances that collide
+    let emitted: Candidate[]
+    if (shouldShift) {
+      // First, collect all dates that have natural (non-shifted) instances
+      const naturalDates = new Set<string>()
+      for (const c of candidates) {
+        if (!c.wasShifted) naturalDates.add(c.effectiveLocal.toISODate()!)
       }
+      // Then filter: natural instances always pass; shifted only if no collision
+      const shiftedSeen = new Set<string>()
+      emitted = []
+      for (const c of candidates) {
+        const dateKey = c.effectiveLocal.toISODate()!
+        if (c.wasShifted) {
+          if (naturalDates.has(dateKey) || shiftedSeen.has(dateKey)) continue
+          shiftedSeen.add(dateKey)
+        }
+        emitted.push(c)
+        if (count !== null && emitted.length >= count) break
+      }
+    } else {
+      emitted = candidates
+    }
 
+    for (const { occurrenceLocal, effectiveLocal, wasShifted } of emitted) {
+      const occStartUtc = effectiveLocal.toUTC()
+      const occEndUtc = DateTime.fromMillis(effectiveLocal.toMillis() + durationMs, { zone: 'utc' })
       const occStartUtcIso = occStartUtc.toISO()!
       const occEndUtcIso = occEndUtc.toISO()!
 
@@ -382,9 +440,12 @@ export function expandRecurringEvents(
         localId: isFirstOccurrence ? event.localId : makeVirtualLocalId(event.localId, originalStartUtcIso),
         startAtUtc: occStartUtcIso,
         endAtUtc: occEndUtcIso,
-        originalStartTimeUtc: isFirstOccurrence ? event.originalStartTimeUtc : originalStartUtcIso,
+        // For shifted first occurrences, use the unshifted time as originalStartTimeUtc
+        // so that THIS-scope overrides and FUTURE splits use the correct RRULE boundary.
+        originalStartTimeUtc: isFirstOccurrence
+          ? (wasShifted ? originalStartUtcIso : event.originalStartTimeUtc)
+          : originalStartUtcIso,
       })
-      emittedCount++
     }
   }
 

@@ -549,7 +549,7 @@ export function RadialMenu({ anchor, dateStr, memberNames, onComplete, onDismiss
                   <button type="button" className="qmenu-back" onClick={() => setPhase('TITLE')}>&lsaquo;</button>
                   <span>반복 설정</span>
                 </div>
-                <RecurrencePicker value={recurrence} onChange={setRecurrence} />
+                <RecurrencePicker value={recurrence} onChange={setRecurrence} eventType={selectedEventType} />
                 <div className="qmenu-actions">
                   <button type="button" className="qmenu-action-btn primary" onClick={() => setPhase('DATE_RANGE')}>다음</button>
                 </div>

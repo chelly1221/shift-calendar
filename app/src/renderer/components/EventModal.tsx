@@ -275,6 +275,8 @@ export function EventModal({ open, value, memberNames, onClose, onSave, onDelete
               && normalizedEventType !== normalizedOriginalType
               && recurrenceScope !== 'THIS'
 
+
+
             const resolvedVacationType = isCustomVacationType
               ? (customVacationTypeText.trim() || null)
               : vacationType
