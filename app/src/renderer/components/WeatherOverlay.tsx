@@ -1,4 +1,4 @@
-import { type CSSProperties, useEffect, useMemo, useRef, useState } from 'react'
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import Particles, { initParticlesEngine } from '@tsparticles/react'
 import { loadSlim } from '@tsparticles/slim'
 import { loadSnowPreset } from '@tsparticles/preset-snow'
@@ -26,49 +26,155 @@ function ensureParticlesEngine(): Promise<void> {
   return engineInitPromise
 }
 
-interface RainDrop {
-  id: string
-  bottomPercent: number
-  offsetPercent: number
-  delaySeconds: number
-  durationSeconds: number
+/* ── Canvas Rain ── */
+
+interface CanvasRainDrop {
+  x: number
+  y: number
+  vy: number
+  length: number
+  width: number
+  opacity: number
+  z: number // 0‑1 depth for parallax
 }
 
-interface RainRows {
-  front: RainDrop[]
-  back: RainDrop[]
+interface Splash {
+  x: number
+  y: number
+  radius: number
+  maxRadius: number
+  opacity: number
 }
 
-function randomBetween(min: number, max: number): number {
-  return Math.floor(Math.random() * (max - min + 1) + min)
+function rand(min: number, max: number): number {
+  return Math.random() * (max - min) + min
 }
 
-function createRainRows(): RainRows {
-  let increment = 0
-  let index = 0
-  const front: RainDrop[] = []
-  const back: RainDrop[] = []
+function createDrop(canvasW: number, canvasH: number): CanvasRainDrop {
+  const z = Math.random()
+  return {
+    x: Math.random() * canvasW,
+    y: -rand(0, canvasH),
+    vy: rand(6, 10) * (0.5 + z * 0.5),
+    length: rand(20, 35) * (0.5 + z * 0.5),
+    width: rand(2.5, 4.5) * (0.4 + z * 0.6),
+    opacity: rand(0.35, 0.7) * (0.4 + z * 0.6),
+    z,
+  }
+}
 
-  while (increment < 100) {
-    const randoHundo = randomBetween(1, 98)
-    const randoFiver = randomBetween(2, 5)
-    increment += randoFiver
+const DROP_COUNT = 90
+const GRAVITY = 0.12
+const SPLASH_FADE = 0.03
+const SPLASH_GROW = 1.2
 
-    const drop: RainDrop = {
-      id: `${index}-${increment}-${randoHundo}`,
-      offsetPercent: increment,
-      bottomPercent: randoFiver + randoFiver - 1 + 100,
-      delaySeconds: Number(`0.${randoHundo}`),
-      durationSeconds: Number(`0.5${randoHundo}`),
+function RainCanvas() {
+  const canvasRef = useRef<HTMLCanvasElement>(null)
+  const dropsRef = useRef<CanvasRainDrop[]>([])
+  const splashesRef = useRef<Splash[]>([])
+  const rafRef = useRef<number>(0)
+
+  const draw = useCallback(() => {
+    const canvas = canvasRef.current
+    if (!canvas) return
+
+    const ctx = canvas.getContext('2d')
+    if (!ctx) return
+
+    const dpr = window.devicePixelRatio || 1
+    const w = canvas.clientWidth
+    const h = canvas.clientHeight
+
+    if (canvas.width !== w * dpr || canvas.height !== h * dpr) {
+      canvas.width = w * dpr
+      canvas.height = h * dpr
+      ctx.scale(dpr, dpr)
+
+      // re-init drops on resize
+      dropsRef.current = Array.from({ length: DROP_COUNT }, () => createDrop(w, h))
     }
 
-    front.push(drop)
-    back.push({ ...drop, id: `back-${drop.id}` })
-    index += 1
-  }
+    // motion blur: fade previous frame instead of clearing
+    ctx.save()
+    ctx.globalCompositeOperation = 'destination-in'
+    ctx.fillStyle = 'rgba(0, 0, 0, 0.82)'
+    ctx.fillRect(0, 0, w, h)
+    ctx.restore()
 
-  return { front, back }
+    const drops = dropsRef.current
+    const splashes = splashesRef.current
+
+    // update & draw drops
+    for (let i = 0; i < drops.length; i++) {
+      const d = drops[i]
+      d.vy += GRAVITY
+      d.y += d.vy
+
+      // draw stem with round caps
+      ctx.beginPath()
+      ctx.moveTo(d.x, d.y)
+      ctx.lineTo(d.x, d.y - d.length)
+      ctx.strokeStyle = `rgba(173, 216, 240, ${d.opacity})`
+      ctx.lineWidth = d.width
+      ctx.lineCap = 'round'
+      ctx.stroke()
+
+      // hit bottom → splash & reset
+      if (d.y > h) {
+        splashes.push({
+          x: d.x,
+          y: h,
+          radius: 1,
+          maxRadius: rand(8, 16) * (0.5 + d.z * 0.5),
+          opacity: d.opacity * 1.2,
+        })
+        Object.assign(d, createDrop(w, h))
+        d.y = -rand(0, 80)
+      }
+    }
+
+    // update & draw splashes
+    for (let i = splashes.length - 1; i >= 0; i--) {
+      const s = splashes[i]
+      s.radius *= SPLASH_GROW
+      s.opacity -= SPLASH_FADE
+
+      if (s.opacity <= 0 || s.radius > s.maxRadius) {
+        splashes.splice(i, 1)
+        continue
+      }
+
+      ctx.beginPath()
+      ctx.arc(s.x, s.y, s.radius, 0, Math.PI * 2)
+      ctx.strokeStyle = `rgba(173, 216, 240, ${s.opacity})`
+      ctx.lineWidth = 1.5
+      ctx.stroke()
+    }
+
+    rafRef.current = requestAnimationFrame(draw)
+  }, [])
+
+  useEffect(() => {
+    const canvas = canvasRef.current
+    if (!canvas) return
+
+    const w = canvas.clientWidth
+    const h = canvas.clientHeight
+    dropsRef.current = Array.from({ length: DROP_COUNT }, () => createDrop(w, h))
+
+    rafRef.current = requestAnimationFrame(draw)
+    return () => cancelAnimationFrame(rafRef.current)
+  }, [draw])
+
+  return (
+    <canvas
+      ref={canvasRef}
+      style={{ position: 'absolute', inset: 0, width: '100%', height: '100%' }}
+    />
+  )
 }
+
+/* ── Snow Options ── */
 
 const SNOW_OPTIONS: ISourceOptions = {
   preset: 'snow',
@@ -118,9 +224,10 @@ const SNOW_OPTIONS: ISourceOptions = {
   },
 }
 
+/* ── Main Component ── */
+
 export function WeatherOverlay({ mode }: WeatherOverlayProps) {
   const [isReady, setIsReady] = useState(false)
-  const [rainRows, setRainRows] = useState<RainRows>(() => createRainRows())
 
   useEffect(() => {
     let disposed = false
@@ -140,18 +247,6 @@ export function WeatherOverlay({ mode }: WeatherOverlayProps) {
     }
   }, [])
 
-  const isInitialMount = useRef(true)
-  useEffect(() => {
-    if (mode !== 'rain') {
-      return
-    }
-    if (isInitialMount.current) {
-      isInitialMount.current = false
-      return
-    }
-    setRainRows(createRainRows())
-  }, [mode])
-
   const options = useMemo(() => {
     if (mode === 'snow') {
       return SNOW_OPTIONS
@@ -166,48 +261,7 @@ export function WeatherOverlay({ mode }: WeatherOverlayProps) {
   if (mode === 'rain') {
     return (
       <div className="weather-overlay weather-overlay-rain" aria-hidden="true">
-        <div className="weather-rain weather-rain-front-row">
-          {rainRows.front.map((drop) => {
-            const dropStyle: CSSProperties = {
-              left: `${drop.offsetPercent}%`,
-              bottom: `${drop.bottomPercent}%`,
-              animationDelay: `${drop.delaySeconds}s`,
-              animationDuration: `${drop.durationSeconds}s`,
-            }
-            const childStyle: CSSProperties = {
-              animationDelay: `${drop.delaySeconds}s`,
-              animationDuration: `${drop.durationSeconds}s`,
-            }
-
-            return (
-              <div key={drop.id} className="weather-rain-drop" style={dropStyle}>
-                <div className="weather-rain-stem" style={childStyle} />
-                <div className="weather-rain-splat" style={childStyle} />
-              </div>
-            )
-          })}
-        </div>
-        <div className="weather-rain weather-rain-back-row">
-          {rainRows.back.map((drop) => {
-            const dropStyle: CSSProperties = {
-              right: `${drop.offsetPercent}%`,
-              bottom: `${drop.bottomPercent}%`,
-              animationDelay: `${drop.delaySeconds}s`,
-              animationDuration: `${drop.durationSeconds}s`,
-            }
-            const childStyle: CSSProperties = {
-              animationDelay: `${drop.delaySeconds}s`,
-              animationDuration: `${drop.durationSeconds}s`,
-            }
-
-            return (
-              <div key={drop.id} className="weather-rain-drop" style={dropStyle}>
-                <div className="weather-rain-stem" style={childStyle} />
-                <div className="weather-rain-splat" style={childStyle} />
-              </div>
-            )
-          })}
-        </div>
+        <RainCanvas />
       </div>
     )
   }
