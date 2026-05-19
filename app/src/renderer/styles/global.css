@@ -2969,10 +2969,8 @@ textarea {
 }
 
 .date-picker-popup {
-  position: absolute;
-  top: calc(100% + 4px);
-  left: 0;
-  z-index: 60;
+  position: fixed;
+  z-index: 200;
   width: 240px;
   max-width: 86vw;
   padding: 10px;
@@ -2981,11 +2979,6 @@ textarea {
   background: var(--surface-raised);
   box-shadow: var(--shadow-lg);
   animation: dp-pop-in 120ms cubic-bezier(0.2, 0.8, 0.3, 1) both;
-}
-
-.date-picker-popup.is-up {
-  top: auto;
-  bottom: calc(100% + 4px);
 }
 
 @keyframes dp-pop-in {
