@@ -1,6 +1,7 @@
 import { DateTime } from 'luxon'
 import { useEffect, useRef, useState } from 'react'
 import type { RecurrenceEditScope, SendUpdates, UpsertCalendarEventInput } from '../../shared/calendar'
+import { DatePickerInput } from './DatePickerInput'
 import { RecurrencePicker } from './RecurrencePicker'
 import { parseRRule, recurrenceToRRule, type RecurrenceValue } from './recurrenceRule'
 import { parseEducationTargets } from '../utils/parseEducationTargets'
@@ -77,36 +78,6 @@ function formatTimeText(raw: string): string {
   if (hh > 23) return `23:${digits.slice(2) || '00'}`
   if (mm > 59) return `${digits.slice(0, 2)}:59`
   return `${digits.slice(0, 2)}:${digits.slice(2)}`
-}
-
-function formatDateText(raw: string): string {
-  const digits = raw.replace(/\D/g, '').slice(0, 8)
-  if (digits.length <= 4) return digits
-  if (digits.length <= 6) return `${digits.slice(0, 4)}-${digits.slice(4)}`
-  return `${digits.slice(0, 4)}-${digits.slice(4, 6)}-${digits.slice(6)}`
-}
-
-function normalizeDateText(raw: string): string {
-  const digits = raw.replace(/\D/g, '')
-  const now = DateTime.local()
-  let year: number, month: number, day: number
-  if (digits.length === 4) {
-    year = now.year
-    month = parseInt(digits.slice(0, 2), 10)
-    day = parseInt(digits.slice(2, 4), 10)
-  } else if (digits.length === 6) {
-    year = 2000 + parseInt(digits.slice(0, 2), 10)
-    month = parseInt(digits.slice(2, 4), 10)
-    day = parseInt(digits.slice(4, 6), 10)
-  } else if (digits.length === 8) {
-    year = parseInt(digits.slice(0, 4), 10)
-    month = parseInt(digits.slice(4, 6), 10)
-    day = parseInt(digits.slice(6, 8), 10)
-  } else {
-    return raw
-  }
-  const dt = DateTime.local(year, month, day)
-  return dt.isValid ? dt.toFormat('yyyy-MM-dd') : raw
 }
 
 function defaultEventDraft(): EditableEvent {
@@ -509,18 +480,14 @@ export function EventModal({ open, value, memberNames, onClose, onSave, onDelete
               <label className="field-label" htmlFor="startAt">
                 시작일
               </label>
-              <input
+              <DatePickerInput
                 id="startAt"
-                type="text"
-                inputMode="numeric"
                 value={startDate}
-                onChange={(event) => setStartDate(formatDateText(event.target.value))}
-                onBlur={() => {
-                  const normalized = normalizeDateText(startDate)
+                onChange={setStartDate}
+                onCommit={(normalized) => {
                   setStartDate(normalized)
                   if (endDate && normalized > endDate) setEndDate(normalized)
                 }}
-                placeholder="YYYY-MM-DD"
                 required
               />
             </div>
@@ -528,14 +495,11 @@ export function EventModal({ open, value, memberNames, onClose, onSave, onDelete
               <label className="field-label" htmlFor="endAt">
                 종료일
               </label>
-              <input
+              <DatePickerInput
                 id="endAt"
-                type="text"
-                inputMode="numeric"
                 value={endDate}
-                onChange={(event) => setEndDate(formatDateText(event.target.value))}
-                onBlur={() => setEndDate(normalizeDateText(endDate))}
-                placeholder="YYYY-MM-DD"
+                onChange={setEndDate}
+                onCommit={setEndDate}
                 required
               />
             </div>

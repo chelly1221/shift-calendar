@@ -1,5 +1,6 @@
 import { DateTime } from 'luxon'
 import { useCallback, useEffect, useLayoutEffect, useRef, useState } from 'react'
+import { DatePickerInput } from './DatePickerInput'
 import type { EditableEvent } from './EventModal'
 import { RecurrencePicker } from './RecurrencePicker'
 import { parseRRule, recurrenceToRRule, type RecurrenceValue } from './recurrenceRule'
@@ -26,36 +27,6 @@ function formatTimeText(raw: string): string {
   const hh = Math.min(parseInt(digits.slice(0, 2), 10), 23)
   const mm = Math.min(parseInt(digits.slice(2), 10) || 0, 59)
   return `${String(hh).padStart(2, '0')}:${String(mm).padStart(2, '0')}`
-}
-
-function formatDateText(raw: string): string {
-  const digits = raw.replace(/\D/g, '').slice(0, 8)
-  if (digits.length <= 4) return digits
-  if (digits.length <= 6) return `${digits.slice(0, 4)}-${digits.slice(4)}`
-  return `${digits.slice(0, 4)}-${digits.slice(4, 6)}-${digits.slice(6)}`
-}
-
-function normalizeDateText(raw: string): string {
-  const digits = raw.replace(/\D/g, '')
-  const now = DateTime.local()
-  let year: number, month: number, day: number
-  if (digits.length === 4) {
-    year = now.year
-    month = parseInt(digits.slice(0, 2), 10)
-    day = parseInt(digits.slice(2, 4), 10)
-  } else if (digits.length === 6) {
-    year = 2000 + parseInt(digits.slice(0, 2), 10)
-    month = parseInt(digits.slice(2, 4), 10)
-    day = parseInt(digits.slice(4, 6), 10)
-  } else if (digits.length === 8) {
-    year = parseInt(digits.slice(0, 4), 10)
-    month = parseInt(digits.slice(4, 6), 10)
-    day = parseInt(digits.slice(6, 8), 10)
-  } else {
-    return raw
-  }
-  const dt = DateTime.local(year, month, day)
-  return dt.isValid ? dt.toFormat('yyyy-MM-dd') : raw
 }
 
 type Phase =
@@ -566,31 +537,24 @@ export function RadialMenu({ anchor, dateStr, memberNames, onComplete, onDismiss
                 <div className="qmenu-date-row">
                   <div className="qmenu-date-field">
                     <label className="qmenu-field-label">시작</label>
-                    <input
-                      type="text"
-                      inputMode="numeric"
+                    <DatePickerInput
                       className="qmenu-input"
                       value={draftStartDate}
-                      onChange={(e) => setDraftStartDate(formatDateText(e.target.value))}
-                      onBlur={() => {
-                        const normalized = normalizeDateText(draftStartDate)
+                      onChange={setDraftStartDate}
+                      onCommit={(normalized) => {
                         setDraftStartDate(normalized)
                         if (draftEndDate && normalized.length === 10 && draftEndDate.length === 10 && normalized > draftEndDate) setDraftEndDate(normalized)
                       }}
-                      placeholder="YYYY-MM-DD"
                     />
                   </div>
                   <span className="qmenu-date-sep">&ndash;</span>
                   <div className="qmenu-date-field">
                     <label className="qmenu-field-label">종료</label>
-                    <input
-                      type="text"
-                      inputMode="numeric"
+                    <DatePickerInput
                       className="qmenu-input"
                       value={draftEndDate}
-                      onChange={(e) => setDraftEndDate(formatDateText(e.target.value))}
-                      onBlur={() => setDraftEndDate(normalizeDateText(draftEndDate))}
-                      placeholder="YYYY-MM-DD"
+                      onChange={setDraftEndDate}
+                      onCommit={setDraftEndDate}
                     />
                   </div>
                 </div>
