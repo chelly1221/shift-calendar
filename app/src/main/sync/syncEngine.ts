@@ -1,5 +1,5 @@
 import { DateTime } from 'luxon'
-import { SyncState } from '@prisma/client'
+import { OutboxStatus, SyncState } from '@prisma/client'
 import type { ForcePushResult, SyncResult } from '../../shared/calendar'
 import { ensureSetting, markSyncWindowUnbounded, setSyncToken } from '../db/settingRepository'
 import { upsertRemoteEvents } from '../db/eventRepository'
@@ -267,7 +267,77 @@ export async function reEnqueueShiftAbbreviationSync(): Promise<number> {
   }
 }
 
-export async function runSyncNow(): Promise<SyncResult> {
+async function reconcileLocalToRemote(): Promise<number> {
+  const events = await prisma.event.findMany({
+    where: {
+      isDeleted: false,
+      eventType: { not: '공휴일' },
+      OR: [
+        { googleEventId: null },
+        { syncState: { in: [SyncState.PENDING, SyncState.ERROR] } },
+      ],
+      outboxJobs: {
+        none: {
+          status: { in: [OutboxStatus.QUEUED, OutboxStatus.RUNNING, OutboxStatus.FAILED] },
+        },
+      },
+    },
+  })
+
+  let enqueued = 0
+  for (const event of events) {
+    const hasRecurrenceRule = Boolean(
+      event.recurrenceJson
+      && typeof event.recurrenceJson === 'object'
+      && !Array.isArray(event.recurrenceJson)
+      && 'rrule' in event.recurrenceJson,
+    )
+    const hasRecurringEventId = Boolean(event.recurringEventId)
+
+    if (hasRecurringEventId && !event.googleEventId) {
+      if (!event.originalStartTimeUtc || !event.recurringEventId) continue
+      await enqueueOutboxOperation({
+        eventLocalId: event.localId,
+        operation: 'RECUR_THIS',
+        payload: {
+          googleEventId: null,
+          recurringEventId: event.recurringEventId,
+          originalStartTimeUtc: event.originalStartTimeUtc.toISOString(),
+          sendUpdates: 'none',
+        },
+      })
+      enqueued += 1
+    } else if (hasRecurrenceRule && !hasRecurringEventId && event.googleEventId) {
+      await enqueueOutboxOperation({
+        eventLocalId: event.localId,
+        operation: 'RECUR_ALL',
+        payload: { googleEventId: event.googleEventId, sendUpdates: 'none' },
+      })
+      enqueued += 1
+    } else if (event.googleEventId) {
+      await enqueueOutboxOperation({
+        eventLocalId: event.localId,
+        operation: 'PATCH',
+        payload: { googleEventId: event.googleEventId, sendUpdates: 'none' },
+      })
+      enqueued += 1
+    } else {
+      await enqueueOutboxOperation({
+        eventLocalId: event.localId,
+        operation: 'CREATE',
+        payload: { sendUpdates: 'none' },
+      })
+      enqueued += 1
+    }
+  }
+
+  if (enqueued > 0) {
+    console.log(`[SyncEngine] reconcileLocalToRemote enqueued ${enqueued} jobs`)
+  }
+  return enqueued
+}
+
+export async function runSyncNow(options?: { reconcile?: boolean }): Promise<SyncResult> {
   if (isSyncRunning) {
     return { mode: 'SKIPPED' as const, pulledEvents: 0, pushedOutboxJobs: 0, outboxRemaining: await getOutboxCount() }
   }
@@ -296,6 +366,10 @@ export async function runSyncNow(): Promise<SyncResult> {
     if (shouldRunFullBackfill) {
       await markSyncWindowUnbounded()
       await setSyncToken(null)
+    }
+
+    if (options?.reconcile) {
+      await reconcileLocalToRemote()
     }
 
     const pushedOutboxJobs = await processOutboxNow()

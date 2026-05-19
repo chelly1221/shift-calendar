@@ -213,6 +213,46 @@ describe('eventType 동기화 - toRemoteSnapshot 라운드트립', () => {
   })
 })
 
+describe('localId 양방향 매칭 (중복 등록 방지)', () => {
+  it('toGoogleEventRequest는 localId를 shiftCalendarLocalId로 포함시킨다', () => {
+    const event = makeCalendarEvent({ localId: 'local-abc-123' })
+    const request = toGoogleEventRequest(event)
+
+    expect(request.extendedProperties?.private?.shiftCalendarLocalId).toBe('local-abc-123')
+  })
+
+  it('toRemoteSnapshot은 shiftCalendarLocalId를 localIdHint로 추출한다', () => {
+    const googleEvent = makeGoogleEvent({
+      extendedProperties: {
+        private: { shiftCalendarLocalId: 'local-abc-123' },
+      },
+    })
+    const snapshot = toRemoteSnapshot(googleEvent)
+
+    expect(snapshot?.localIdHint).toBe('local-abc-123')
+  })
+
+  it('shiftCalendarLocalId가 없으면 localIdHint는 null', () => {
+    const googleEvent = makeGoogleEvent({ extendedProperties: undefined })
+    const snapshot = toRemoteSnapshot(googleEvent)
+
+    expect(snapshot?.localIdHint).toBeNull()
+  })
+
+  it('cancelled 이벤트도 localIdHint를 보존한다', () => {
+    const googleEvent = makeGoogleEvent({
+      status: 'cancelled',
+      extendedProperties: {
+        private: { shiftCalendarLocalId: 'local-xyz' },
+      },
+    })
+    const snapshot = toRemoteSnapshot(googleEvent)
+
+    expect(snapshot?.isDeleted).toBe(true)
+    expect(snapshot?.localIdHint).toBe('local-xyz')
+  })
+})
+
 describe('제목 기반 eventType 추론 - toRemoteSnapshot', () => {
   it('extendedProperties 없는 "박혜지 대휴"가 휴가로 추론된다', () => {
     const googleEvent = makeGoogleEvent({

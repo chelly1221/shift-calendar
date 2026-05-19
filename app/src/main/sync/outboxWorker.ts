@@ -15,7 +15,7 @@ interface OutboxPayload {
 }
 
 const RETRY_DELAYS_MS = [60_000, 5 * 60_000, 15 * 60_000, 60 * 60_000]
-const MAX_ATTEMPTS = 8
+const MAX_RETRY_LIFETIME_MS = 30 * 24 * 60 * 60 * 1000
 let timer: NodeJS.Timeout | null = null
 let isProcessing = false
 let pendingFlush = false
@@ -380,17 +380,19 @@ async function doProcessOutbox(): Promise<number> {
     } catch (error) {
       const refreshed = await prisma.outboxJob.findUnique({
         where: { id: next.id },
-        select: { attempts: true, eventLocalId: true },
+        select: { attempts: true, eventLocalId: true, createdAt: true },
       })
       const attempts = (refreshed?.attempts ?? next.attempts) + 1
       const errorMsg =
         error instanceof Error ? error.message : 'Outbox processing failed with unknown error.'
       const errorKind = classifyGoogleError(error)
+      const jobCreatedAt = refreshed?.createdAt ?? next.createdAt
+      const ageMs = Date.now() - jobCreatedAt.getTime()
 
-      if (errorKind === 'PERMANENT' || attempts >= MAX_ATTEMPTS) {
+      if (errorKind === 'PERMANENT' || ageMs > MAX_RETRY_LIFETIME_MS) {
         const reason = errorKind === 'PERMANENT'
           ? `Permanently failed (${errorKind}): ${errorMsg}`
-          : `Permanently failed after ${MAX_ATTEMPTS} attempts: ${errorMsg}`
+          : `Permanently failed: retry window of ${Math.floor(MAX_RETRY_LIFETIME_MS / (24 * 60 * 60 * 1000))} days exceeded: ${errorMsg}`
         await cancelJob(next.id, reason)
         continue
       }

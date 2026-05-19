@@ -31,6 +31,7 @@ interface GoogleApiErrorShape {
 
 const EVENT_TYPE_PRIVATE_KEY = 'shiftCalendarEventType'
 const SKIP_WEEKENDS_HOLIDAYS_KEY = 'skipWeekendsAndHolidays'
+const LOCAL_ID_PRIVATE_KEY = 'shiftCalendarLocalId'
 
 export interface SyncPage {
   events: RemoteEventSnapshot[]
@@ -145,6 +146,12 @@ function extractSkipWeekendsAndHolidays(event: calendar_v3.Schema$Event): boolea
   return event.extendedProperties?.private?.[SKIP_WEEKENDS_HOLIDAYS_KEY] === 'true'
 }
 
+function extractLocalIdHint(event: calendar_v3.Schema$Event): string | null {
+  const value = event.extendedProperties?.private?.[LOCAL_ID_PRIVATE_KEY]
+  const trimmed = typeof value === 'string' ? value.trim() : ''
+  return trimmed || null
+}
+
 export function toRemoteSnapshot(event: calendar_v3.Schema$Event): RemoteEventSnapshot | null {
   const googleEventId = event.id
   if (!googleEventId) {
@@ -175,6 +182,7 @@ export function toRemoteSnapshot(event: calendar_v3.Schema$Event): RemoteEventSn
       hangoutLink: null,
       googleUpdatedAtUtc: updatedAtUtc,
       isDeleted: true,
+      localIdHint: extractLocalIdHint(event),
     }
   }
 
@@ -211,6 +219,7 @@ export function toRemoteSnapshot(event: calendar_v3.Schema$Event): RemoteEventSn
     hangoutLink: event.hangoutLink ?? null,
     googleUpdatedAtUtc: updatedAtUtc,
     isDeleted: false,
+    localIdHint: extractLocalIdHint(event),
   }
 }
 
@@ -253,6 +262,7 @@ export function toGoogleEventRequest(
       private: {
         [EVENT_TYPE_PRIVATE_KEY]: event.eventType,
         ...(event.skipWeekendsAndHolidays ? { [SKIP_WEEKENDS_HOLIDAYS_KEY]: 'true' } : {}),
+        ...(event.localId ? { [LOCAL_ID_PRIVATE_KEY]: event.localId } : {}),
       },
     },
   }
@@ -336,6 +346,33 @@ export interface GoogleCalendarService {
     },
     shiftContext?: ShiftContext,
   ) => Promise<PushResult>
+}
+
+async function findRemoteEventByLocalId(
+  calendar: calendar_v3.Calendar,
+  calendarId: string,
+  localId: string,
+): Promise<string | null> {
+  try {
+    const response = await calendar.events.list({
+      calendarId,
+      privateExtendedProperty: [`${LOCAL_ID_PRIVATE_KEY}=${localId}`],
+      singleEvents: false,
+      showDeleted: false,
+      maxResults: 5,
+      fields: 'items(id,recurringEventId,status)',
+    })
+    for (const item of response.data.items ?? []) {
+      if (!item.id || item.status === 'cancelled') continue
+      // Skip override instances; only the master/standalone is a CREATE dedup target.
+      if (item.recurringEventId) continue
+      return item.id
+    }
+    return null
+  } catch (error) {
+    console.warn('[CalendarService] findRemoteEventByLocalId failed:', error)
+    return null
+  }
 }
 
 async function resolveOccurrenceEventId(
@@ -659,6 +696,50 @@ export function createGoogleCalendarService(): GoogleCalendarService {
       if (operation === 'CREATE' || !googleEventId) {
         if (operation === 'RECUR_THIS') {
           throw new Error('Unable to resolve recurring instance id for THIS edit.')
+        }
+        if (event?.localId) {
+          const adoptedId = await findRemoteEventByLocalId(calendar, calendarId, event.localId)
+          if (adoptedId) {
+            console.log(`[CalendarService] CREATE deduplicated: adopting existing Google event ${adoptedId} for localId=${event.localId}`)
+            let remoteEvent: calendar_v3.Schema$Event | null = null
+            try {
+              const remoteResponse = await calendar.events.get({
+                calendarId,
+                eventId: adoptedId,
+                alwaysIncludeEmail: true,
+              })
+              remoteEvent = remoteResponse.data
+            } catch {
+              // If remote prefetch fails, fall through with no snapshot.
+            }
+
+            if (remoteEvent?.updated) {
+              const remoteDt = DateTime.fromISO(remoteEvent.updated, { setZone: true })
+              const localDt = DateTime.fromISO(event.localEditedAtUtc, { zone: 'utc' })
+              if (
+                remoteDt.isValid
+                && localDt.isValid
+                && remoteDt.toUTC().toMillis() > localDt.toMillis()
+              ) {
+                console.log(`[CalendarService] CREATE adopt skipped PATCH: remote is newer (${remoteEvent.updated} > ${event.localEditedAtUtc}) for ${adoptedId}`)
+                return {
+                  googleEventId: adoptedId,
+                  googleUpdatedAtUtc: remoteDt.toUTC().toISO() ?? null,
+                }
+              }
+            }
+
+            const adoptPatchBody = remoteEvent
+              ? alignRequestTimeShapeWithRemote(event, requestBody, remoteEvent)
+              : requestBody
+            const patchResponse = await calendar.events.patch({
+              calendarId,
+              eventId: adoptedId,
+              sendUpdates,
+              requestBody: adoptPatchBody,
+            })
+            return toPushResult(patchResponse.data)
+          }
         }
         const response = await calendar.events.insert({
           calendarId,

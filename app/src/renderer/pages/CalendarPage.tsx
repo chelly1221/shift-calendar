@@ -626,6 +626,7 @@ export function CalendarPage() {
     saveEvent,
     deleteEvent,
     syncNow,
+    manualSyncNow,
     forcePushAll,
     setSyncCalendar,
     setShiftType,
@@ -3160,7 +3161,7 @@ export function CalendarPage() {
         onConnectGoogle={connectGoogle}
         onDisconnectGoogle={disconnectGoogle}
         onSetSyncCalendar={setSyncCalendar}
-        onSyncNow={syncNow}
+        onSyncNow={manualSyncNow}
         onForcePushAll={forcePushAll}
       />
       </div>

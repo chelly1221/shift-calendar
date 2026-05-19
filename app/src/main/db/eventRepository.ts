@@ -21,6 +21,7 @@ export interface RemoteEventSnapshot {
   hangoutLink: string | null
   googleUpdatedAtUtc: string
   isDeleted: boolean
+  localIdHint: string | null
 }
 
 function normalizeDate(dateIso: string): Date {
@@ -461,6 +462,8 @@ export async function upsertRemoteEvent(snapshot: RemoteEventSnapshot): Promise<
     return
   }
 
+  await tryRelinkByLocalIdHint(prisma, snapshot)
+
   const googleUpdatedAt = normalizeDate(snapshot.googleUpdatedAtUtc)
 
   const existing = await prisma.event.findUnique({
@@ -534,6 +537,37 @@ export async function upsertRemoteEvents(snapshots: RemoteEventSnapshot[]): Prom
 
 type TxClient = Parameters<Parameters<typeof prisma.$transaction>[0]>[0]
 
+type RelinkClient = Pick<TxClient, 'event'> | typeof prisma
+
+async function tryRelinkByLocalIdHint(
+  client: RelinkClient,
+  snapshot: RemoteEventSnapshot,
+): Promise<void> {
+  if (snapshot.isDeleted) return
+  if (snapshot.recurringEventId) return
+  const hint = snapshot.localIdHint
+  if (!hint) return
+
+  const alreadyLinked = await client.event.findUnique({
+    where: { googleEventId: snapshot.googleEventId },
+    select: { localId: true },
+  })
+  if (alreadyLinked) return
+
+  const candidate = await client.event.findUnique({
+    where: { localId: hint },
+    select: { googleEventId: true, isDeleted: true },
+  })
+  if (!candidate) return
+  if (candidate.googleEventId) return
+  if (candidate.isDeleted) return
+
+  await client.event.update({
+    where: { localId: hint },
+    data: { googleEventId: snapshot.googleEventId },
+  })
+}
+
 async function upsertRemoteEventInTx(tx: TxClient, snapshot: RemoteEventSnapshot): Promise<void> {
   if (snapshot.isDeleted) {
     await tx.event.updateMany({
@@ -546,6 +580,8 @@ async function upsertRemoteEventInTx(tx: TxClient, snapshot: RemoteEventSnapshot
     })
     return
   }
+
+  await tryRelinkByLocalIdHint(tx, snapshot)
 
   const googleUpdatedAt = normalizeDate(snapshot.googleUpdatedAtUtc)
 

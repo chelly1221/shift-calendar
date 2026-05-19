@@ -213,6 +213,7 @@ export interface CalendarApi {
   listOutboxJobs: (input?: ListOutboxJobsInput) => Promise<OutboxJobItem[]>
   cancelOutboxJob: (input: CancelOutboxJobInput) => Promise<boolean>
   syncNow: () => Promise<SyncResult>
+  manualSyncNow: () => Promise<SyncResult>
   forcePushAll: () => Promise<ForcePushResult>
   connectGoogle: () => Promise<GoogleConnectionStatus>
   disconnectGoogle: () => Promise<GoogleConnectionStatus>

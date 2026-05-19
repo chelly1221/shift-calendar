@@ -52,6 +52,7 @@ interface CalendarState {
   saveEvent: (payload: UpsertCalendarEventInput) => Promise<CalendarEvent>
   deleteEvent: (localId: string, sendUpdates?: SendUpdates, recurrenceScope?: RecurrenceEditScope) => Promise<void>
   syncNow: () => Promise<void>
+  manualSyncNow: () => Promise<void>
   forcePushAll: () => Promise<void>
   connectGoogle: () => Promise<void>
   disconnectGoogle: () => Promise<void>
@@ -132,6 +133,14 @@ const fallbackApi: CalendarApi = {
     return false
   },
   async syncNow() {
+    return {
+      mode: 'SKIPPED',
+      pulledEvents: 0,
+      pushedOutboxJobs: 0,
+      outboxRemaining: 0,
+    }
+  },
+  async manualSyncNow() {
     return {
       mode: 'SKIPPED',
       pulledEvents: 0,
@@ -440,6 +449,27 @@ export const useCalendarStore = create<CalendarState>((set, get) => ({
     } catch (err) {
       const message = err instanceof Error ? err.message : 'Sync failed.'
       console.error('[CalendarStore] syncNow failed:', err)
+      set({ error: message })
+    } finally {
+      set({ syncing: false })
+    }
+  },
+
+  manualSyncNow: async () => {
+    if (get().syncing) return
+    if (get().googleConnected && !get().selectedCalendarId) {
+      return
+    }
+
+    const api = getCalendarApi()
+    set({ syncing: true, error: null })
+    try {
+      const result = await api.manualSyncNow()
+      set({ lastSyncResult: result, outboxCount: result.outboxRemaining })
+      await get().hydrate()
+    } catch (err) {
+      const message = err instanceof Error ? err.message : 'Sync failed.'
+      console.error('[CalendarStore] manualSyncNow failed:', err)
       set({ error: message })
     } finally {
       set({ syncing: false })
