@@ -214,6 +214,8 @@ export interface CalendarApi {
   getOutboxCount: () => Promise<number>
   listOutboxJobs: (input?: ListOutboxJobsInput) => Promise<OutboxJobItem[]>
   cancelOutboxJob: (input: CancelOutboxJobInput) => Promise<boolean>
+  /** Reset FAILED outbox jobs to retry immediately (e.g. after network reconnects). */
+  requeueFailedJobs: () => Promise<number>
   syncNow: () => Promise<SyncResult>
   manualSyncNow: () => Promise<SyncResult>
   forcePushAll: () => Promise<ForcePushResult>

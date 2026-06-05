@@ -54,6 +54,7 @@ interface CalendarState {
   deleteEvent: (localId: string, sendUpdates?: SendUpdates, recurrenceScope?: RecurrenceEditScope) => Promise<void>
   syncNow: () => Promise<void>
   manualSyncNow: () => Promise<void>
+  resumeAfterReconnect: () => Promise<void>
   forcePushAll: () => Promise<void>
   connectGoogle: () => Promise<void>
   disconnectGoogle: () => Promise<void>
@@ -134,6 +135,9 @@ const fallbackApi: CalendarApi = {
   },
   async cancelOutboxJob() {
     return false
+  },
+  async requeueFailedJobs() {
+    return 0
   },
   async syncNow() {
     return {
@@ -482,6 +486,19 @@ export const useCalendarStore = create<CalendarState>((set, get) => ({
     } finally {
       set({ syncing: false })
     }
+  },
+
+  resumeAfterReconnect: async () => {
+    // Network just came back. Reset FAILED jobs' backoff so queued local changes push right away
+    // instead of waiting out a (possibly long) retry window, then run a normal sync to pull
+    // incoming changes.
+    const api = getCalendarApi()
+    try {
+      await api.requeueFailedJobs()
+    } catch (err) {
+      console.warn('[CalendarStore] requeueFailedJobs on reconnect failed:', err)
+    }
+    await get().syncNow()
   },
 
   forcePushAll: async () => {

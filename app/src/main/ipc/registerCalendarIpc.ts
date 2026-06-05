@@ -71,6 +71,7 @@ export function registerCalendarIpc(): void {
   ipcMain.removeHandler(IPC_CHANNELS.getOutboxCount)
   ipcMain.removeHandler(IPC_CHANNELS.listOutboxJobs)
   ipcMain.removeHandler(IPC_CHANNELS.cancelOutboxJob)
+  ipcMain.removeHandler(IPC_CHANNELS.requeueFailedJobs)
   ipcMain.removeHandler(IPC_CHANNELS.syncNow)
   ipcMain.removeHandler(IPC_CHANNELS.manualSyncNow)
   ipcMain.removeHandler(IPC_CHANNELS.forcePushAll)
@@ -618,6 +619,8 @@ export function registerCalendarIpc(): void {
   })
 
   ipcMain.handle(IPC_CHANNELS.getOutboxCount, () => getOutboxCount())
+
+  ipcMain.handle(IPC_CHANNELS.requeueFailedJobs, () => requeueFailedJobs())
 
   ipcMain.handle(IPC_CHANNELS.listOutboxJobs, async (_event, payload?: unknown) => {
     const input =

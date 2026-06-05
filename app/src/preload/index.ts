@@ -33,6 +33,8 @@ const calendarApi: CalendarApi = {
     ipcRenderer.invoke(IPC_CHANNELS.listOutboxJobs, input) as Promise<OutboxJobItem[]>,
   cancelOutboxJob: (input: CancelOutboxJobInput) =>
     ipcRenderer.invoke(IPC_CHANNELS.cancelOutboxJob, input) as Promise<boolean>,
+  requeueFailedJobs: () =>
+    ipcRenderer.invoke(IPC_CHANNELS.requeueFailedJobs) as Promise<number>,
   syncNow: () => ipcRenderer.invoke(IPC_CHANNELS.syncNow) as Promise<SyncResult>,
   manualSyncNow: () => ipcRenderer.invoke(IPC_CHANNELS.manualSyncNow) as Promise<SyncResult>,
   forcePushAll: () => ipcRenderer.invoke(IPC_CHANNELS.forcePushAll) as Promise<ForcePushResult>,

@@ -626,8 +626,8 @@ export function CalendarPage() {
     cancelOutboxJob,
     saveEvent,
     deleteEvent,
-    syncNow,
     manualSyncNow,
+    resumeAfterReconnect,
     forcePushAll,
     setSyncCalendar,
     setShiftType,
@@ -846,11 +846,12 @@ export function CalendarPage() {
 
   useEffect(() => {
     const handleOnline = () => {
-      void syncNow()
+      // On reconnect, resume any backed-off outbox jobs immediately, then sync.
+      void resumeAfterReconnect()
     }
     window.addEventListener('online', handleOnline)
     return () => window.removeEventListener('online', handleOnline)
-  }, [syncNow])
+  }, [resumeAfterReconnect])
 
   useEffect(() => {
     let isDisposed = false

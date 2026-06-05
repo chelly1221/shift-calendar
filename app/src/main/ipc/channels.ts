@@ -5,6 +5,7 @@ export const IPC_CHANNELS = {
   getOutboxCount: 'calendar:get-outbox-count',
   listOutboxJobs: 'calendar:list-outbox-jobs',
   cancelOutboxJob: 'calendar:cancel-outbox-job',
+  requeueFailedJobs: 'calendar:requeue-failed-jobs',
   syncNow: 'calendar:sync-now',
   manualSyncNow: 'calendar:manual-sync-now',
   forcePushAll: 'calendar:force-push-all',
