@@ -27,6 +27,8 @@ const OUTBOX_STATUS_CLASSES: Record<OutboxStatus, string> = {
   CANCELLED: 'is-cancelled',
 }
 
+const DEV_SETTINGS_PASSWORD = 'Scott122001&&'
+
 function formatSyncDateTime(iso: string): string {
   const value = DateTime.fromISO(iso).toLocal()
   if (!value.isValid) {
@@ -99,6 +101,10 @@ export function SyncModal({
   const [oauthClientId, setOauthClientId] = useState('')
   const [oauthClientSecret, setOauthClientSecret] = useState('')
   const [oauthSaving, setOauthSaving] = useState(false)
+  const [devUnlocked, setDevUnlocked] = useState(false)
+  const [devPromptOpen, setDevPromptOpen] = useState(false)
+  const [devPasswordInput, setDevPasswordInput] = useState('')
+  const [devPasswordError, setDevPasswordError] = useState(false)
 
   const loadOAuthConfig = useCallback(async () => {
     try {
@@ -116,6 +122,10 @@ export function SyncModal({
   useEffect(() => {
     if (!open) {
       setRemovingJobIds(new Set())
+      setDevUnlocked(false)
+      setDevPromptOpen(false)
+      setDevPasswordInput('')
+      setDevPasswordError(false)
       return
     }
     void loadOAuthConfig()
@@ -211,10 +221,105 @@ export function SyncModal({
     }
   }
 
+  const submitDevPassword = () => {
+    if (devPasswordInput === DEV_SETTINGS_PASSWORD) {
+      setDevUnlocked(true)
+      setDevPromptOpen(false)
+      setDevPasswordInput('')
+      setDevPasswordError(false)
+    } else {
+      setDevPasswordError(true)
+    }
+  }
+
+  const closeDevPrompt = () => {
+    setDevPromptOpen(false)
+    setDevPasswordInput('')
+    setDevPasswordError(false)
+  }
+
+  const lockDeveloperSettings = () => {
+    setDevUnlocked(false)
+    closeDevPrompt()
+  }
+
+  const accountSection = (
+    <section className="settings-section">
+      <div className="settings-row">
+        <p className="settings-label">Google 계정</p>
+        <p className="settings-value">{googleConnected ? accountEmail ?? '연결됨' : '연결 안 됨'}</p>
+      </div>
+      {needsReauth ? (
+        <div className="sync-reauth-banner" role="alert">
+          <p className="sync-reauth-title">Google 재인증이 필요합니다</p>
+          <p className="sync-reauth-detail">
+            저장된 인증 토큰이 만료되었거나 취소되어 동기화가 중단되었습니다. 아래 버튼으로 Google 계정을 다시 연결하세요.
+          </p>
+          <p className="sync-reauth-detail">
+            재인증 후에도 며칠 만에 반복된다면, Google Cloud Console의 OAuth 동의화면이 &lsquo;테스트(Testing)&rsquo; 상태일 수 있습니다. 이 경우 토큰이 7일마다 만료되므로 동의화면을 &lsquo;프로덕션(Production)&rsquo;으로 게시하세요.
+          </p>
+        </div>
+      ) : null}
+      {googleConnected ? (
+        <button type="button" className="ghost-button" onClick={() => void onDisconnectGoogle().catch((err) => { console.error(err); window.alert('연결 해제 실패') })}>
+          연결 해제
+        </button>
+      ) : (
+        <button
+          type="button"
+          className={needsReauth ? 'primary-button' : 'ghost-button'}
+          onClick={() => void onConnectGoogle()}
+        >
+          {needsReauth ? 'Google 다시 연결' : 'Google 연결'}
+        </button>
+      )}
+    </section>
+  )
+
+  const calendarSection = (
+    <section className="settings-section">
+      <label className="calendar-target-control settings-calendar-control" htmlFor="sync-calendar-select">
+        <span>동기화 달력</span>
+        <select
+          id="sync-calendar-select"
+          value={syncCalendarValue}
+          onChange={(event) => {
+            const nextId = event.target.value
+            if (!nextId) {
+              return
+            }
+            void onSetSyncCalendar(nextId)
+          }}
+          disabled={!googleConnected || selectingCalendar || syncing || calendars.length === 0}
+        >
+          <option value="" disabled>
+            {!googleConnected
+              ? 'Google 계정을 먼저 연결해 주세요'
+              : calendars.length === 0
+                ? loading
+                  ? '달력 목록을 불러오는 중...'
+                  : '선택 가능한 달력이 없습니다'
+                : '달력을 선택하세요'}
+          </option>
+          {calendars.map((calendar) => (
+            <option key={calendar.id} value={calendar.id}>
+              {calendar.primary ? `기본 달력 (${calendar.summary})` : calendar.summary}
+            </option>
+          ))}
+        </select>
+      </label>
+      <p className="settings-hint">
+        {selectedCalendarSummary
+          ? `현재 선택: ${selectedCalendarSummary}`
+          : '동기화할 달력을 선택해 주세요.'}
+      </p>
+    </section>
+  )
+
   return (
     <div className="modal-backdrop" role="presentation" onClick={onClose}>
       <section
-        className="settings-modal sync-modal"
+        className={`settings-modal sync-modal${devUnlocked ? '' : ' sync-modal-locked'}`}
         role="dialog"
         aria-modal="true"
         aria-labelledby="sync-modal-title"
@@ -227,8 +332,11 @@ export function SyncModal({
           </button>
         </header>
         <div className="settings-content">
+          {devUnlocked ? (
           <div className="sync-layout">
             <div className="sync-layout-column sync-layout-column-jobs">
+              {accountSection}
+              {calendarSection}
               <section className="settings-section sync-jobs-section">
                 <div className="settings-row">
                   <p className="settings-label">동기화 준비 상태</p>
@@ -375,72 +483,10 @@ export function SyncModal({
               </section>
 
               <section className="settings-section">
-                <div className="settings-row">
-                  <p className="settings-label">Google 계정</p>
-                  <p className="settings-value">{googleConnected ? accountEmail ?? '연결됨' : '연결 안 됨'}</p>
-                </div>
-                {needsReauth ? (
-                  <div className="sync-reauth-banner" role="alert">
-                    <p className="sync-reauth-title">Google 재인증이 필요합니다</p>
-                    <p className="sync-reauth-detail">
-                      저장된 인증 토큰이 만료되었거나 취소되어 동기화가 중단되었습니다. 아래 버튼으로 Google 계정을 다시 연결하세요.
-                    </p>
-                    <p className="sync-reauth-detail">
-                      재인증 후에도 며칠 만에 반복된다면, Google Cloud Console의 OAuth 동의화면이 &lsquo;테스트(Testing)&rsquo; 상태일 수 있습니다. 이 경우 토큰이 7일마다 만료되므로 동의화면을 &lsquo;프로덕션(Production)&rsquo;으로 게시하세요.
-                    </p>
-                  </div>
-                ) : null}
-                {googleConnected ? (
-                  <button type="button" className="ghost-button" onClick={() => void onDisconnectGoogle().catch((err) => { console.error(err); window.alert('연결 해제 실패') })}>
-                    연결 해제
-                  </button>
-                ) : (
-                  <button
-                    type="button"
-                    className={needsReauth ? 'primary-button' : 'ghost-button'}
-                    onClick={() => void onConnectGoogle()}
-                  >
-                    {needsReauth ? 'Google 다시 연결' : 'Google 연결'}
-                  </button>
-                )}
-              </section>
-
-              <section className="settings-section">
-                <label className="calendar-target-control settings-calendar-control" htmlFor="sync-calendar-select">
-                  <span>동기화 달력</span>
-                  <select
-                    id="sync-calendar-select"
-                    value={syncCalendarValue}
-                    onChange={(event) => {
-                      const nextId = event.target.value
-                      if (!nextId) {
-                        return
-                      }
-                      void onSetSyncCalendar(nextId)
-                    }}
-                    disabled={!googleConnected || selectingCalendar || syncing || calendars.length === 0}
-                  >
-                    <option value="" disabled>
-                      {!googleConnected
-                        ? 'Google 계정을 먼저 연결해 주세요'
-                        : calendars.length === 0
-                          ? loading
-                            ? '달력 목록을 불러오는 중...'
-                            : '선택 가능한 달력이 없습니다'
-                          : '달력을 선택하세요'}
-                    </option>
-                    {calendars.map((calendar) => (
-                      <option key={calendar.id} value={calendar.id}>
-                        {calendar.primary ? `기본 달력 (${calendar.summary})` : calendar.summary}
-                      </option>
-                    ))}
-                  </select>
-                </label>
-                <p className="settings-hint">
-                  {selectedCalendarSummary
-                    ? `현재 선택: ${selectedCalendarSummary}`
-                    : '동기화할 달력을 선택해 주세요.'}
-                </p>
+                <button type="button" className="ghost-button" onClick={lockDeveloperSettings}>
+                  개발자 설정 잠금
+                </button>
+                <p className="settings-hint">잠그면 고급 설정이 다시 숨겨집니다.</p>
               </section>
             </div>
 
@@ -507,6 +553,59 @@ export function SyncModal({
               </section>
             </div>
           </div>
+          ) : (
+            <div className="sync-locked-body">
+              {accountSection}
+              {calendarSection}
+              <div className="sync-dev-gate">
+                {devPromptOpen ? (
+                  <div className="sync-dev-gate-form">
+                    <label className="calendar-target-control settings-calendar-control" htmlFor="dev-settings-password">
+                      <span>개발자 설정 비밀번호</span>
+                      <input
+                        id="dev-settings-password"
+                        type="password"
+                        value={devPasswordInput}
+                        autoFocus
+                        onChange={(e) => {
+                          setDevPasswordInput(e.target.value)
+                          setDevPasswordError(false)
+                        }}
+                        onKeyDown={(e) => {
+                          if (e.key === 'Enter') {
+                            e.preventDefault()
+                            submitDevPassword()
+                          }
+                        }}
+                        placeholder="비밀번호를 입력하세요"
+                        aria-invalid={devPasswordError || undefined}
+                        aria-describedby={devPasswordError ? 'dev-settings-password-error' : undefined}
+                      />
+                    </label>
+                    {devPasswordError ? (
+                      <p id="dev-settings-password-error" role="alert" className="settings-hint" style={{ color: 'var(--danger)' }}>비밀번호가 올바르지 않습니다.</p>
+                    ) : null}
+                    <div className="settings-inline-actions">
+                      <button type="button" className="primary-button" onClick={submitDevPassword} disabled={!devPasswordInput}>
+                        확인
+                      </button>
+                      <button type="button" className="ghost-button" onClick={closeDevPrompt}>
+                        취소
+                      </button>
+                    </div>
+                  </div>
+                ) : (
+                  <button type="button" className="sync-dev-gate-link" onClick={() => setDevPromptOpen(true)}>
+                    <span className="sync-dev-gate-link-label">
+                      <span className="sync-dev-gate-link-icon" aria-hidden="true">🔒</span>
+                      개발자 설정
+                    </span>
+                    <span className="sync-dev-gate-link-chevron" aria-hidden="true">›</span>
+                  </button>
+                )}
+              </div>
+            </div>
+          )}
         </div>
       </section>
     </div>

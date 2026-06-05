@@ -3,7 +3,7 @@ import dayGridPlugin from '@fullcalendar/daygrid'
 import interactionPlugin from '@fullcalendar/interaction'
 import koLocale from '@fullcalendar/core/locales/ko'
 import { DateTime } from 'luxon'
-import { type WheelEvent as ReactWheelEvent, useCallback, useEffect, useMemo, useRef, useState } from 'react'
+import { type KeyboardEvent as ReactKeyboardEvent, type WheelEvent as ReactWheelEvent, useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import type { DatesSetArg, EventClickArg } from '@fullcalendar/core'
 import type { CalendarEvent, RecurrenceEditScope, SendUpdates, ShiftTeamAssignments, ShiftTeamMode, UpsertCalendarEventInput } from '../../shared/calendar'
 import { expandRecurringEvents, isVirtualInstance, extractMasterLocalId } from '../../shared/expandRecurrence'
@@ -678,9 +678,8 @@ export function CalendarPage() {
   const [weatherOverlayMode, setWeatherOverlayMode] = useState<WeatherOverlayMode>('none')
   const [weatherPreviewMode, setWeatherPreviewMode] = useState<WeatherOverlayMode | null>(null)
   const [isMaximized, setIsMaximized] = useState(false)
-  const [titlebarMonthLabel, setTitlebarMonthLabel] = useState(() =>
-    DateTime.local().setLocale('ko').toFormat('yyyy년 M월'),
-  )
+  const [editingMonthField, setEditingMonthField] = useState<'year' | 'month' | null>(null)
+  const [monthFieldDraft, setMonthFieldDraft] = useState('')
   const [visibleMonth, setVisibleMonth] = useState(() => DateTime.local().startOf('month'))
   const [shiftTeamDrafts, setShiftTeamDrafts] = useState<ShiftTeamAssignments>(() =>
     cloneShiftTeams(shiftSettings.teams),
@@ -702,6 +701,7 @@ export function CalendarPage() {
     dayWorkers: string[]
   } | null>(null)
   const monthWheelLockRef = useRef<ReturnType<typeof setTimeout> | null>(null)
+  const monthFieldEscapeRef = useRef(false)
   const editingTitleDraftRef = useRef('')
   const undoStackRef = useRef<UndoOperation[][]>([])
   const applyingUndoRef = useRef(false)
@@ -1631,10 +1631,48 @@ export function CalendarPage() {
     calendarApi.today()
   }
 
+  const startMonthFieldEdit = (field: 'year' | 'month') => {
+    monthFieldEscapeRef.current = false
+    setMonthFieldDraft(String(field === 'year' ? visibleMonth.year : visibleMonth.month))
+    setEditingMonthField(field)
+  }
+
+  const cancelMonthFieldEdit = () => {
+    setEditingMonthField(null)
+    setMonthFieldDraft('')
+  }
+
+  const commitMonthFieldEdit = (field: 'year' | 'month', rawValue: string) => {
+    if (monthFieldEscapeRef.current) {
+      monthFieldEscapeRef.current = false
+      cancelMonthFieldEdit()
+      return
+    }
+    const parsed = Number.parseInt(rawValue, 10)
+    if (Number.isFinite(parsed)) {
+      const year = field === 'year' ? Math.min(2999, Math.max(1900, parsed)) : visibleMonth.year
+      const month = field === 'month' ? Math.min(12, Math.max(1, parsed)) : visibleMonth.month
+      const calendarApi = calendarRef.current?.getApi()
+      if (calendarApi) {
+        calendarApi.gotoDate(DateTime.local(year, month, 1).toJSDate())
+      }
+    }
+    cancelMonthFieldEdit()
+  }
+
+  const handleMonthFieldKeyDown = (event: ReactKeyboardEvent<HTMLInputElement>) => {
+    if (event.key === 'Enter') {
+      event.preventDefault()
+      event.currentTarget.blur()
+    } else if (event.key === 'Escape') {
+      event.preventDefault()
+      monthFieldEscapeRef.current = true
+      event.currentTarget.blur()
+    }
+  }
+
   const handleDatesSet = (payload: DatesSetArg) => {
     const current = DateTime.fromJSDate(payload.view.currentStart)
-    const monthLabel = current.setLocale('ko').toFormat('yyyy년 M월')
-    setTitlebarMonthLabel(monthLabel)
     const nextMonth = current.startOf('month')
     setVisibleMonth((prev) => prev.toMillis() === nextMonth.toMillis() ? prev : nextMonth as DateTime<true>)
   }
@@ -2086,15 +2124,68 @@ export function CalendarPage() {
             <button
               type="button"
               className="titlebar-month-btn"
+              onMouseDown={() => { monthFieldEscapeRef.current = true }}
               onClick={() => moveMonth('prev')}
               aria-label="이전 달"
             >
               ‹
             </button>
-            <span className="titlebar-month-label">{titlebarMonthLabel}</span>
+            <span className="titlebar-month-label">
+              {editingMonthField === 'year' ? (
+                <input
+                  type="text"
+                  inputMode="numeric"
+                  maxLength={4}
+                  className="titlebar-month-input titlebar-month-input-year"
+                  value={monthFieldDraft}
+                  autoFocus
+                  aria-label="연도 편집"
+                  onChange={(event) => setMonthFieldDraft(event.target.value.replace(/[^0-9]/g, ''))}
+                  onFocus={(event) => event.currentTarget.select()}
+                  onKeyDown={handleMonthFieldKeyDown}
+                  onBlur={(event) => commitMonthFieldEdit('year', event.currentTarget.value)}
+                />
+              ) : (
+                <button
+                  type="button"
+                  className="titlebar-month-value"
+                  onClick={() => startMonthFieldEdit('year')}
+                  title="클릭하여 연도 편집"
+                >
+                  {visibleMonth.year}
+                </button>
+              )}
+              <span className="titlebar-month-suffix">년</span>
+              {editingMonthField === 'month' ? (
+                <input
+                  type="text"
+                  inputMode="numeric"
+                  maxLength={2}
+                  className="titlebar-month-input titlebar-month-input-month"
+                  value={monthFieldDraft}
+                  autoFocus
+                  aria-label="월 편집"
+                  onChange={(event) => setMonthFieldDraft(event.target.value.replace(/[^0-9]/g, ''))}
+                  onFocus={(event) => event.currentTarget.select()}
+                  onKeyDown={handleMonthFieldKeyDown}
+                  onBlur={(event) => commitMonthFieldEdit('month', event.currentTarget.value)}
+                />
+              ) : (
+                <button
+                  type="button"
+                  className="titlebar-month-value"
+                  onClick={() => startMonthFieldEdit('month')}
+                  title="클릭하여 월 편집"
+                >
+                  {visibleMonth.month}
+                </button>
+              )}
+              <span className="titlebar-month-suffix">월</span>
+            </span>
             <button
               type="button"
               className="titlebar-month-btn"
+              onMouseDown={() => { monthFieldEscapeRef.current = true }}
               onClick={() => moveMonth('next')}
               aria-label="다음 달"
             >

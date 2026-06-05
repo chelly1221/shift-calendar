@@ -194,6 +194,42 @@ body {
   color: var(--ink-900);
 }
 
+.titlebar-month-value,
+.titlebar-month-input {
+  -webkit-app-region: no-drag;
+  app-region: no-drag;
+  appearance: none;
+  border: none;
+  background: transparent;
+  color: inherit;
+  font: inherit;
+  letter-spacing: inherit;
+  padding: 0;
+  margin: 0;
+  outline: none;
+}
+
+.titlebar-month-value {
+  cursor: text;
+}
+
+.titlebar-month-input {
+  field-sizing: content;
+  min-width: 1ch;
+}
+
+.titlebar-month-input-year {
+  max-width: 4.5ch;
+}
+
+.titlebar-month-input-month {
+  max-width: 2.6ch;
+}
+
+.titlebar-month-suffix {
+  margin-right: 0.25em;
+}
+
 .titlebar-controls {
   display: flex;
   align-items: center;
@@ -1131,6 +1167,91 @@ body {
 .sync-modal .sync-layout {
   height: 100%;
   min-height: 0;
+}
+
+/* ── Sync modal: locked (default) compact view ── */
+.sync-modal.sync-modal-locked {
+  width: min(440px, 100%);
+  height: auto;
+}
+
+.sync-locked-body {
+  display: grid;
+  gap: 0;
+}
+
+.sync-locked-body .settings-section {
+  border: 0;
+  border-bottom: 0.5px solid var(--line);
+  border-radius: 0;
+  background: transparent;
+  padding: 14px 2px;
+}
+
+.sync-locked-body .settings-section:first-child {
+  padding-top: 2px;
+}
+
+.sync-locked-body .settings-label,
+.sync-locked-body .calendar-target-control > span {
+  text-transform: uppercase;
+  letter-spacing: 0.05em;
+  color: var(--ink-500);
+  font-size: 11px;
+  font-weight: 600;
+}
+
+.sync-locked-body .settings-section > .ghost-button,
+.sync-locked-body .settings-section > .primary-button {
+  justify-self: start;
+}
+
+.sync-dev-gate {
+  padding: 6px 0 2px;
+}
+
+.sync-dev-gate-link {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  width: 100%;
+  gap: 10px;
+  padding: 12px 8px;
+  border: 0;
+  border-radius: var(--radius-md);
+  background: transparent;
+  color: var(--ink-900);
+  font-size: 13px;
+  font-weight: 600;
+  cursor: pointer;
+  transition: background-color 0.15s ease;
+}
+
+.sync-dev-gate-link:hover {
+  background: rgba(0, 0, 0, 0.035);
+}
+
+.sync-dev-gate-link-label {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.sync-dev-gate-link-icon {
+  font-size: 13px;
+  opacity: 0.7;
+}
+
+.sync-dev-gate-link-chevron {
+  color: var(--ink-500);
+  font-size: 18px;
+  line-height: 1;
+}
+
+.sync-dev-gate-form {
+  display: grid;
+  gap: 8px;
+  padding: 8px 2px 2px;
 }
 
 .modal-header {
