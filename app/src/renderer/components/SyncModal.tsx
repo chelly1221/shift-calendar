@@ -47,6 +47,7 @@ interface SyncModalProps {
   needsReauth: boolean
   accountEmail: string | null
   calendars: GoogleCalendarItem[]
+  calendarsLoadError: boolean
   selectedCalendarId: string | null
   selectedCalendarSummary: string | null
   lastSyncResult: SyncResult | null
@@ -59,6 +60,7 @@ interface SyncModalProps {
   onCancelOutboxJob: (jobId: string) => Promise<boolean>
   onConnectGoogle: () => Promise<void>
   onDisconnectGoogle: () => Promise<void>
+  onReloadCalendars: () => Promise<void>
   onSetSyncCalendar: (calendarId: string) => Promise<void>
   onSyncNow: () => Promise<void>
   onForcePushAll: () => Promise<void>
@@ -74,6 +76,7 @@ export function SyncModal({
   needsReauth,
   accountEmail,
   calendars,
+  calendarsLoadError,
   selectedCalendarId,
   selectedCalendarSummary,
   lastSyncResult,
@@ -86,6 +89,7 @@ export function SyncModal({
   onCancelOutboxJob,
   onConnectGoogle,
   onDisconnectGoogle,
+  onReloadCalendars,
   onSetSyncCalendar,
   onSyncNow,
   onForcePushAll,
@@ -105,6 +109,7 @@ export function SyncModal({
   const [devPromptOpen, setDevPromptOpen] = useState(false)
   const [devPasswordInput, setDevPasswordInput] = useState('')
   const [devPasswordError, setDevPasswordError] = useState(false)
+  const [reloadingCalendars, setReloadingCalendars] = useState(false)
 
   const loadOAuthConfig = useCallback(async () => {
     try {
@@ -243,6 +248,15 @@ export function SyncModal({
     closeDevPrompt()
   }
 
+  const handleReloadCalendars = async () => {
+    setReloadingCalendars(true)
+    try {
+      await onReloadCalendars()
+    } finally {
+      setReloadingCalendars(false)
+    }
+  }
+
   const accountSection = (
     <section className="settings-section">
       <div className="settings-row">
@@ -295,11 +309,13 @@ export function SyncModal({
           <option value="" disabled>
             {!googleConnected
               ? 'Google 계정을 먼저 연결해 주세요'
-              : calendars.length === 0
-                ? loading
-                  ? '달력 목록을 불러오는 중...'
-                  : '선택 가능한 달력이 없습니다'
-                : '달력을 선택하세요'}
+              : calendarsLoadError
+                ? '달력 목록을 불러오지 못했습니다'
+                : calendars.length === 0
+                  ? loading
+                    ? '달력 목록을 불러오는 중...'
+                    : '선택 가능한 달력이 없습니다'
+                  : '달력을 선택하세요'}
           </option>
           {calendars.map((calendar) => (
             <option key={calendar.id} value={calendar.id}>
@@ -308,11 +324,27 @@ export function SyncModal({
           ))}
         </select>
       </label>
-      <p className="settings-hint">
-        {selectedCalendarSummary
-          ? `현재 선택: ${selectedCalendarSummary}`
-          : '동기화할 달력을 선택해 주세요.'}
-      </p>
+      {googleConnected && calendarsLoadError ? (
+        <div className="sync-calendar-error">
+          <p className="settings-hint" style={{ color: 'var(--danger)' }}>
+            달력 목록을 불러오지 못했습니다. 네트워크 연결과 Google Calendar API 사용 설정을 확인한 뒤 다시 시도해 주세요.
+          </p>
+          <button
+            type="button"
+            className="ghost-button"
+            onClick={() => void handleReloadCalendars()}
+            disabled={reloadingCalendars}
+          >
+            {reloadingCalendars ? '불러오는 중...' : '다시 시도'}
+          </button>
+        </div>
+      ) : (
+        <p className="settings-hint">
+          {selectedCalendarSummary
+            ? `현재 선택: ${selectedCalendarSummary}`
+            : '동기화할 달력을 선택해 주세요.'}
+        </p>
+      )}
     </section>
   )
 

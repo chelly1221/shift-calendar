@@ -38,6 +38,7 @@ interface CalendarState {
   needsReauth: boolean
   accountEmail: string | null
   calendars: GoogleCalendarItem[]
+  calendarsLoadError: boolean
   selectedCalendarId: string | null
   selectedCalendarSummary: string | null
   selectingCalendar: boolean
@@ -59,6 +60,7 @@ interface CalendarState {
   connectGoogle: () => Promise<void>
   disconnectGoogle: () => Promise<void>
   refreshGoogleStatus: () => Promise<void>
+  reloadCalendars: () => Promise<void>
   setSyncCalendar: (calendarId: string) => Promise<void>
   setShiftType: (shiftType: ShiftType) => Promise<void>
   setShiftTeamMode: (shiftTeamMode: ShiftTeamMode) => Promise<void>
@@ -277,6 +279,7 @@ export const useCalendarStore = create<CalendarState>((set, get) => ({
   needsReauth: false,
   accountEmail: null,
   calendars: [],
+  calendarsLoadError: false,
   selectedCalendarId: null,
   selectedCalendarSummary: null,
   selectingCalendar: false,
@@ -329,11 +332,14 @@ export const useCalendarStore = create<CalendarState>((set, get) => ({
         ])
 
         let calendars: GoogleCalendarItem[] = []
+        let calendarsLoadError = false
         if (googleStatus.connected) {
-          calendars = await api.listGoogleCalendars().catch((err) => {
+          try {
+            calendars = await api.listGoogleCalendars()
+          } catch (err) {
             console.warn('[Store] listGoogleCalendars failed:', err)
-            return []
-          })
+            calendarsLoadError = true
+          }
         }
 
         const state = get()
@@ -348,6 +354,7 @@ export const useCalendarStore = create<CalendarState>((set, get) => ({
           needsReauth: googleStatus.needsReauth,
           accountEmail: googleStatus.accountEmail,
           calendars,
+          calendarsLoadError,
           selectedCalendarId: selectedCalendar.calendarId,
           selectedCalendarSummary: selectedCalendar.calendarSummary,
           shiftSettings: cloneShiftSettings(shiftSettings),
@@ -548,12 +555,27 @@ export const useCalendarStore = create<CalendarState>((set, get) => ({
         needsReauth: false,
         accountEmail: status.accountEmail,
         calendars: [],
+        calendarsLoadError: false,
         selectedCalendarId: null,
         selectedCalendarSummary: null,
         selectingCalendar: false,
       })
     } catch (err) {
       console.error('[CalendarStore] disconnectGoogle failed:', err)
+    }
+  },
+
+  reloadCalendars: async () => {
+    const api = getCalendarApi()
+    if (!get().googleConnected) {
+      return
+    }
+    try {
+      const calendars = await api.listGoogleCalendars()
+      set({ calendars, calendarsLoadError: false })
+    } catch (err) {
+      console.warn('[CalendarStore] reloadCalendars failed:', err)
+      set({ calendarsLoadError: true })
     }
   },
 

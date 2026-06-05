@@ -336,7 +336,7 @@ export function EventModal({ open, value, memberNames, onClose, onSave, onDelete
                 const newType = event.target.value
                 setEventType(newType)
                 // Reset recurrence if the new type hides the picker
-                if (newType === '교육' || newType === '휴가' || newType === '중요' || newType === '일반') {
+                if (newType === '교육' || newType === '휴가' || newType === '출장' || newType === '중요' || newType === '일반') {
                   setRecurrence(parseRRule(null))
                 }
               }}
@@ -348,6 +348,7 @@ export function EventModal({ open, value, memberNames, onClose, onSave, onDelete
               <option value="운용중지작업">운용중지작업</option>
               <option value="중요">중요</option>
               <option value="휴가">휴가</option>
+              <option value="출장">출장</option>
               <option value="교육">교육</option>
             </select>
           )}
@@ -541,7 +542,7 @@ export function EventModal({ open, value, memberNames, onClose, onSave, onDelete
             </>
           ) : null}
 
-          {eventType !== '교육' && eventType !== '휴가' && eventType !== '중요' && eventType !== '일반' ? (
+          {eventType !== '교육' && eventType !== '휴가' && eventType !== '출장' && eventType !== '중요' && eventType !== '일반' ? (
             <RecurrencePicker value={recurrence} onChange={setRecurrence} eventType={eventType} />
           ) : null}
 

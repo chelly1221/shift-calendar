@@ -346,6 +346,8 @@ export interface GoogleCalendarService {
     },
     shiftContext?: ShiftContext,
   ) => Promise<PushResult>
+  /** Drop the cached authorized client so the next call re-reads the stored token (e.g. after account connect/disconnect/reauth). */
+  resetClient: () => void
 }
 
 async function findRemoteEventByLocalId(
@@ -450,6 +452,11 @@ export function createGoogleCalendarService(): GoogleCalendarService {
   }
 
   return {
+    resetClient() {
+      cachedClient = null
+      clientPromise = null
+    },
+
     async listCalendars() {
       const calendar = await getClient()
       const items: GoogleCalendarItem[] = []

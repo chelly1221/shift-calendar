@@ -611,6 +611,7 @@ export function CalendarPage() {
     needsReauth,
     accountEmail,
     calendars,
+    calendarsLoadError,
     selectedCalendarId,
     selectedCalendarSummary,
     shiftSettings,
@@ -637,6 +638,7 @@ export function CalendarPage() {
     connectGoogle,
     disconnectGoogle,
     refreshGoogleStatus,
+    reloadCalendars,
     setShiftAbbreviation,
     setHolidayDates,
   } = useCalendarStore()
@@ -1510,6 +1512,9 @@ export function CalendarPage() {
         .map((event) => {
           const isEducation = event.eventType === '교육'
           const isVacation = event.eventType === '휴가'
+          const isBusinessTrip = event.eventType === '출장'
+          // 출장 shares 휴가's on-calendar design (color + vacation-style badge layout).
+          const isVacationStyle = isVacation || isBusinessTrip
           const isBasic = event.eventType === '일반'
           const isRoutine = event.eventType === '반복업무'
           let educationTargets: string[] = []
@@ -1530,6 +1535,18 @@ export function CalendarPage() {
               if (inclusiveEnd.toISODate() !== startDt.toISODate()) {
                 endDateDisplay = `~${String(inclusiveEnd.month).padStart(2, '0')}/${String(inclusiveEnd.day).padStart(2, '0')}`
               }
+            }
+          }
+
+          if (isBusinessTrip) {
+            // Mirror 휴가/교육 multi-day handling so a multi-day 출장 shows the same "~MM/DD" end label.
+            const startDt = DateTime.fromISO(event.startAtUtc).toLocal()
+            const endDt = DateTime.fromISO(event.endAtUtc).toLocal()
+            const inclusiveEnd = endDt.hour === 0 && endDt.minute === 0 && endDt.second === 0
+              ? endDt.minus({ days: 1 })
+              : endDt
+            if (inclusiveEnd.toISODate() !== startDt.toISODate()) {
+              endDateDisplay = `~${String(inclusiveEnd.month).padStart(2, '0')}/${String(inclusiveEnd.day).padStart(2, '0')}`
             }
           }
 
@@ -1564,15 +1581,15 @@ export function CalendarPage() {
               ...(event.eventType === '운용중지작업' ? ['is-maintenance'] : []),
               ...(event.eventType === '중요' ? ['is-important'] : []),
               ...(isEducation ? ['is-education'] : []),
-              ...(isVacation ? ['is-vacation'] : []),
+              ...(isVacationStyle ? ['is-vacation'] : []),
               ...(isBasic ? ['is-basic'] : []),
             ],
             extendedProps: {
-              sortOrder: event.eventType === '운용중지작업' ? -1 : event.eventType === '중요' ? -1 : isEducation ? 2 : isVacation ? 3 : event.eventType === '반복업무' ? 1 : 0,
+              sortOrder: event.eventType === '운용중지작업' ? -1 : event.eventType === '중요' ? -1 : isEducation ? 2 : isVacationStyle ? 3 : event.eventType === '반복업무' ? 1 : 0,
               isRoutine,
               isRoutineDone,
               isEducation,
-              isVacation,
+              isVacationStyle,
               educationTargets,
               endDateDisplay,
               vacationTypeLabel,
@@ -2727,7 +2744,7 @@ export function CalendarPage() {
                 )
               }
 
-              const isVacationEvent = arg.event.extendedProps?.isVacation === true
+              const isVacationEvent = arg.event.extendedProps?.isVacationStyle === true
               if (isVacationEvent) {
                 const typeLabel = arg.event.extendedProps?.vacationTypeLabel as string | null
                 const vacEndLabel = arg.event.extendedProps?.endDateDisplay as string | null
@@ -3251,6 +3268,7 @@ export function CalendarPage() {
         needsReauth={needsReauth}
         accountEmail={accountEmail}
         calendars={calendars}
+        calendarsLoadError={calendarsLoadError}
         selectedCalendarId={selectedCalendarId}
         selectedCalendarSummary={selectedCalendarSummary}
         lastSyncResult={lastSyncResult}
@@ -3263,6 +3281,7 @@ export function CalendarPage() {
         onCancelOutboxJob={cancelOutboxJob}
         onConnectGoogle={connectGoogle}
         onDisconnectGoogle={disconnectGoogle}
+        onReloadCalendars={reloadCalendars}
         onSetSyncCalendar={setSyncCalendar}
         onSyncNow={manualSyncNow}
         onForcePushAll={forcePushAll}

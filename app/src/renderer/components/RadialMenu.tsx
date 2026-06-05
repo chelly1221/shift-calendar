@@ -52,6 +52,7 @@ interface RadialMenuProps {
 const ICONS: Record<string, string> = {
   '일반': 'M3 2.5A1.5 1.5 0 0 1 4.5 1h7A1.5 1.5 0 0 1 13 2.5v11a1.5 1.5 0 0 1-1.5 1.5h-7A1.5 1.5 0 0 1 3 13.5v-11ZM5 5h6M5 8h6M5 11h3',
   '휴가': 'M8 1v3M4.5 2.5 8 5.5l3.5-3M2 8c0 3.5 2.5 7 6 7s6-3.5 6-7H2Z',
+  '출장': 'M2 5.5H14V13.5H2V5.5ZM6 5.5V4a1 1 0 0 1 1-1h2a1 1 0 0 1 1 1v1.5M2 9h12',
   '교육': 'M1 6l7-4 7 4-7 4-7-4Zm3 2v3.5c0 1 1.8 2 4 2s4-1 4-2V8',
   '반복업무': 'M2.5 8a5.5 5.5 0 0 1 9.5-3.7M13.5 8a5.5 5.5 0 0 1-9.5 3.7M12 1v3.5h-3.5M4 15v-3.5h3.5',
   '중요': 'M8 1l2.2 4.6L15 6.3l-3.5 3.5.8 4.9L8 12.4l-4.3 2.3.8-4.9L1 6.3l4.8-.7L8 1Z',
@@ -60,6 +61,7 @@ const ICONS: Record<string, string> = {
 const EVENT_TYPES = [
   { type: '일반', label: '일반', color: '#3478f6' },
   { type: '휴가', label: '휴가', color: '#636366' },
+  { type: '출장', label: '출장', color: '#636366' },
   { type: '교육', label: '교육', color: '#0d9488' },
   { type: '반복업무', label: '반복', color: '#af52de' },
   { type: '중요', label: '중요', color: '#ff3b30' },

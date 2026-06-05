@@ -50,6 +50,7 @@ import {
   isGoogleConnected,
   isGoogleOAuthConfigured,
   isReauthRequired,
+  onReauthRequired,
 } from '../google/oauthClient'
 import { cancelOutboxJob, enqueueOutboxOperation, getOutboxCount, requeueFailedJobs } from '../sync/outboxWorker'
 import { forcePushAllToGoogle, reEnqueueShiftAbbreviationSync, runSyncNow } from '../sync/syncEngine'
@@ -64,6 +65,9 @@ function wrapIpcError(error: unknown): Error {
 
 export function registerCalendarIpc(): void {
   const googleCalendarService = createGoogleCalendarService()
+  // If a dead token is detected anywhere (incl. sync/outbox runs), drop this long-lived
+  // instance's cached client so the next listing rebuilds it from the (re)stored token.
+  onReauthRequired(() => googleCalendarService.resetClient())
 
   ipcMain.removeHandler(IPC_CHANNELS.listEvents)
   ipcMain.removeHandler(IPC_CHANNELS.upsertEvent)
@@ -703,6 +707,9 @@ export function registerCalendarIpc(): void {
       })
     }
     const result = await connectGoogleInteractive()
+    // Drop any client cached for a previously connected account so calendar listing /
+    // status use the newly stored token instead of the stale (now-dead) auth.
+    googleCalendarService.resetClient()
     await setAccountEmail(result.accountEmail)
     // Resume any jobs that were paused while the previous token was dead, so queued changes
     // sync right away instead of waiting out their backoff.
@@ -721,6 +728,7 @@ export function registerCalendarIpc(): void {
   ipcMain.handle(IPC_CHANNELS.disconnectGoogle, async () => {
     await ensureSetting()
     await disconnectGoogleAccount()
+    googleCalendarService.resetClient()
     await setAccountEmail(null)
     return googleConnectionStatusSchema.parse({
       connected: false,
@@ -740,17 +748,28 @@ export function registerCalendarIpc(): void {
   })
 
   ipcMain.handle(IPC_CHANNELS.listGoogleCalendars, async () => {
-    await ensureSetting()
-    const oauthConfigured = await isGoogleOAuthConfigured()
-    const googleConnected = await isGoogleConnected()
-    console.debug('[IPC] listGoogleCalendars: oauthConfigured=%s, googleConnected=%s', oauthConfigured, googleConnected)
-    if (!oauthConfigured || !googleConnected) {
-      return []
-    }
+    try {
+      await ensureSetting()
+      const oauthConfigured = await isGoogleOAuthConfigured()
+      const googleConnected = await isGoogleConnected()
+      console.debug('[IPC] listGoogleCalendars: oauthConfigured=%s, googleConnected=%s', oauthConfigured, googleConnected)
+      if (!oauthConfigured || !googleConnected) {
+        return []
+      }
 
-    const calendars = await googleCalendarService.listCalendars()
-    console.debug('[IPC] listGoogleCalendars: found %d calendars', calendars.length)
-    return calendars.map((calendar) => googleCalendarItemSchema.parse(calendar))
+      // The cached client may be stale (account switched) or hit a transient token-refresh
+      // failure. On first failure, drop the cached client and retry once with a fresh one.
+      const calendars = await googleCalendarService.listCalendars().catch(async (firstError) => {
+        console.warn('[IPC] listGoogleCalendars failed; resetting client and retrying once:', firstError)
+        googleCalendarService.resetClient()
+        return googleCalendarService.listCalendars()
+      })
+      console.debug('[IPC] listGoogleCalendars: found %d calendars', calendars.length)
+      return calendars.map((calendar) => googleCalendarItemSchema.parse(calendar))
+    } catch (error) {
+      // Surface the real error to the renderer instead of letting it look like an empty list.
+      throw wrapIpcError(error)
+    }
   })
 
   ipcMain.handle(IPC_CHANNELS.getSelectedCalendar, async () => {
