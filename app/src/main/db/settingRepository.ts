@@ -295,17 +295,6 @@ export async function setGoogleOAuthConfig(
   })
 }
 
-export async function clearGoogleOAuthConfig(): Promise<void> {
-  await ensureSetting()
-  await prisma.setting.update({
-    where: { id: 1 },
-    data: {
-      googleClientId: null,
-      googleClientSecret: null,
-    },
-  })
-}
-
 export async function setSelectedCalendar(input: {
   calendarId: string
   calendarSummary?: string | null

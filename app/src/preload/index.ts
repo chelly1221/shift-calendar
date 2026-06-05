@@ -65,7 +65,6 @@ const calendarApi: CalendarApi = {
 contextBridge.exposeInMainWorld('calendarApi', calendarApi)
 
 contextBridge.exposeInMainWorld('windowApi', {
-  platform: process.platform,
   minimize: () => ipcRenderer.send(IPC_CHANNELS.windowMinimize),
   maximize: () => ipcRenderer.send(IPC_CHANNELS.windowMaximize),
   close: () => ipcRenderer.send(IPC_CHANNELS.windowClose),
@@ -74,30 +73,6 @@ contextBridge.exposeInMainWorld('windowApi', {
     ipcRenderer.on(IPC_CHANNELS.windowMaximizeChanged, handler)
     return () => {
       ipcRenderer.removeListener(IPC_CHANNELS.windowMaximizeChanged, handler)
-    }
-  },
-  onViewportCorrection: (
-    callback: (payload: {
-      active: boolean
-      offsetX: number
-      offsetY: number
-      extraWidth: number
-      extraHeight: number
-    }) => void,
-  ) => {
-    const handler = (
-      _event: Electron.IpcRendererEvent,
-      payload: {
-        active: boolean
-        offsetX: number
-        offsetY: number
-        extraWidth: number
-        extraHeight: number
-      },
-    ) => callback(payload)
-    ipcRenderer.on(IPC_CHANNELS.windowViewportCorrection, handler)
-    return () => {
-      ipcRenderer.removeListener(IPC_CHANNELS.windowViewportCorrection, handler)
     }
   },
 })

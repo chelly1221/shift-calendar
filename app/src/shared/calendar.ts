@@ -47,7 +47,6 @@ export type SendUpdates = z.infer<typeof sendUpdatesSchema>
 
 export const recurrenceEditScopeSchema = z.enum(['THIS', 'ALL', 'FUTURE'])
 export type RecurrenceEditScope = z.infer<typeof recurrenceEditScopeSchema>
-export const KNOWN_EVENT_TYPES = ['일반', '근무', '휴가', '교육', '반복업무', '공휴일', '운용중지작업', '중요'] as const
 export const eventTypeSchema = z.string().trim().min(1).max(40)
 export type EventType = z.infer<typeof eventTypeSchema>
 

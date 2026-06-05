@@ -11,17 +11,9 @@ declare namespace NodeJS {
 interface Window {
   calendarApi: import('./shared/calendar').CalendarApi
   windowApi: {
-    platform: NodeJS.Platform
     minimize: () => void
     maximize: () => void
     close: () => void
     onMaximizeChanged: (callback: (isMaximized: boolean) => void) => () => void
-    onViewportCorrection: (callback: (payload: {
-      active: boolean
-      offsetX: number
-      offsetY: number
-      extraWidth: number
-      extraHeight: number
-    }) => void) => () => void
   }
 }

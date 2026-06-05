@@ -24,5 +24,4 @@ export const IPC_CHANNELS = {
   windowMaximize: 'window:maximize',
   windowClose: 'window:close',
   windowMaximizeChanged: 'window:maximize-changed',
-  windowViewportCorrection: 'window:viewport-correction',
 } as const

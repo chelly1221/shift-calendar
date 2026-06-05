@@ -1,4 +1,3 @@
-export type RRuleFrequency = 'DAILY' | 'WEEKLY' | 'MONTHLY' | 'YEARLY'
 export type WeekdayCode = 'MO' | 'TU' | 'WE' | 'TH' | 'FR' | 'SA' | 'SU'
 
 const RRULE_PREFIX = 'RRULE:'
@@ -113,16 +112,6 @@ export function withRRuleUntil(rule: string, untilUtcIso: string): string {
   }
   segments.delete('COUNT')
   segments.set('UNTIL', formatUntilUtc(untilUtcIso))
-  return serializeRRuleSegments(segments)
-}
-
-export function withRRuleCount(rule: string, count: number): string {
-  const segments = parseRRuleSegments(rule)
-  if (!segments.get('FREQ')) {
-    throw new Error(`RRULE missing FREQ: ${rule}`)
-  }
-  segments.delete('UNTIL')
-  segments.set('COUNT', `${Math.max(1, Math.floor(count))}`)
   return serializeRRuleSegments(segments)
 }
 
