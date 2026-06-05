@@ -11,6 +11,7 @@ export const IPC_CHANNELS = {
   connectGoogle: 'calendar:connect-google',
   disconnectGoogle: 'calendar:disconnect-google',
   getGoogleConnectionStatus: 'calendar:get-google-connection-status',
+  googleAuthRequired: 'calendar:google-auth-required',
   listGoogleCalendars: 'calendar:list-google-calendars',
   getSelectedCalendar: 'calendar:get-selected-calendar',
   setSelectedCalendar: 'calendar:set-selected-calendar',

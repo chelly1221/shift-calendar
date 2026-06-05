@@ -49,8 +49,9 @@ import {
   disconnectGoogleAccount,
   isGoogleConnected,
   isGoogleOAuthConfigured,
+  isReauthRequired,
 } from '../google/oauthClient'
-import { cancelOutboxJob, enqueueOutboxOperation, getOutboxCount } from '../sync/outboxWorker'
+import { cancelOutboxJob, enqueueOutboxOperation, getOutboxCount, requeueFailedJobs } from '../sync/outboxWorker'
 import { forcePushAllToGoogle, reEnqueueShiftAbbreviationSync, runSyncNow } from '../sync/syncEngine'
 import { IPC_CHANNELS } from './channels'
 
@@ -700,6 +701,11 @@ export function registerCalendarIpc(): void {
     }
     const result = await connectGoogleInteractive()
     await setAccountEmail(result.accountEmail)
+    // Resume any jobs that were paused while the previous token was dead, so queued changes
+    // sync right away instead of waiting out their backoff.
+    await requeueFailedJobs().catch((err) => {
+      console.warn('[IPC] requeueFailedJobs after reconnect failed:', err)
+    })
     return googleConnectionStatusSchema.parse({
       connected: true,
       accountEmail: result.accountEmail,
@@ -726,6 +732,7 @@ export function registerCalendarIpc(): void {
     return googleConnectionStatusSchema.parse({
       connected,
       accountEmail,
+      needsReauth: isReauthRequired(),
     })
   })
 

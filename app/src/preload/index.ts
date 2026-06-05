@@ -60,6 +60,13 @@ const calendarApi: CalendarApi = {
     ipcRenderer.invoke(IPC_CHANNELS.exportDatabase) as Promise<boolean>,
   importDatabase: () =>
     ipcRenderer.invoke(IPC_CHANNELS.importDatabase) as Promise<boolean>,
+  onGoogleAuthRequired: (callback: () => void) => {
+    const handler = () => callback()
+    ipcRenderer.on(IPC_CHANNELS.googleAuthRequired, handler)
+    return () => {
+      ipcRenderer.removeListener(IPC_CHANNELS.googleAuthRequired, handler)
+    }
+  },
 }
 
 contextBridge.exposeInMainWorld('calendarApi', calendarApi)

@@ -5,6 +5,8 @@ import { getCalendarEventByLocalId, updateEventSyncState, upsertRemoteEvent } fr
 import { prisma } from '../db/prisma'
 import { getSelectedCalendar, getShiftSettings } from '../db/settingRepository'
 import { createGoogleCalendarService, type ShiftContext } from '../google/calendarService'
+import { isGoogleConnected } from '../google/oauthClient'
+import { classifyGoogleError } from '../google/oauthErrors'
 
 interface OutboxPayload {
   sendUpdates?: SendUpdates
@@ -50,15 +52,6 @@ function nextRetryAt(attempts: number): Date {
   const baseDelay = RETRY_DELAYS_MS[Math.min(attempts - 1, RETRY_DELAYS_MS.length - 1)]
   const jitter = Math.floor(Math.random() * baseDelay * 0.2) // 0-20% jitter
   return new Date(Date.now() + baseDelay + jitter)
-}
-
-function classifyGoogleError(error: unknown): 'TRANSIENT' | 'PERMANENT' | 'RATE_LIMITED' {
-  const candidate = error as { code?: number; status?: number; response?: { status?: number } }
-  const code = candidate.code ?? candidate.status ?? candidate.response?.status
-  if (code === 429) return 'RATE_LIMITED'
-  if (code === 401 || code === 403 || code === 404) return 'PERMANENT'
-  if (code === 410 || code === 408 || code === 503 || code === 500) return 'TRANSIENT'
-  return 'TRANSIENT'
 }
 
 async function findNextDueJob() {
@@ -298,6 +291,26 @@ export async function getOutboxCount(): Promise<number> {
   })
 }
 
+/**
+ * Reset FAILED jobs to retry immediately. Called after the user reconnects their Google account
+ * so changes that piled up during a dead-token outage (which the worker paused on, see
+ * AUTH_REQUIRED) sync right away instead of waiting out their backoff window. Attempts counters
+ * are preserved so the 30-day lifetime cap still applies.
+ */
+export async function requeueFailedJobs(): Promise<number> {
+  const result = await prisma.outboxJob.updateMany({
+    where: { status: OutboxStatus.FAILED },
+    data: {
+      status: OutboxStatus.QUEUED,
+      nextRetryAtUtc: new Date(),
+    },
+  })
+  if (result.count > 0) {
+    requestOutboxFlush()
+  }
+  return result.count
+}
+
 export async function cancelOutboxJob(jobId: string): Promise<boolean> {
   const job = await prisma.outboxJob.findUnique({
     where: { id: jobId },
@@ -338,6 +351,13 @@ async function doProcessOutbox(): Promise<number> {
 
   const selectedCalendar = await getSelectedCalendar()
   if (!selectedCalendar.selectedCalendarId) {
+    return 0
+  }
+
+  // No connected Google account (or its token was cleared after a dead-token failure) → there is
+  // nothing we can push. Skip instead of hammering the token endpoint with doomed retries; the
+  // worker resumes automatically once the user reconnects.
+  if (!(await isGoogleConnected())) {
     return 0
   }
 
@@ -388,6 +408,28 @@ async function doProcessOutbox(): Promise<number> {
       const errorKind = classifyGoogleError(error)
       const jobCreatedAt = refreshed?.createdAt ?? next.createdAt
       const ageMs = Date.now() - jobCreatedAt.getTime()
+
+      if (errorKind === 'AUTH_REQUIRED') {
+        // Account-level auth failure: every remaining job will fail the same way. Keep this job
+        // FAILED (not cancelled) so it resumes after the user reconnects, then break the loop to
+        // avoid burning the retry window / spamming the token endpoint.
+        await prisma.outboxJob.update({
+          where: { id: next.id },
+          data: {
+            status: OutboxStatus.FAILED,
+            attempts,
+            nextRetryAtUtc: nextRetryAt(attempts),
+            lastError: errorMsg,
+          },
+        })
+        if (refreshed?.eventLocalId) {
+          await updateEventSyncState(refreshed.eventLocalId, {
+            syncState: SyncState.ERROR,
+          })
+        }
+        console.warn('[OutboxWorker] Google 재인증 필요 — outbox 처리를 일시 중지합니다. 계정을 다시 연결하세요.')
+        break
+      }
 
       if (errorKind === 'PERMANENT' || ageMs > MAX_RETRY_LIFETIME_MS) {
         const reason = errorKind === 'PERMANENT'

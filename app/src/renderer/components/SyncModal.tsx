@@ -42,6 +42,7 @@ interface SyncModalProps {
   forcePushing: boolean
   selectingCalendar: boolean
   googleConnected: boolean
+  needsReauth: boolean
   accountEmail: string | null
   calendars: GoogleCalendarItem[]
   selectedCalendarId: string | null
@@ -68,6 +69,7 @@ export function SyncModal({
   forcePushing,
   selectingCalendar,
   googleConnected,
+  needsReauth,
   accountEmail,
   calendars,
   selectedCalendarId,
@@ -377,13 +379,28 @@ export function SyncModal({
                   <p className="settings-label">Google 계정</p>
                   <p className="settings-value">{googleConnected ? accountEmail ?? '연결됨' : '연결 안 됨'}</p>
                 </div>
+                {needsReauth ? (
+                  <div className="sync-reauth-banner" role="alert">
+                    <p className="sync-reauth-title">Google 재인증이 필요합니다</p>
+                    <p className="sync-reauth-detail">
+                      저장된 인증 토큰이 만료되었거나 취소되어 동기화가 중단되었습니다. 아래 버튼으로 Google 계정을 다시 연결하세요.
+                    </p>
+                    <p className="sync-reauth-detail">
+                      재인증 후에도 며칠 만에 반복된다면, Google Cloud Console의 OAuth 동의화면이 &lsquo;테스트(Testing)&rsquo; 상태일 수 있습니다. 이 경우 토큰이 7일마다 만료되므로 동의화면을 &lsquo;프로덕션(Production)&rsquo;으로 게시하세요.
+                    </p>
+                  </div>
+                ) : null}
                 {googleConnected ? (
                   <button type="button" className="ghost-button" onClick={() => void onDisconnectGoogle().catch((err) => { console.error(err); window.alert('연결 해제 실패') })}>
                     연결 해제
                   </button>
                 ) : (
-                  <button type="button" className="ghost-button" onClick={() => void onConnectGoogle()}>
-                    Google 연결
+                  <button
+                    type="button"
+                    className={needsReauth ? 'primary-button' : 'ghost-button'}
+                    onClick={() => void onConnectGoogle()}
+                  >
+                    {needsReauth ? 'Google 다시 연결' : 'Google 연결'}
                   </button>
                 )}
               </section>

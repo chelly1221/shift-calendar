@@ -608,6 +608,7 @@ export function CalendarPage() {
     forcePushing,
     selectingCalendar,
     googleConnected,
+    needsReauth,
     accountEmail,
     calendars,
     selectedCalendarId,
@@ -635,6 +636,7 @@ export function CalendarPage() {
     setShiftAssignments,
     connectGoogle,
     disconnectGoogle,
+    refreshGoogleStatus,
     setShiftAbbreviation,
     setHolidayDates,
   } = useCalendarStore()
@@ -833,6 +835,14 @@ export function CalendarPage() {
   useEffect(() => {
     return window.windowApi.onMaximizeChanged(setIsMaximized)
   }, [])
+
+  useEffect(() => {
+    // The main process pushes this when a background sync hits a dead token (invalid_grant).
+    // Refresh connection status so the reconnect banner appears promptly.
+    return window.calendarApi.onGoogleAuthRequired(() => {
+      void refreshGoogleStatus()
+    })
+  }, [refreshGoogleStatus])
 
   useEffect(() => {
     const handleOnline = () => {
@@ -3146,6 +3156,7 @@ export function CalendarPage() {
         forcePushing={forcePushing}
         selectingCalendar={selectingCalendar}
         googleConnected={googleConnected}
+        needsReauth={needsReauth}
         accountEmail={accountEmail}
         calendars={calendars}
         selectedCalendarId={selectedCalendarId}

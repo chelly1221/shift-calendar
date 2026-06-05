@@ -16,6 +16,7 @@ import { registerCalendarIpc } from './ipc/registerCalendarIpc'
 import { prisma } from './db/prisma'
 import { startOutboxWorker, stopOutboxWorker } from './sync/outboxWorker'
 import { runSyncNow } from './sync/syncEngine'
+import { onReauthRequired } from './google/oauthClient'
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url))
 
@@ -86,6 +87,16 @@ function createMainWindow(): BrowserWindow {
   })
   window.on('leave-full-screen', () => {
     sendWindowUiState(window)
+  })
+
+  // Push "Google account needs re-authentication" to the renderer so it can show a reconnect
+  // banner instead of silently looping on a dead token.
+  const unsubscribeReauth = onReauthRequired(() => {
+    if (window.isDestroyed() || window.webContents.isDestroyed()) return
+    window.webContents.send(IPC_CHANNELS.googleAuthRequired)
+  })
+  window.on('closed', () => {
+    unsubscribeReauth()
   })
 
   void window.webContents.setVisualZoomLevelLimits(1, 1).catch((error) => {

@@ -92,7 +92,7 @@ export async function forcePushAllToGoogle(): Promise<ForcePushResult> {
   }
   isForcePushRunning = true
   try {
-    if (!isGoogleOAuthConfigured() || !(await isGoogleConnected())) {
+    if (!(await isGoogleOAuthConfigured()) || !(await isGoogleConnected())) {
       return { enqueuedJobs: 0, processedJobs: 0, skippedEvents: 0 }
     }
 
@@ -222,7 +222,7 @@ export async function reEnqueueShiftAbbreviationSync(): Promise<number> {
   }
   isReEnqueueRunning = true
   try {
-    if (!isGoogleOAuthConfigured() || !(await isGoogleConnected())) {
+    if (!(await isGoogleOAuthConfigured()) || !(await isGoogleConnected())) {
       return 0
     }
 
@@ -343,7 +343,7 @@ export async function runSyncNow(options?: { reconcile?: boolean }): Promise<Syn
   }
   isSyncRunning = true
   try {
-    if (!isGoogleOAuthConfigured() || !(await isGoogleConnected())) {
+    if (!(await isGoogleOAuthConfigured()) || !(await isGoogleConnected())) {
       return {
         mode: 'SKIPPED',
         pulledEvents: 0,

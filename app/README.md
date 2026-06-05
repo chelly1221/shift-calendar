@@ -70,6 +70,18 @@ GOOGLE_CLIENT_SECRET="..."
 GOOGLE_CALENDAR_ID="primary"
 ```
 
+## Google Cloud 설정 (중요)
+
+Google 동기화를 위해 [Google Cloud Console](https://console.cloud.google.com/)에서 OAuth 클라이언트(데스크톱 앱)를 발급받아 Client ID/Secret을 설정합니다.
+
+> ⚠️ **OAuth 동의화면 게시 상태 = '토큰갱신불가' 반복의 주요 원인**
+>
+> OAuth 동의화면(consent screen)이 **'테스트(Testing)' 상태**이면, 발급된 refresh token이 **7일 후 자동 만료**됩니다. 이 경우 7일마다 `invalid_grant`(인증 토큰 갱신 실패)가 반복되며 동기화가 중단됩니다.
+>
+> **해결:** OAuth 동의화면을 **'프로덕션(Production)'으로 게시**하거나(권장), 최소한 사용 중인 Google 계정을 동의화면의 **'테스트 사용자(Test users)'에 등록**합니다. 게시 상태에서는 refresh token이 무기한 유효합니다.
+>
+> 토큰이 이미 만료/취소된 경우, 앱의 **동기화 → Google 계정 → 다시 연결**로 즉시 복구할 수 있습니다. 토큰이 죽으면 앱이 무한 재시도를 멈추고 재연결 안내 배너를 표시합니다.
+
 ## 주요 기능
 
 ### 이벤트 타입

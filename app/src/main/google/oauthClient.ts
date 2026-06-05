@@ -5,12 +5,52 @@ import { google } from 'googleapis'
 import type { OAuth2Client } from 'google-auth-library'
 import { clearRefreshToken, loadRefreshToken, saveRefreshToken } from '../security/tokenStore'
 import { getGoogleOAuthConfig } from '../db/settingRepository'
+import {
+  GoogleAuthError,
+  extractOAuthErrorCode,
+  isPermanentOAuthErrorCode,
+  isReauthOAuthErrorCode,
+} from './oauthErrors'
 
 const CALENDAR_SCOPE = 'https://www.googleapis.com/auth/calendar'
 
 interface GoogleConfig {
   clientId: string
   clientSecret: string
+}
+
+// Module-level "the Google account needs to be reconnected" flag. Set when a refresh fails with
+// a dead-token error, cleared on (re)connect/disconnect. Read by getGoogleConnectionStatus and
+// pushed to the renderer so the UI can show a reconnect banner instead of looping silently.
+let reauthRequired = false
+type ReauthListener = () => void
+const reauthListeners = new Set<ReauthListener>()
+
+export function isReauthRequired(): boolean {
+  return reauthRequired
+}
+
+export function onReauthRequired(listener: ReauthListener): () => void {
+  reauthListeners.add(listener)
+  return () => {
+    reauthListeners.delete(listener)
+  }
+}
+
+function markReauthRequired(): void {
+  if (reauthRequired) return
+  reauthRequired = true
+  for (const listener of reauthListeners) {
+    try {
+      listener()
+    } catch (err) {
+      console.error('[OAuth] reauth listener failed:', err)
+    }
+  }
+}
+
+function clearReauthRequired(): void {
+  reauthRequired = false
 }
 
 async function loadGoogleConfig(): Promise<GoogleConfig | null> {
@@ -166,6 +206,7 @@ export async function connectGoogleInteractive(): Promise<{ accountEmail: string
   }
 
   await saveRefreshToken(refreshToken)
+  clearReauthRequired()
   oauth.setCredentials({ ...tokenResponse.tokens, refresh_token: refreshToken })
 
   let accountEmail: string | null = null
@@ -204,7 +245,34 @@ export async function getAuthorizedGoogleClient(): Promise<OAuth2Client> {
   try {
     await oauth.getAccessToken()
   } catch (error) {
+    const oauthErrorCode = extractOAuthErrorCode(error)
     const message = error instanceof Error ? error.message : 'Unknown error'
+
+    if (isReauthOAuthErrorCode(oauthErrorCode)) {
+      // Refresh token expired/revoked → permanently dead. Clear it so the app stops looping on
+      // a dead token, and flag reauth so the UI can prompt the user to reconnect.
+      console.error(`[OAuth] Refresh token invalid (${oauthErrorCode}); clearing stored token.`)
+      await clearRefreshToken().catch((err) => {
+        console.error('[OAuth] Failed to clear invalid refresh token:', err)
+      })
+      markReauthRequired()
+      throw new GoogleAuthError(
+        `Google 재인증이 필요합니다 (${oauthErrorCode}). 설정에서 Google 계정을 다시 연결하세요.`,
+        { code: oauthErrorCode, needsReauth: true, cause: error },
+      )
+    }
+
+    if (isPermanentOAuthErrorCode(oauthErrorCode)) {
+      // invalid_client / unauthorized_client → OAuth client misconfiguration. Permanent, but the
+      // stored refresh token may still be valid, so do NOT clear it.
+      console.error(`[OAuth] OAuth client configuration error (${oauthErrorCode}):`, message)
+      throw new GoogleAuthError(
+        `Google OAuth 설정 오류 (${oauthErrorCode}). 클라이언트 ID/비밀번호를 확인하세요.`,
+        { code: oauthErrorCode, needsReauth: false, cause: error },
+      )
+    }
+
+    // Transient (network/server) failure — keep the token and let the caller retry.
     console.error('[OAuth] Failed to refresh access token:', message)
     throw new Error(`Google 인증 토큰 갱신 실패: ${message}`)
   }
@@ -228,6 +296,7 @@ export async function disconnectGoogleAccount(): Promise<void> {
     console.warn('[OAuth] Could not revoke token, proceeding with local cleanup')
   }
   await clearRefreshToken()
+  clearReauthRequired()
 }
 
 export async function isGoogleConnected(): Promise<boolean> {

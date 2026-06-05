@@ -35,6 +35,7 @@ interface CalendarState {
   forcePushing: boolean
   lastForcePushResult: ForcePushResult | null
   googleConnected: boolean
+  needsReauth: boolean
   accountEmail: string | null
   calendars: GoogleCalendarItem[]
   selectedCalendarId: string | null
@@ -56,6 +57,7 @@ interface CalendarState {
   forcePushAll: () => Promise<void>
   connectGoogle: () => Promise<void>
   disconnectGoogle: () => Promise<void>
+  refreshGoogleStatus: () => Promise<void>
   setSyncCalendar: (calendarId: string) => Promise<void>
   setShiftType: (shiftType: ShiftType) => Promise<void>
   setShiftTeamMode: (shiftTeamMode: ShiftTeamMode) => Promise<void>
@@ -69,6 +71,7 @@ interface CalendarState {
 const fallbackGoogleStatus: GoogleConnectionStatus = {
   connected: false,
   accountEmail: null,
+  needsReauth: false,
 }
 
 const fallbackSelectedCalendar: SelectedCalendar = {
@@ -190,6 +193,9 @@ const fallbackApi: CalendarApi = {
   async importDatabase() {
     return false
   },
+  onGoogleAuthRequired() {
+    return () => {}
+  },
 }
 
 function getCalendarApi(): CalendarApi {
@@ -264,6 +270,7 @@ export const useCalendarStore = create<CalendarState>((set, get) => ({
   forcePushing: false,
   lastForcePushResult: null,
   googleConnected: false,
+  needsReauth: false,
   accountEmail: null,
   calendars: [],
   selectedCalendarId: null,
@@ -334,6 +341,7 @@ export const useCalendarStore = create<CalendarState>((set, get) => ({
           outboxCount,
           outboxJobs,
           googleConnected: googleStatus.connected,
+          needsReauth: googleStatus.needsReauth,
           accountEmail: googleStatus.accountEmail,
           calendars,
           selectedCalendarId: selectedCalendar.calendarId,
@@ -520,6 +528,7 @@ export const useCalendarStore = create<CalendarState>((set, get) => ({
       const status = await api.disconnectGoogle()
       set({
         googleConnected: status.connected,
+        needsReauth: false,
         accountEmail: status.accountEmail,
         calendars: [],
         selectedCalendarId: null,
@@ -528,6 +537,20 @@ export const useCalendarStore = create<CalendarState>((set, get) => ({
       })
     } catch (err) {
       console.error('[CalendarStore] disconnectGoogle failed:', err)
+    }
+  },
+
+  refreshGoogleStatus: async () => {
+    const api = getCalendarApi()
+    try {
+      const status = await api.getGoogleConnectionStatus()
+      set({
+        googleConnected: status.connected,
+        needsReauth: status.needsReauth,
+        accountEmail: status.accountEmail,
+      })
+    } catch (err) {
+      console.warn('[CalendarStore] refreshGoogleStatus failed:', err)
     }
   },
 

@@ -124,6 +124,9 @@ export type ForcePushResult = z.infer<typeof forcePushResultSchema>
 export const googleConnectionStatusSchema = z.object({
   connected: z.boolean(),
   accountEmail: z.string().email().nullable(),
+  // True when a stored token died (invalid_grant) and the user must reconnect. Distinct from
+  // `connected: false` meaning "never connected".
+  needsReauth: z.boolean().default(false),
 })
 export type GoogleConnectionStatus = z.infer<typeof googleConnectionStatusSchema>
 
@@ -226,4 +229,9 @@ export interface CalendarApi {
   setGoogleOAuthConfig: (payload: SetGoogleOAuthConfigInput) => Promise<GoogleOAuthConfig>
   exportDatabase: () => Promise<boolean>
   importDatabase: () => Promise<boolean>
+  /**
+   * Subscribe to "Google account needs re-authentication" events pushed from the main process
+   * (raised when a token refresh fails with invalid_grant). Returns an unsubscribe function.
+   */
+  onGoogleAuthRequired: (callback: () => void) => () => void
 }
