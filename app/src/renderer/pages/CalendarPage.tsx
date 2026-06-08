@@ -16,6 +16,7 @@ import { WeatherOverlay, type WeatherOverlayMode } from '../components/WeatherOv
 import { parseEducationTargets } from '../utils/parseEducationTargets'
 import { parseRoutineCompletions, serializeRoutineCompletions } from '../utils/parseRoutineCompletions'
 import { parseVacationInfo } from '../utils/parseVacationInfo'
+import { buildLaneSpacers, laneBandForType, LANE_BANDS } from '../utils/weekLaneSpacers'
 import { SettingsModal } from '../components/SettingsModal'
 import { SyncModal } from '../components/SyncModal'
 import { useCalendarStore } from '../state/useCalendarStore'
@@ -27,6 +28,27 @@ const GIMPO_AIRPORT_WEATHER_URL =
 
 const RAIN_WEATHER_CODES = new Set<number>([51, 53, 55, 56, 57, 61, 63, 65, 66, 67, 80, 81, 82])
 const SNOW_WEATHER_CODES = new Set<number>([71, 73, 75, 77, 85, 86])
+
+// 같은 주에서 같은 타입(밴드)을 같은 세로 레인에 맞추기 위한 이벤트 정렬 비교자.
+// 1) 밴드(타입 우선순위) → 2) 실제 이벤트가 스페이서보다 위 → 3) 실제는 시작시각·id, 스페이서는 seq.
+// (FullCalendar 가 buildSegCompareObj 로 extendedProps 를 펼쳐 넘겨주므로 laneBand/__spacer/__seq 에 접근 가능)
+function compareLaneOrder(rawA: unknown, rawB: unknown): number {
+  const a = (rawA ?? {}) as Record<string, unknown>
+  const b = (rawB ?? {}) as Record<string, unknown>
+  const bandA = typeof a.laneBand === 'number' ? a.laneBand : 0
+  const bandB = typeof b.laneBand === 'number' ? b.laneBand : 0
+  if (bandA !== bandB) return bandA - bandB
+  const spacerA = a.__spacer ? 1 : 0
+  const spacerB = b.__spacer ? 1 : 0
+  if (spacerA !== spacerB) return spacerA - spacerB
+  if (spacerA === 1) {
+    return (typeof a.__seq === 'number' ? a.__seq : 0) - (typeof b.__seq === 'number' ? b.__seq : 0)
+  }
+  const startA = a.start ? new Date(a.start as string).valueOf() : 0
+  const startB = b.start ? new Date(b.start as string).valueOf() : 0
+  if (startA !== startB) return startA - startB
+  return String(a.id ?? '').localeCompare(String(b.id ?? ''))
+}
 
 interface GimpoCurrentWeatherResponse {
   current?: {
@@ -683,6 +705,8 @@ export function CalendarPage() {
   const [editingMonthField, setEditingMonthField] = useState<'year' | 'month' | null>(null)
   const [monthFieldDraft, setMonthFieldDraft] = useState('')
   const [visibleMonth, setVisibleMonth] = useState(() => DateTime.local().startOf('month'))
+  // FullCalendar 그리드에 실제로 그려지는 날짜 범위(주 단위 레인 정렬 스페이서 계산용). datesSet 에서 갱신.
+  const [gridRange, setGridRange] = useState<{ start: string; end: string } | null>(null)
   const [shiftTeamDrafts, setShiftTeamDrafts] = useState<ShiftTeamAssignments>(() =>
     cloneShiftTeams(shiftSettings.teams),
   )
@@ -1582,10 +1606,14 @@ export function CalendarPage() {
               ...(event.eventType === '중요' ? ['is-important'] : []),
               ...(isEducation ? ['is-education'] : []),
               ...(isVacationStyle ? ['is-vacation'] : []),
-              ...(isBasic ? ['is-basic'] : []),
+              // 일반 + 매핑되지 않은 미지 타입(레거시/외부 동기화)도 일반과 같은 텍스트 레인 높이를 갖게 한다.
+              ...(isBasic || laneBandForType(event.eventType) === null ? ['is-basic'] : []),
             ],
             extendedProps: {
               sortOrder: event.eventType === '운용중지작업' ? -1 : event.eventType === '중요' ? -1 : isEducation ? 2 : isVacationStyle ? 3 : event.eventType === '반복업무' ? 1 : 0,
+              // 같은 주 같은 타입을 같은 세로 레인에 맞추기 위한 밴드 인덱스(타입 우선순위 순서).
+              // 미지 타입은 운용중지(밴드 0)와 겹치지 않도록 맨 아래로 보낸다.
+              laneBand: laneBandForType(event.eventType) ?? LANE_BANDS.length,
               isRoutine,
               isRoutineDone,
               isEducation,
@@ -1597,6 +1625,39 @@ export function CalendarPage() {
           }
         }),
     [events],
+  )
+
+  // 같은 주 같은 타입을 같은 세로 레인에 맞추기 위한 투명 스페이서 이벤트.
+  // 각 날짜에서 "가장 아래 타입보다 위쪽" 빈 레인을 채워, 실제 이벤트가 항상 같은 누적 높이에 놓이게 한다.
+  const laneSpacerEvents = useMemo(() => {
+    if (!gridRange) return []
+    return buildLaneSpacers(
+      events
+        .filter((event) => event.eventType !== '근무' && event.eventType !== '공휴일')
+        .map((event) => ({
+          localId: event.localId,
+          eventType: event.eventType,
+          startAtUtc: event.startAtUtc,
+          endAtUtc: event.endAtUtc,
+        })),
+      gridRange.start,
+      gridRange.end,
+    ).map((spacer) => ({
+      id: spacer.id,
+      start: spacer.dateIso,
+      allDay: true,
+      classNames: ['fc-lane-spacer', `fc-lane-spacer-${spacer.bandKey}`],
+      extendedProps: {
+        __spacer: true,
+        laneBand: spacer.laneBand,
+        __seq: spacer.seq,
+      },
+    }))
+  }, [events, gridRange])
+
+  const calendarEventsWithLanes = useMemo(
+    () => (laneSpacerEvents.length === 0 ? calendarEvents : [...calendarEvents, ...laneSpacerEvents]),
+    [calendarEvents, laneSpacerEvents],
   )
 
   const useCustomTitlebar = true // Windows 11 only — always use custom titlebar
@@ -1692,6 +1753,13 @@ export function CalendarPage() {
     const current = DateTime.fromJSDate(payload.view.currentStart)
     const nextMonth = current.startOf('month')
     setVisibleMonth((prev) => prev.toMillis() === nextMonth.toMillis() ? prev : nextMonth as DateTime<true>)
+
+    // 그리드 가시 범위(start 포함 ~ end 배타)를 로컬 날짜 문자열로 저장 → 주 단위 레인 스페이서 계산.
+    const gridStart = DateTime.fromJSDate(payload.start).toISODate()
+    const gridEnd = DateTime.fromJSDate(payload.end).toISODate()
+    if (gridStart && gridEnd) {
+      setGridRange((prev) => (prev && prev.start === gridStart && prev.end === gridEnd ? prev : { start: gridStart, end: gridEnd }))
+    }
   }
 
   const startInlineTitleEdit = (event: CalendarEvent) => {
@@ -2713,13 +2781,17 @@ export function CalendarPage() {
             eventStartEditable={false}
             eventDurationEditable={false}
             height="100%"
-            expandRows
+            contentHeight="auto"
             fixedWeekCount={false}
             showNonCurrentDates
-          dayMaxEvents
-          eventOrder="sortOrder"
-          events={calendarEvents}
+          eventOrder={compareLaneOrder}
+          eventOrderStrict
+          events={calendarEventsWithLanes}
           eventContent={(arg) => {
+            // 레인 정렬용 투명 스페이서: 콘텐츠 없이 밴드 높이만 차지(높이는 CSS .fc-lane-spacer-* 가 지정).
+            if (arg.event.extendedProps?.__spacer === true) {
+              return { domNodes: [] }
+            }
             const isEditing = editingTitleEventId === arg.event.id
             if (!isEditing) {
               const isRoutine = arg.event.extendedProps?.isRoutine === true
@@ -2829,6 +2901,10 @@ export function CalendarPage() {
             )
           }}
           eventDidMount={(arg) => {
+            // 레인 정렬용 스페이서는 폰트 보정·툴팁·우클릭 핸들러를 붙이지 않는다.
+            if (arg.event.extendedProps?.__spacer === true) {
+              return
+            }
 
             // Auto-fit font size: max 18px, scale down if text overflows
             const textEl = arg.el.querySelector('.fc-event-title-inline-text, .fc-education-title, .fc-vacation-title') as HTMLElement | null

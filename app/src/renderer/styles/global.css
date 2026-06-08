@@ -1054,8 +1054,10 @@ body {
 .calendar-panel .fc .fc-daygrid-body table {
   margin: 0;
   width: 100%;
-  height: 100%;
 }
+
+/* contentHeight="auto" 와 함께 행 높이를 내용에 맞춘다(희소한 주는 짧게, 바쁜 주는 필요한 만큼).
+   더보기(+N)를 제거했으므로, 빈 주의 공간을 줄여 바쁜 주가 패널 안에 들어오도록 한다. */
 
 .calendar-panel .fc .fc-scroller-harness,
 .calendar-panel .fc .fc-scroller {
@@ -2497,7 +2499,8 @@ textarea {
   color: #fff;
   font-size: 13px;
   font-weight: 600;
-  line-height: 1.5;
+  /* 교육 레인(22px) 안에서 pill 이 클리핑되지 않도록 line-height 를 1.3 으로 낮춘다(~18.9px). */
+  line-height: 1.3;
   white-space: nowrap;
 }
 
@@ -2650,8 +2653,6 @@ textarea {
   cursor: pointer;
   opacity: 0.8;
   user-select: none;
-  position: relative;
-  top: 2px;
 }
 
 .fc .fc-routine-check svg {
@@ -2697,6 +2698,65 @@ textarea {
 .fc .fc-event-title-inline-input:focus {
   outline: none;
   box-shadow: none;
+}
+
+/* ── Week lane alignment ──
+   같은 주에서 같은 타입(밴드)을 같은 세로 레인에 맞추기 위해, 타입(밴드)별로 이벤트 높이를 고정한다.
+   실제 이벤트와 정렬용 투명 스페이서가 항상 동일한 높이를 갖도록 같은 CSS 변수를 쓴다.
+   (교육은 대상 pill 유무로 자연 높이가 달라지는데, 높이를 고정하면 그 변동이 사라져 아래 줄 정렬이 안정된다) */
+:root {
+  --lane-h-text: 24px; /* 일반 / 반복업무 / 운용중지작업 / 중요 */
+  --lane-h-edu: 22px; /* 교육 */
+  --lane-h-vac: 22px; /* 휴가 / 출장 */
+}
+
+.fc .fc-daygrid-event.is-basic,
+.fc .fc-daygrid-event.is-routine,
+.fc .fc-daygrid-event.is-maintenance,
+.fc .fc-daygrid-event.is-important,
+.fc .fc-daygrid-event.is-education,
+.fc .fc-daygrid-event.is-vacation,
+.fc .fc-daygrid-event.fc-lane-spacer {
+  box-sizing: border-box;
+  overflow: hidden;
+  display: flex;
+  align-items: center;
+}
+
+.fc .fc-daygrid-event.is-basic,
+.fc .fc-daygrid-event.is-routine,
+.fc .fc-daygrid-event.is-maintenance,
+.fc .fc-daygrid-event.is-important,
+.fc .fc-daygrid-event.fc-lane-spacer-maint,
+.fc .fc-daygrid-event.fc-lane-spacer-important,
+.fc .fc-daygrid-event.fc-lane-spacer-basic,
+.fc .fc-daygrid-event.fc-lane-spacer-routine {
+  height: var(--lane-h-text);
+}
+
+.fc .fc-daygrid-event.is-education,
+.fc .fc-daygrid-event.fc-lane-spacer-edu {
+  height: var(--lane-h-edu);
+}
+
+.fc .fc-daygrid-event.is-vacation,
+.fc .fc-daygrid-event.fc-lane-spacer-vac,
+.fc .fc-daygrid-event.fc-lane-spacer-trip {
+  height: var(--lane-h-vac);
+}
+
+/* 정렬용 스페이서: 완전 투명·비상호작용, 밴드 높이만 차지 */
+.fc .fc-daygrid-event.fc-lane-spacer {
+  background: transparent !important;
+  border: 0 !important;
+  box-shadow: none !important;
+  pointer-events: none !important;
+  cursor: default !important;
+}
+
+/* is-routine 실제 이벤트는 margin-top:0 이라, routine 스페이서도 맞춰 1px 어긋남을 막는다 */
+.fc .fc-daygrid-event.fc-lane-spacer-routine {
+  margin-top: 0;
 }
 
 /* Grid lines */
