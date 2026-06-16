@@ -16,7 +16,7 @@ import { WeatherOverlay, type WeatherOverlayMode } from '../components/WeatherOv
 import { parseEducationTargets } from '../utils/parseEducationTargets'
 import { parseRoutineCompletions, serializeRoutineCompletions } from '../utils/parseRoutineCompletions'
 import { parseVacationInfo } from '../utils/parseVacationInfo'
-import { buildLaneSpacers, laneBandForType, LANE_BANDS } from '../utils/weekLaneSpacers'
+import { buildLaneLayout, laneBandForType } from '../utils/weekLaneSpacers'
 import { SettingsModal } from '../components/SettingsModal'
 import { SyncModal } from '../components/SyncModal'
 import { useCalendarStore } from '../state/useCalendarStore'
@@ -29,15 +29,18 @@ const GIMPO_AIRPORT_WEATHER_URL =
 const RAIN_WEATHER_CODES = new Set<number>([51, 53, 55, 56, 57, 61, 63, 65, 66, 67, 80, 81, 82])
 const SNOW_WEATHER_CODES = new Set<number>([71, 73, 75, 77, 85, 86])
 
-// 같은 주에서 같은 타입(밴드)을 같은 세로 레인에 맞추기 위한 이벤트 정렬 비교자.
-// 1) 밴드(타입 우선순위) → 2) 실제 이벤트가 스페이서보다 위 → 3) 실제는 시작시각·id, 스페이서는 seq.
-// (FullCalendar 가 buildSegCompareObj 로 extendedProps 를 펼쳐 넘겨주므로 laneBand/__spacer/__seq 에 접근 가능)
+// 레인 배정이 없는 이벤트(미지 타입·범위 밖 멀티데이)는 맨 아래로 정렬.
+const UNRANKED_LANE_ORDER = 9999
+
+// 같은 주에서 레인 레이아웃에 맞춰 이벤트를 세로로 정렬하는 비교자.
+// 1) laneOrder(그 주에 배정된 가상 밴드 인덱스) → 2) 실제 이벤트가 스페이서보다 위 → 3) 실제는 시작시각·id, 스페이서는 seq.
+// (FullCalendar 가 buildSegCompareObj 로 extendedProps 를 펼쳐 넘겨주므로 laneOrder/__spacer/__seq 에 접근 가능)
 function compareLaneOrder(rawA: unknown, rawB: unknown): number {
   const a = (rawA ?? {}) as Record<string, unknown>
   const b = (rawB ?? {}) as Record<string, unknown>
-  const bandA = typeof a.laneBand === 'number' ? a.laneBand : 0
-  const bandB = typeof b.laneBand === 'number' ? b.laneBand : 0
-  if (bandA !== bandB) return bandA - bandB
+  const laneA = typeof a.laneOrder === 'number' ? a.laneOrder : 0
+  const laneB = typeof b.laneOrder === 'number' ? b.laneOrder : 0
+  if (laneA !== laneB) return laneA - laneB
   const spacerA = a.__spacer ? 1 : 0
   const spacerB = b.__spacer ? 1 : 0
   if (spacerA !== spacerB) return spacerA - spacerB
@@ -1611,9 +1614,6 @@ export function CalendarPage() {
             ],
             extendedProps: {
               sortOrder: event.eventType === '운용중지작업' ? -1 : event.eventType === '중요' ? -1 : isEducation ? 2 : isVacationStyle ? 3 : event.eventType === '반복업무' ? 1 : 0,
-              // 같은 주 같은 타입을 같은 세로 레인에 맞추기 위한 밴드 인덱스(타입 우선순위 순서).
-              // 미지 타입은 운용중지(밴드 0)와 겹치지 않도록 맨 아래로 보낸다.
-              laneBand: laneBandForType(event.eventType) ?? LANE_BANDS.length,
               isRoutine,
               isRoutineDone,
               isEducation,
@@ -1627,11 +1627,10 @@ export function CalendarPage() {
     [events],
   )
 
-  // 같은 주 같은 타입을 같은 세로 레인에 맞추기 위한 투명 스페이서 이벤트.
-  // 각 날짜에서 "가장 아래 타입보다 위쪽" 빈 레인을 채워, 실제 이벤트가 항상 같은 누적 높이에 놓이게 한다.
-  const laneSpacerEvents = useMemo(() => {
-    if (!gridRange) return []
-    return buildLaneSpacers(
+  // 주 단위 레인 레이아웃(같은 높이·비충돌 타입은 한 레인 공유 + 정렬용 스페이서). datesSet 의 가시 범위로 계산.
+  const laneLayout = useMemo(() => {
+    if (!gridRange) return null
+    return buildLaneLayout(
       events
         .filter((event) => event.eventType !== '근무' && event.eventType !== '공휴일')
         .map((event) => ({
@@ -1642,23 +1641,34 @@ export function CalendarPage() {
         })),
       gridRange.start,
       gridRange.end,
-    ).map((spacer) => ({
+    )
+  }, [events, gridRange])
+
+  // 실제 이벤트에 laneOrder(그 주 가상 밴드 인덱스)를 주입하고, 정렬용 투명 스페이서를 덧붙인다.
+  const calendarEventsWithLanes = useMemo(() => {
+    if (!laneLayout) return calendarEvents
+    const { spacers, laneOrderByLocalId } = laneLayout
+    const reals = calendarEvents.map((event) => ({
+      ...event,
+      extendedProps: {
+        ...event.extendedProps,
+        laneOrder: laneOrderByLocalId.get(event.id) ?? UNRANKED_LANE_ORDER,
+      },
+    }))
+    if (spacers.length === 0) return reals
+    const spacerEvents = spacers.map((spacer) => ({
       id: spacer.id,
       start: spacer.dateIso,
       allDay: true,
-      classNames: ['fc-lane-spacer', `fc-lane-spacer-${spacer.bandKey}`],
+      classNames: ['fc-lane-spacer', `fc-lane-spacer-${spacer.heightKey}`],
       extendedProps: {
         __spacer: true,
-        laneBand: spacer.laneBand,
+        laneOrder: spacer.laneOrder,
         __seq: spacer.seq,
       },
     }))
-  }, [events, gridRange])
-
-  const calendarEventsWithLanes = useMemo(
-    () => (laneSpacerEvents.length === 0 ? calendarEvents : [...calendarEvents, ...laneSpacerEvents]),
-    [calendarEvents, laneSpacerEvents],
-  )
+    return [...reals, ...spacerEvents]
+  }, [calendarEvents, laneLayout])
 
   const useCustomTitlebar = true // Windows 11 only — always use custom titlebar
   const visibleMemberCount = shiftSettings.shiftTeamMode === 'SINGLE' ? 1 : 2
@@ -2781,7 +2791,7 @@ export function CalendarPage() {
             eventStartEditable={false}
             eventDurationEditable={false}
             height="100%"
-            contentHeight="auto"
+            expandRows
             fixedWeekCount={false}
             showNonCurrentDates
           eventOrder={compareLaneOrder}
