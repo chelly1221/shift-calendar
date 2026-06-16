@@ -2,11 +2,16 @@ import { DateTime } from 'luxon'
 
 /**
  * 같은 주(week row) 안에서 같은 타입을 같은 세로 위치(레인)에 맞추되,
- * "같은 높이이고 같은 날에 겹치지 않는 다른 타입"끼리는 한 레인을 공유해 전체 높이를 줄이는
+ * "같은 풀에 속하고 같은 날에 겹치지 않는 다른 타입"끼리는 한 레인을 공유해 전체 높이를 줄이는
  * 레인 레이아웃 계산 로직.
  *
+ * 풀(스택 tier)은 위→아래 순서로 쌓이며, 레인 공유는 같은 풀 안에서만 일어난다(한 풀의 멤버는 같은 픽셀 높이):
+ *   풀 0 (최상단): 휴가·교육 (short, 22px)
+ *   풀 1 (가운데): 운용중지작업·중요·일반·반복업무 (text, 24px)
+ *   풀 2 (최하단): 출장 (short, 22px)
+ *
  * 동작(가상 밴드 + 최대 점유 예약):
- * 1) 타입을 같은 픽셀 높이끼리 풀로 묶는다. text(24px)={운용중지·중요·일반·반복업무}, short(22px)={교육·휴가·출장}.
+ * 1) 풀을 위→아래(pool 오름차순) 순서로 처리한다.
  * 2) 각 풀 안에서, "그 주에 서로 겹치는(같은 날 둘 다 등장하는) 날이 없는" 타입들을 하나의 가상 밴드(그룹)로 묶는다.
  *    (그리디 first-fit 컬러링 → 가상 밴드 수 = 그 풀에서 한 날에 동시에 등장하는 타입 최대 수.)
  * 3) 가상 밴드를 위→아래 순서로 쌓고, 가상 밴드별 예약 레인 수 = 그 주 "하루 최대 점유 수"로 잡는다.
@@ -53,22 +58,29 @@ export interface LaneLayout {
 }
 
 /**
- * 위(top) → 아래(bottom) 우선순위 순서의 타입 밴드 정의. 타입 하나당 밴드 하나.
- * heightKey 가 같은(=같은 픽셀 높이) 밴드끼리만 레인을 공유할 수 있다.
- * 풀(heightKey) 순서는 HEIGHT_ORDER 로 결정한다(text 풀이 위, short 풀이 아래).
+ * 타입 밴드 정의(타입 하나당 밴드 하나). 같은 풀(pool) 안에서만 레인을 공유할 수 있고,
+ * 한 풀의 멤버는 같은 픽셀 높이(heightKey)다. pool 이 작을수록 위에 쌓인다(휴가·교육 최상단, 출장 최하단).
+ * 배열 순서 = 같은 풀 안에서의 우선순위(위→아래).
  */
-export const LANE_BANDS: ReadonlyArray<{ key: string; type: string; heightKey: LaneHeightKey }> = [
-  { key: 'maint', type: '운용중지작업', heightKey: 'text' },
-  { key: 'important', type: '중요', heightKey: 'text' },
-  { key: 'basic', type: '일반', heightKey: 'text' },
-  { key: 'routine', type: '반복업무', heightKey: 'text' },
-  { key: 'edu', type: '교육', heightKey: 'short' },
-  { key: 'vac', type: '휴가', heightKey: 'short' },
-  { key: 'trip', type: '출장', heightKey: 'short' },
+export const LANE_BANDS: ReadonlyArray<{
+  key: string
+  type: string
+  heightKey: LaneHeightKey
+  pool: number
+}> = [
+  { key: 'vac', type: '휴가', heightKey: 'short', pool: 0 },
+  { key: 'edu', type: '교육', heightKey: 'short', pool: 0 },
+  { key: 'maint', type: '운용중지작업', heightKey: 'text', pool: 1 },
+  { key: 'important', type: '중요', heightKey: 'text', pool: 1 },
+  { key: 'basic', type: '일반', heightKey: 'text', pool: 1 },
+  { key: 'routine', type: '반복업무', heightKey: 'text', pool: 1 },
+  { key: 'trip', type: '출장', heightKey: 'short', pool: 2 },
 ]
 
-/** 가상 밴드를 쌓는 풀(높이 클래스) 순서: text(24px) 가 위, short(22px) 가 아래. */
-const HEIGHT_ORDER: ReadonlyArray<LaneHeightKey> = ['text', 'short']
+/** 가상 밴드를 쌓는 풀 순서(작은 pool 이 위). 레인 공유는 같은 풀 안에서만 일어난다. */
+const LANE_POOLS: ReadonlyArray<number> = [...new Set(LANE_BANDS.map((b) => b.pool))].sort(
+  (a, b) => a - b,
+)
 
 const BAND_INDEX_BY_TYPE = new Map(LANE_BANDS.map((band, index) => [band.type, index] as const))
 
@@ -117,6 +129,8 @@ function isDisjoint(a: Set<string>, b: Set<string>): boolean {
 
 interface VirtualBand {
   heightKey: LaneHeightKey
+  /** 이 가상 밴드가 속한 스택 풀(작을수록 위). 레인 공유는 같은 풀끼리만. */
+  pool: number
   /** 이 가상 밴드에 묶인 타입 밴드 인덱스들(서로 겹치지 않음). */
   members: number[]
   /** 묶인 타입들이 점유하는 날의 합집합. */
@@ -188,18 +202,22 @@ export function buildLaneLayout(
       }
     }
 
-    // 풀(높이 클래스) 순서대로, 겹치지 않는 타입을 가상 밴드로 묶는다(그리디 first-fit, 우선순위 순서).
+    // 풀(스택 tier) 순서대로, 같은 풀 안에서 겹치지 않는 타입을 가상 밴드로 묶는다(그리디 first-fit, 우선순위 순서).
     const virtualBands: VirtualBand[] = []
-    for (const heightKey of HEIGHT_ORDER) {
+    for (const pool of LANE_POOLS) {
       for (let band = 0; band < LANE_BANDS.length; band += 1) {
-        if (LANE_BANDS[band].heightKey !== heightKey) continue
+        if (LANE_BANDS[band].pool !== pool) continue
         if (bandMax[band] <= 0) continue // 이번 주에 없는 타입
         // 이 풀에서 이미 만든 가상 밴드 중, 이 타입과 겹치는 날이 없는 첫 그룹에 합류.
-        let group = virtualBands.find(
-          (vb) => vb.heightKey === heightKey && isDisjoint(vb.days, daySet[band]),
-        )
+        let group = virtualBands.find((vb) => vb.pool === pool && isDisjoint(vb.days, daySet[band]))
         if (!group) {
-          group = { heightKey, members: [], days: new Set<string>(), laneCount: 0 }
+          group = {
+            heightKey: LANE_BANDS[band].heightKey,
+            pool,
+            members: [],
+            days: new Set<string>(),
+            laneCount: 0,
+          }
           virtualBands.push(group)
         }
         group.members.push(band)
@@ -239,6 +257,8 @@ export function buildLaneLayout(
       if (deepest < 0) continue
 
       // 깊은 밴드보다 "위쪽" 가상 밴드를 예약 수까지 스페이서로 채운다.
+      // (이 채움이 CalendarPage 의 eventOrderStrict=false 에서 밴드 간 정렬을 지킨다: 위쪽에 빈 레인이
+      //  없어야 FullCalendar 가 하위 밴드 이벤트를 상위 빈 레인으로 끌어올리지 못한다. 약화 금지.)
       for (let vi = 0; vi < deepest; vi += 1) {
         if (laneCountV[vi] <= 0) continue
         const need = laneCountV[vi] - vOcc[vi]

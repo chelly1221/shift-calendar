@@ -2296,7 +2296,7 @@ textarea {
   color: var(--ink-700);
   box-shadow: none;
   font-size: 22px;
-  margin-top: 0;
+  /* margin-top 은 FC 기본 1px 유지 → 다른 text 타입·정렬 스페이서와 실효 높이(25px) 통일. */
   padding-top: 0;
   padding-bottom: 0;
   line-height: 1.2;

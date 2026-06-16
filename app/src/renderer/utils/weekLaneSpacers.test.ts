@@ -32,13 +32,13 @@ const GRID_START = '2026-06-07'
 const GRID_END = '2026-06-14'
 
 describe('laneBandForType', () => {
-  it('타입별 밴드 인덱스를 우선순위 순서로 반환한다', () => {
-    expect(laneBandForType('운용중지작업')).toBe(0)
-    expect(laneBandForType('중요')).toBe(1)
-    expect(laneBandForType('일반')).toBe(2)
-    expect(laneBandForType('반복업무')).toBe(3)
-    expect(laneBandForType('교육')).toBe(4)
-    expect(laneBandForType('휴가')).toBe(5)
+  it('타입별 밴드 인덱스를 우선순위 순서로 반환한다(휴가·교육 최상단, 출장 최하단)', () => {
+    expect(laneBandForType('휴가')).toBe(0)
+    expect(laneBandForType('교육')).toBe(1)
+    expect(laneBandForType('운용중지작업')).toBe(2)
+    expect(laneBandForType('중요')).toBe(3)
+    expect(laneBandForType('일반')).toBe(4)
+    expect(laneBandForType('반복업무')).toBe(5)
     expect(laneBandForType('출장')).toBe(6)
   })
 
@@ -61,8 +61,8 @@ describe('buildLaneLayout', () => {
     expect(layout.spacers).toEqual([])
   })
 
-  it('같은 타입을 같은 레인에 맞추도록 위쪽 빈 밴드를 채운다(겹치는 타입은 분리)', () => {
-    // 운용중지·일반은 6/8 에 같이 있어 공유 불가 → 서로 다른 가상 밴드(0,1). 교육은 short → 밴드 2.
+  it('같은 타입을 같은 레인에 맞추도록 사이의 빈 밴드를 채운다(겹치는 타입은 분리)', () => {
+    // 교육(풀0)=V0 최상단, 운용중지(풀1)=V1, 일반(풀1)=V2. 운중·일반은 6/8 에 겹쳐 분리.
     const events = [
       singleDay('운용중지작업', 2026, 6, 8),
       singleDay('일반', 2026, 6, 8),
@@ -72,13 +72,9 @@ describe('buildLaneLayout', () => {
       singleDay('교육', 2026, 6, 10),
     ]
     const { spacers } = buildLaneLayout(events, GRID_START, GRID_END)
-    // 6/8: 셋 다 → 0 / 6/9: 운중 없음 → text laneOrder0 / 6/10: 운중·일반 없음 → text 0,1
+    // 6/8: 셋 다 점유 → 채움 없음 / 6/9: 일반(V2) 위 운중(V1)이 비어 1칸 채움 / 6/10: 교육(V0)이 최상단 → 위 없음
     expect(spacerKeys(spacers)).toEqual(
-      spacerKeys([
-        { id: '', dateIso: '2026-06-09', heightKey: 'text', laneOrder: 0, seq: 0 },
-        { id: '', dateIso: '2026-06-10', heightKey: 'text', laneOrder: 0, seq: 0 },
-        { id: '', dateIso: '2026-06-10', heightKey: 'text', laneOrder: 1, seq: 0 },
-      ]),
+      spacerKeys([{ id: '', dateIso: '2026-06-09', heightKey: 'text', laneOrder: 1, seq: 0 }]),
     )
   })
 
@@ -116,18 +112,18 @@ describe('buildLaneLayout', () => {
     expect(laneOrderByLocalId.get('vac')).toBe(0)
   })
 
-  it('높이가 다르면(text vs short) 겹치지 않아도 레인을 공유하지 않는다', () => {
+  it('다른 풀(교육 vs 일반)은 겹치지 않아도 레인을 공유하지 않는다', () => {
     const events = [
       singleDay('일반', 2026, 6, 8, 'basic'),
       singleDay('교육', 2026, 6, 9, 'edu'),
     ]
     const { spacers, laneOrderByLocalId } = buildLaneLayout(events, GRID_START, GRID_END)
-    // 일반(text)=밴드0, 교육(short)=밴드1. 6/9 에 교육을 lane1 에 두려면 위 text 레인 1칸을 채운다.
+    // 교육(풀0)=밴드0 최상단, 일반(풀1)=밴드1. 6/8 에 일반을 lane1 로 내리려면 위 교육(short) 레인 1칸을 채운다.
     expect(spacerKeys(spacers)).toEqual(
-      spacerKeys([{ id: '', dateIso: '2026-06-09', heightKey: 'text', laneOrder: 0, seq: 0 }]),
+      spacerKeys([{ id: '', dateIso: '2026-06-08', heightKey: 'short', laneOrder: 0, seq: 0 }]),
     )
-    expect(laneOrderByLocalId.get('basic')).toBe(0)
-    expect(laneOrderByLocalId.get('edu')).toBe(1)
+    expect(laneOrderByLocalId.get('edu')).toBe(0)
+    expect(laneOrderByLocalId.get('basic')).toBe(1)
   })
 
   it('가상 밴드 예약은 하루 최대 점유 수만큼(한 타입이 2개면 2칸) + 공유', () => {
@@ -145,20 +141,20 @@ describe('buildLaneLayout', () => {
     expect(laneOrderByLocalId.get('imp')).toBe(0)
   })
 
-  it('상위 가상 밴드가 max 예약(2)이면 아래(다른 높이) 타입은 모든 날 같은 레인에서 시작한다', () => {
-    // 일반 2(월) + 일반 1·교육 1(화). 일반=text 밴드0(lc2), 교육=short 밴드1.
+  it('상위 가상 밴드가 max 예약(2)이면 아래 풀 타입은 모든 날 같은 레인에서 시작한다', () => {
+    // 일반 2(월) + 일반 1·출장 1(화). 일반=text 밴드(lc2), 출장=아래 풀(short).
     const events = [
       singleDay('일반', 2026, 6, 8, 'b1'),
       singleDay('일반', 2026, 6, 8, 'b2'),
       singleDay('일반', 2026, 6, 9, 'b3'),
-      singleDay('교육', 2026, 6, 9, 'edu'),
+      singleDay('출장', 2026, 6, 9, 'trip'),
     ]
     const { spacers, laneOrderByLocalId } = buildLaneLayout(events, GRID_START, GRID_END)
-    // 6/9: 일반 1개라 예약 2칸 중 1칸을 text 스페이서(seq1)로 채워 교육을 lane2 로 → 교육 항상 일반 블록 아래.
+    // 6/9: 일반 1개라 예약 2칸 중 1칸을 text 스페이서(seq1)로 채워 출장을 lane2 로 → 출장 항상 일반 블록 아래.
     expect(spacerKeys(spacers)).toEqual(
       spacerKeys([{ id: '', dateIso: '2026-06-09', heightKey: 'text', laneOrder: 0, seq: 1 }]),
     )
-    expect(laneOrderByLocalId.get('edu')).toBe(1)
+    expect(laneOrderByLocalId.get('trip')).toBe(1)
   })
 
   it('겹치는 타입과 겹치지 않는 타입이 섞여도 최소 레인으로 패킹한다', () => {
@@ -176,21 +172,50 @@ describe('buildLaneLayout', () => {
     expect(laneOrderByLocalId.get('basic')).toBe(1)
   })
 
-  it('멀티데이 이벤트도 걸친 모든 날에서 같은 레인에 맞춰 정렬된다', () => {
+  it('휴가·교육은 text 타입보다 위(최상단), 출장은 아래(최하단) 레인에 배치된다', () => {
+    // 한 날에 휴가·교육·일반·출장이 모두 있으면 세로 순서: 휴가(0) → 교육(1) → 일반(2) → 출장(3).
     const events = [
-      // 휴가: 6/8 ~ 6/10 (종료 6/11 자정 → 6/8,6/9,6/10 포함)
+      singleDay('휴가', 2026, 6, 8, 'vac'),
+      singleDay('교육', 2026, 6, 8, 'edu'),
+      singleDay('일반', 2026, 6, 8, 'basic'),
+      singleDay('출장', 2026, 6, 8, 'trip'),
+    ]
+    const { laneOrderByLocalId } = buildLaneLayout(events, GRID_START, GRID_END)
+    expect(laneOrderByLocalId.get('vac')).toBe(0)
+    expect(laneOrderByLocalId.get('edu')).toBe(1)
+    expect(laneOrderByLocalId.get('basic')).toBe(2)
+    expect(laneOrderByLocalId.get('trip')).toBe(3)
+  })
+
+  it('휴가(최상단 풀) 멀티데이는 다른 타입이 없는 날에도 항상 lane 0 에서 시작한다', () => {
+    const events = [
+      // 휴가: 6/8 ~ 6/10 (종료 6/11 자정 → 6/8,6/9,6/10 포함). 휴가는 최상단 풀이라 위에 채울 밴드가 없다.
       ev('휴가', localUtc(2026, 6, 8, 9), localUtc(2026, 6, 11, 0), 'vac'),
+      singleDay('일반', 2026, 6, 9, 'basic'), // 화에만 일반(text, 아래 밴드)
+    ]
+    const { spacers, laneOrderByLocalId } = buildLaneLayout(events, GRID_START, GRID_END)
+    // 휴가=밴드0(최상단), 일반=밴드1. 휴가 위에는 밴드가 없어 스페이서가 필요 없다.
+    // 6/9 의 일반은 그 위 휴가(점유)와 같은 폭이라 채움 0 → 스페이서 전혀 없음.
+    expect(spacers).toEqual([])
+    expect(laneOrderByLocalId.get('vac')).toBe(0)
+    expect(laneOrderByLocalId.get('basic')).toBe(1)
+  })
+
+  it('멀티데이(아래 풀) 이벤트도 걸친 모든 날에서 같은 레인에 맞춰 정렬된다', () => {
+    const events = [
+      // 출장: 6/8 ~ 6/10 (종료 6/11 자정 → 6/8,6/9,6/10 포함). 출장은 최하단 풀.
+      ev('출장', localUtc(2026, 6, 8, 9), localUtc(2026, 6, 11, 0), 'trip'),
       singleDay('일반', 2026, 6, 9, 'basic'), // 화에만 일반(text, 위 밴드)
     ]
     const { spacers, laneOrderByLocalId } = buildLaneLayout(events, GRID_START, GRID_END)
-    // 일반=text 밴드0, 휴가=short 밴드1. 6/8·6/10 은 일반이 없어 text 스페이서로 휴가를 lane1 에 맞춘다.
+    // 일반=text 밴드0, 출장=아래 풀 밴드1. 6/8·6/10 은 일반이 없어 text 스페이서로 출장을 lane1 에 맞춘다.
     expect(spacerKeys(spacers)).toEqual(
       spacerKeys([
         { id: '', dateIso: '2026-06-08', heightKey: 'text', laneOrder: 0, seq: 0 },
         { id: '', dateIso: '2026-06-10', heightKey: 'text', laneOrder: 0, seq: 0 },
       ]),
     )
-    expect(laneOrderByLocalId.get('vac')).toBe(1)
+    expect(laneOrderByLocalId.get('trip')).toBe(1)
     expect(laneOrderByLocalId.get('basic')).toBe(0)
   })
 

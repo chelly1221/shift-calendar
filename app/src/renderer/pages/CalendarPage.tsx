@@ -721,6 +721,7 @@ export function CalendarPage() {
   const [editingTodayShiftRow, setEditingTodayShiftRow] = useState<'dayWorker' | 'day' | 'night' | null>(null)
   const [editingTodayShiftDraft, setEditingTodayShiftDraft] = useState('')
   const calendarRef = useRef<FullCalendar | null>(null)
+  const calendarPanelRef = useRef<HTMLElement>(null)
   const eventsRef = useRef<CalendarEvent[]>(events)
   const allEventsRef = useRef<CalendarEvent[]>(allEvents)
   const legacyRoutineMigrationRunningRef = useRef(false)
@@ -1669,6 +1670,73 @@ export function CalendarPage() {
     }))
     return [...reals, ...spacerEvents]
   }, [calendarEvents, laneLayout])
+
+  // 주별 남는 공간 재분배: 각 주 행을 max(콘텐츠 높이, 수위 T) 로 맞춰 행 높이를 최대한 균등하게 한다.
+  // 수위 T 는 sum(max(콘텐츠_i, T)) = 가용 높이 가 되도록 워터필링으로 구한다.
+  // → 콘텐츠가 T 안에 드는 주는 모두 같은 높이(T), 넘치는 주만 콘텐츠 높이 → 잘림 없이 편차 최소.
+  // (FC expandRows 는 테이블 높이만 잡고 행 분배는 브라우저 비례분배라 바쁜 주가 과도하게 컸다.)
+  const balanceWeekRowHeights = useCallback(() => {
+    const body = calendarPanelRef.current?.querySelector('.fc-daygrid-body') as HTMLElement | null
+    if (!body) return
+    const scroller = body.closest('.fc-scroller') as HTMLElement | null
+    const available = scroller?.clientHeight ?? body.clientHeight
+    const rows = Array.from(body.querySelectorAll<HTMLTableRowElement>('tr[role="row"]'))
+    if (!available || rows.length === 0) return
+
+    // 행 자연 콘텐츠 높이 = 그 주 셀 중 (날짜영역 + 이벤트스택) 최대. 행 stretch 와 무관하게 측정.
+    const contents = rows.map((tr) => {
+      let maxH = 0
+      for (const cell of Array.from(tr.children) as HTMLElement[]) {
+        const frame = cell.querySelector('.fc-daygrid-day-frame') as HTMLElement | null
+        if (!frame) continue
+        const top = frame.querySelector<HTMLElement>('.fc-daygrid-day-top')
+        const evs = frame.querySelector<HTMLElement>('.fc-daygrid-day-events')
+        const h = (top?.offsetHeight ?? 0) + (evs?.offsetHeight ?? 0)
+        if (h > maxH) maxH = h
+      }
+      return maxH
+    })
+
+    // 워터필링: 높은 행부터 수위 위로 빼고, 남은 예산을 남은 행으로 나눈 값이 수위 T.
+    let budget = available
+    let count = rows.length
+    for (const h of [...contents].sort((a, b) => b - a)) {
+      const level = budget / count
+      if (h >= level) {
+        budget -= h
+        count -= 1
+        if (count === 0) break
+      } else {
+        break
+      }
+    }
+    const water = count > 0 ? Math.max(0, budget / count) : 0
+    for (let i = 0; i < rows.length; i += 1) {
+      rows[i].style.height = `${Math.round(Math.max(contents[i], water))}px`
+    }
+  }, [])
+
+  // FC 가 행을 그린 다음(더블 rAF) 균등화. 월 전환·이벤트 변경 시 재실행.
+  useEffect(() => {
+    let inner = 0
+    const outer = requestAnimationFrame(() => {
+      inner = requestAnimationFrame(() => balanceWeekRowHeights())
+    })
+    return () => {
+      cancelAnimationFrame(outer)
+      cancelAnimationFrame(inner)
+    }
+    // shiftDisplayByDate/publicHolidayMap 도 날짜 셀 높이에 영향 → 변경 시 재균등화.
+  }, [balanceWeekRowHeights, calendarEventsWithLanes, gridRange, shiftDisplayByDate, publicHolidayMap])
+
+  // 패널 크기 변경 시 재균등화(창 리사이즈 등).
+  useEffect(() => {
+    const panel = calendarPanelRef.current
+    if (!panel) return
+    const observer = new ResizeObserver(() => requestAnimationFrame(() => balanceWeekRowHeights()))
+    observer.observe(panel)
+    return () => observer.disconnect()
+  }, [balanceWeekRowHeights])
 
   const useCustomTitlebar = true // Windows 11 only — always use custom titlebar
   const visibleMemberCount = shiftSettings.shiftTeamMode === 'SINGLE' ? 1 : 2
@@ -2678,7 +2746,7 @@ export function CalendarPage() {
           </div>
         </aside>
 
-        <main className="calendar-panel" onWheel={handleCalendarWheel} onClick={(e) => {
+        <main className="calendar-panel" ref={calendarPanelRef} onWheel={handleCalendarWheel} onClick={(e) => {
           if (e.button !== 0) return
           const target = e.target as HTMLElement
           if (target.closest('.fc-day-shift-summary-input')) return
@@ -2795,7 +2863,11 @@ export function CalendarPage() {
             fixedWeekCount={false}
             showNonCurrentDates
           eventOrder={compareLaneOrder}
-          eventOrderStrict
+          // eventOrderStrict=false 가 핵심: FC 가 빈 레인을 채워(그리디=인터벌 최적 컬러링) 같은 타입의
+          // 멀티데이 계단식이 최대 동시 수만큼의 레인에만 들어간다(예: 최대 2면 2행, 3행으로 안 갈라짐).
+          // 밴드 간 정렬은 buildLaneLayout 의 스페이서(그 날 가장 깊은 밴드 위쪽 레인을 모두 채움)가 지켜준다
+          // — 그 채움이 있어 FC 가 하위 밴드 이벤트를 상위 빈 레인으로 끌어올리지 못한다. 스페이서 채움을 약화하면 이 보장이 깨진다.
+          eventOrderStrict={false}
           events={calendarEventsWithLanes}
           eventContent={(arg) => {
             // 레인 정렬용 투명 스페이서: 콘텐츠 없이 밴드 높이만 차지(높이는 CSS .fc-lane-spacer-* 가 지정).
