@@ -610,14 +610,16 @@ body {
 }
 
 /* ── Upcoming Card ── */
+/* 카드 3개(다가오는 일정/휴가/교육)는 내용 높이(basis: auto) 비율로 공간을 나누고,
+   넘치면 각자 min-height까지 줄어든 뒤 리스트가 내부 스크롤된다. */
 .upcoming-card {
   padding: 12px;
   border-radius: var(--radius-md);
   background: var(--surface-raised);
   box-shadow: var(--shadow-sm);
   border: 0.5px solid var(--line);
-  flex: 1;
-  min-height: 0;
+  flex: 1 1 auto;
+  min-height: 108px;
   display: flex;
   flex-direction: column;
 }
@@ -693,7 +695,8 @@ body {
   background: var(--surface-raised);
   box-shadow: var(--shadow-sm);
   border: 0.5px solid var(--line);
-  flex-shrink: 0;
+  flex: 0 1 auto;
+  min-height: 84px;
   display: flex;
   flex-direction: column;
 }
@@ -756,7 +759,8 @@ body {
   background: var(--surface-raised);
   box-shadow: var(--shadow-sm);
   border: 0.5px solid var(--line);
-  flex-shrink: 0;
+  flex: 0 1 auto;
+  min-height: 84px;
   display: flex;
   flex-direction: column;
 }
@@ -768,6 +772,9 @@ body {
   display: flex;
   flex-direction: column;
   gap: 0;
+  overflow-y: auto;
+  flex: 1;
+  min-height: 0;
 }
 
 .education-item button {
@@ -3132,6 +3139,18 @@ textarea {
 
   .upcoming-card {
     width: 100%;
+  }
+
+  .upcoming-card,
+  .vacation-card,
+  .education-card {
+    min-height: 0;
+  }
+
+  .upcoming-list,
+  .vacation-list,
+  .education-list {
+    max-height: 240px;
   }
 
   .shift-card {
