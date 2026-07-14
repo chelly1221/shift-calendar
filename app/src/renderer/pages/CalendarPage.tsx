@@ -1306,23 +1306,31 @@ export function CalendarPage() {
 
   const monthVacationEvents = useMemo(() => {
     const monthEnd = visibleMonth.endOf('month')
+    const now = DateTime.now()
+    const hidePastEvents = now >= visibleMonth && now <= monthEnd
     return events
       .filter((event) => {
         if (event.eventType !== '휴가') return false
         const start = DateTime.fromISO(event.startAtUtc).toLocal()
         const end = DateTime.fromISO(event.endAtUtc).toLocal()
-        return start <= monthEnd && end >= visibleMonth
+        if (start > monthEnd || end < visibleMonth) return false
+        if (hidePastEvents && end.toMillis() < now.toMillis()) return false
+        return true
       })
   }, [events, visibleMonth])
 
   const monthEducationEvents = useMemo(() => {
     const monthEnd = visibleMonth.endOf('month')
+    const now = DateTime.now()
+    const hidePastEvents = now >= visibleMonth && now <= monthEnd
     return events
       .filter((event) => {
         if (event.eventType !== '교육') return false
         const start = DateTime.fromISO(event.startAtUtc).toLocal()
         const end = DateTime.fromISO(event.endAtUtc).toLocal()
-        return start <= monthEnd && end >= visibleMonth
+        if (start > monthEnd || end < visibleMonth) return false
+        if (hidePastEvents && end.toMillis() < now.toMillis()) return false
+        return true
       })
   }, [events, visibleMonth])
 
