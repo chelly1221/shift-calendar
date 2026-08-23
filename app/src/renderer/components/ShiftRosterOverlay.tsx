@@ -67,29 +67,39 @@ function RosterWeek({ days, title }: { days: ShiftRosterDay[]; title: string }) 
             aria-hidden="true"
           />
         ))}
-        <div className="roster-corner">{title}</div>
-        {days.map((day) => (
+        {/* 프레임이 칸을 점유하므로 나머지 셀도 모두 명시 배치 (자동 배치면 프레임을 피해 밀려남) */}
+        <div className="roster-corner" style={{ gridColumn: 1, gridRow: 1 }}>{title}</div>
+        {days.map((day, index) => (
           <div
             key={day.dateIso}
             className={`roster-day-header${day.isToday ? ' is-today' : ''}${day.isWeekend || day.holidayName ? ' is-offday' : ''}`}
+            style={{ gridColumn: index + 2, gridRow: 1 }}
           >
             <span className="roster-day-date">{day.dayLabel}</span>
             <span className="roster-day-weekday">{day.holidayName ?? day.weekdayLabel}</span>
           </div>
         ))}
 
-        <div className="roster-row-label roster-row-dayworker">일근</div>
-        {days.map((day) => (
-          <div key={`${day.dateIso}-dw`} className={`roster-cell roster-row-dayworker${day.isToday ? ' is-today' : ''}`}>
+        <div className="roster-row-label roster-row-dayworker" style={{ gridColumn: 1, gridRow: 2 }}>일근</div>
+        {days.map((day, index) => (
+          <div
+            key={`${day.dateIso}-dw`}
+            className={`roster-cell roster-row-dayworker${day.isToday ? ' is-today' : ''}`}
+            style={{ gridColumn: index + 2, gridRow: 2 }}
+          >
             <div className="roster-cell-inner">
               {day.hideDayWorkers ? <span className="roster-empty">—</span> : <MemberList members={day.dayWorkerRoster} emptyLabel="—" />}
             </div>
           </div>
         ))}
 
-        <div className="roster-row-label roster-row-day">주간</div>
-        {days.map((day) => (
-          <div key={`${day.dateIso}-day`} className={`roster-cell roster-row-day${day.isToday ? ' is-today' : ''}`}>
+        <div className="roster-row-label roster-row-day" style={{ gridColumn: 1, gridRow: 3 }}>주간</div>
+        {days.map((day, index) => (
+          <div
+            key={`${day.dateIso}-day`}
+            className={`roster-cell roster-row-day${day.isToday ? ' is-today' : ''}`}
+            style={{ gridColumn: index + 2, gridRow: 3 }}
+          >
             {day.hasShiftTeams ? <span className="roster-team">{day.dayTeams.join('·')}</span> : null}
             <div className="roster-cell-inner">
               {day.hasShiftTeams ? <MemberList members={day.dayRoster} emptyLabel="미지정" /> : <span className="roster-empty">—</span>}
@@ -97,9 +107,13 @@ function RosterWeek({ days, title }: { days: ShiftRosterDay[]; title: string }) 
           </div>
         ))}
 
-        <div className="roster-row-label roster-row-night">야간</div>
-        {days.map((day) => (
-          <div key={`${day.dateIso}-night`} className={`roster-cell roster-row-night${day.isToday ? ' is-today' : ''}`}>
+        <div className="roster-row-label roster-row-night" style={{ gridColumn: 1, gridRow: 4 }}>야간</div>
+        {days.map((day, index) => (
+          <div
+            key={`${day.dateIso}-night`}
+            className={`roster-cell roster-row-night${day.isToday ? ' is-today' : ''}`}
+            style={{ gridColumn: index + 2, gridRow: 4 }}
+          >
             {day.hasShiftTeams ? <span className="roster-team">{day.nightTeams.join('·')}</span> : null}
             <div className="roster-cell-inner">
               {day.hasShiftTeams ? <MemberList members={day.nightRoster} emptyLabel="미지정" /> : <span className="roster-empty">—</span>}
