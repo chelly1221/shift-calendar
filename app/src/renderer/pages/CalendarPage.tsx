@@ -21,6 +21,8 @@ import { SettingsModal } from '../components/SettingsModal'
 import { SyncModal } from '../components/SyncModal'
 import { ShiftRosterOverlay } from '../components/ShiftRosterOverlay'
 import { HandGestureController } from '../components/HandGestureController'
+import { INITIAL_HAND_GESTURE_STATE, type HandGestureState } from '../gesture/gestureState'
+import type { ViewMode } from '../gesture/handPoseMode'
 import { useCalendarStore } from '../state/useCalendarStore'
 
 const LEGACY_ROUTINE_COMPLETIONS_KEY = 'routineCompletions'
@@ -502,20 +504,29 @@ function collectShiftMembersWithSubstitutions(
   return members
 }
 
+/** 근무표 표시용 — 휴가/교육으로 빠지는 사람도 삭선+뱃지로 남겨둡니다. */
+interface RosterMember {
+  name: string
+  /** 휴가/교육 사유. null이면 정상 근무 */
+  absence: { kind: '휴가' | '교육'; label: string; /** 시간차 등 부분 휴가는 근무에서 빠지지 않음 */ partial: boolean } | null
+}
+
 interface ShiftDaySummary {
   dateIso: string
   dayTeams: ShiftTeamKey[]
   nightTeams: ShiftTeamKey[]
-  /** 대체근무 반영 + 휴가/교육자 제외된 주간 근무자 */
+  /** 대체근무 반영 + 휴가/교육자 제외된 주간 근무자 (오늘 근무 카드용) */
   dayMembers: string[]
-  /** 대체근무 반영 + 휴가/교육자 제외된 야간 근무자 */
+  /** 대체근무 반영 + 휴가/교육자 제외된 야간 근무자 (오늘 근무 카드용) */
   nightMembers: string[]
   /** 휴가/교육자 제외된 일근자 (주말·공휴일이면 빈 배열) */
   dayWorkerNames: string[]
+  /** 근무표용 전체 명단 (휴가/교육자 포함, absence 표시) */
+  dayRoster: RosterMember[]
+  nightRoster: RosterMember[]
+  dayWorkerRoster: RosterMember[]
   hideDayWorkers: boolean
   hasShiftTeams: boolean
-  /** 해당 날짜에 걸친 휴가 (시간차 포함, 표시용) */
-  vacations: { name: string; type: string | null }[]
 }
 
 function eventCoversLocalDate(event: CalendarEvent, date: DateTime): boolean {
@@ -573,21 +584,20 @@ function buildShiftDaySummary(
     }
   }
 
-  // 근무 제외 대상(휴가/교육) 이름 수집 — 시간차 휴가는 근무에서 빼지 않음
-  const unavailableNames = new Set<string>()
-  const vacations: { name: string; type: string | null }[] = []
+  // 근무 제외 대상(휴가/교육) 수집 — 시간차 휴가는 근무에서 빼지 않음(뱃지만 표시)
+  const absenceByName = new Map<string, RosterMember['absence']>()
   for (const event of contextEvents) {
     if (event.eventType !== '휴가') continue
     if (!eventCoversLocalDate(event, date)) continue
     const { targets, vacationType } = parseVacationInfo(event.description ?? '')
-    const isPartial = Boolean(vacationType && vacationType.startsWith('시간차'))
+    const partial = Boolean(vacationType && vacationType.startsWith('시간차'))
     for (const name of targets) {
       const trimmed = name.trim()
       if (!trimmed) continue
-      if (!vacations.some((item) => item.name === trimmed)) {
-        vacations.push({ name: trimmed, type: vacationType })
-      }
-      if (!isPartial) unavailableNames.add(trimmed)
+      const existing = absenceByName.get(trimmed)
+      // 전일 휴가가 시간차보다 우선
+      if (existing && !existing.partial) continue
+      absenceByName.set(trimmed, { kind: '휴가', label: vacationType ?? '휴가', partial })
     }
   }
 
@@ -597,25 +607,31 @@ function buildShiftDaySummary(
     const { targets } = parseEducationTargets(event.description ?? '')
     for (const name of targets) {
       const trimmed = name.trim()
-      if (trimmed) unavailableNames.add(trimmed)
+      if (!trimmed) continue
+      const existing = absenceByName.get(trimmed)
+      if (existing && !existing.partial) continue
+      absenceByName.set(trimmed, { kind: '교육', label: '교육', partial: false })
     }
   }
+  const unavailableNames = new Set<string>()
+  for (const [name, absence] of absenceByName) {
+    if (absence && !absence.partial) unavailableNames.add(name)
+  }
+  const toRoster = (names: string[]): RosterMember[] =>
+    names.map((name) => ({ name, absence: absenceByName.get(name.trim()) ?? null }))
 
   const isWeekend = date.weekday === 6 || date.weekday === 7
   const isHoliday = publicHolidayMap.has(dateIso)
   const hideDayWorkers = isWeekend || isHoliday
 
-  const dayWorkerNames = hideDayWorkers
-    ? []
-    : dayWorkers.filter((name) => name.trim().length > 0 && !unavailableNames.has(name.trim()))
+  const allDayWorkers = hideDayWorkers ? [] : dayWorkers.filter((name) => name.trim().length > 0)
+  const dayWorkerNames = allDayWorkers.filter((name) => !unavailableNames.has(name.trim()))
   const hasShiftTeams = dayTeams.length > 0 || nightTeams.length > 0
 
-  const dayMembers = collectShiftMembersWithSubstitutions(dayTeams, teams, substitutionsByTeamOriginal).filter(
-    (name) => !unavailableNames.has(name.trim()),
-  )
-  const nightMembers = collectShiftMembersWithSubstitutions(nightTeams, teams, substitutionsByTeamOriginal).filter(
-    (name) => !unavailableNames.has(name.trim()),
-  )
+  const allDayMembers = collectShiftMembersWithSubstitutions(dayTeams, teams, substitutionsByTeamOriginal)
+  const allNightMembers = collectShiftMembersWithSubstitutions(nightTeams, teams, substitutionsByTeamOriginal)
+  const dayMembers = allDayMembers.filter((name) => !unavailableNames.has(name.trim()))
+  const nightMembers = allNightMembers.filter((name) => !unavailableNames.has(name.trim()))
 
   return {
     dateIso,
@@ -624,9 +640,11 @@ function buildShiftDaySummary(
     dayMembers,
     nightMembers,
     dayWorkerNames,
+    dayRoster: toRoster(allDayMembers),
+    nightRoster: toRoster(allNightMembers),
+    dayWorkerRoster: toRoster(allDayWorkers),
     hideDayWorkers,
     hasShiftTeams,
-    vacations,
   }
 }
 
@@ -831,8 +849,10 @@ export function CalendarPage() {
       console.warn('손동작 인식 설정 저장 실패:', err)
     }
   }, [])
-  const toggleRoster = useCallback(() => {
-    setRosterOpen((prev) => !prev)
+  const [gestureState, setGestureState] = useState<HandGestureState>(INITIAL_HAND_GESTURE_STATE)
+  const viewMode: ViewMode = rosterOpen ? 'roster' : 'calendar'
+  const handleViewModeChange = useCallback((mode: ViewMode) => {
+    setRosterOpen(mode === 'roster')
   }, [])
   // FullCalendar 그리드에 실제로 그려지는 날짜 범위(주 단위 레인 정렬 스페이서 계산용). datesSet 에서 갱신.
   const [gridRange, setGridRange] = useState<{ start: string; end: string } | null>(null)
@@ -2308,14 +2328,6 @@ export function CalendarPage() {
             >
               동기화
             </button>
-            <button
-              type="button"
-              className={rosterOpen ? 'titlebar-roster-btn is-active' : 'titlebar-roster-btn'}
-              aria-pressed={rosterOpen}
-              onClick={toggleRoster}
-            >
-              근무표
-            </button>
             </div>
           </div>
           <div className="titlebar-monthbar">
@@ -2432,7 +2444,12 @@ export function CalendarPage() {
         </div>
       ) : null}
       <ShiftRosterOverlay open={rosterOpen} days={rosterDays} onClose={() => setRosterOpen(false)} />
-      <HandGestureController enabled={handGestureEnabled} onSwipe={toggleRoster} />
+      <HandGestureController
+        enabled={handGestureEnabled}
+        mode={viewMode}
+        onModeChange={handleViewModeChange}
+        onStateChange={setGestureState}
+      />
       <div className={useCustomTitlebar ? 'app-shell app-shell-with-titlebar' : 'app-shell'}>
       {googleConnected && !selectedCalendarId ? (
         <div className="warning-banner">동기화할 달력을 먼저 선택해 주세요.</div>
@@ -3442,6 +3459,7 @@ export function CalendarPage() {
         onSetWeatherPreviewMode={setWeatherPreviewMode}
         handGestureEnabled={handGestureEnabled}
         onSetHandGestureEnabled={setHandGestureEnabled}
+        handGestureState={gestureState}
       />
       <SyncModal
         open={syncOpen}

@@ -3328,31 +3328,8 @@ textarea {
 }
 
 /* ─────────────────────────────────────────────
-   2주 근무표 오버레이 (손날 스와이프 / 타이틀바 버튼)
+   2주 근무표 오버레이 (손 자세: 🖐 열기 / ✊ 닫기)
    ───────────────────────────────────────────── */
-.titlebar-roster-btn {
-  border: 0.5px solid var(--line-strong);
-  background: rgba(255, 255, 255, 0.78);
-  color: var(--ink-700);
-  border-radius: var(--radius-sm);
-  min-height: 28px;
-  padding: 0 12px;
-  font-size: 12px;
-  font-weight: 600;
-  cursor: pointer;
-  transition: background-color 0.14s ease, color 0.14s ease;
-}
-
-.titlebar-roster-btn:hover {
-  background: rgba(255, 255, 255, 0.95);
-}
-
-.titlebar-roster-btn.is-active {
-  background: var(--accent);
-  border-color: var(--accent);
-  color: #fff;
-}
-
 .roster-overlay {
   position: absolute;
   top: var(--titlebar-height);
@@ -3396,8 +3373,10 @@ textarea {
   flex: 1;
 }
 
-.roster-close {
-  align-self: center;
+.roster-gesture-hint {
+  margin: 0;
+  font-size: clamp(12px, 1.1vw, 15px);
+  color: var(--ink-500);
 }
 
 .roster-body {
@@ -3418,7 +3397,7 @@ textarea {
   min-height: 0;
   display: grid;
   grid-template-columns: minmax(64px, 0.55fr) repeat(7, 1fr);
-  grid-template-rows: auto repeat(4, 1fr);
+  grid-template-rows: auto repeat(3, 1fr);
   gap: 4px;
 }
 
@@ -3509,6 +3488,15 @@ textarea {
   box-shadow: inset 0 0 0 1px var(--accent);
 }
 
+.roster-member {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 5px;
+  max-width: 100%;
+  min-width: 0;
+}
+
 .roster-name {
   font-size: clamp(17px, 2vw, 30px);
   font-weight: 700;
@@ -3517,20 +3505,36 @@ textarea {
   white-space: nowrap;
   overflow: hidden;
   text-overflow: ellipsis;
-  max-width: 100%;
+  min-width: 0;
 }
 
-.roster-name-vacation {
-  display: inline-flex;
-  flex-direction: column;
-  align-items: center;
+/* 휴가/교육으로 빠진 원근무자: 삭선 + 흐리게 */
+.roster-member.is-absent .roster-name {
+  text-decoration: line-through;
+  text-decoration-thickness: 2px;
+  text-decoration-color: var(--danger);
+  color: var(--ink-500);
+  font-weight: 600;
+}
+
+.roster-badge {
+  flex: 0 0 auto;
+  font-size: clamp(10px, 0.9vw, 13px);
+  font-weight: 700;
+  line-height: 1;
+  padding: 3px 6px;
+  border-radius: 999px;
+  white-space: nowrap;
+}
+
+.roster-badge-vacation {
+  background: var(--purple-tint);
   color: var(--purple);
 }
 
-.roster-name-vacation small {
-  font-size: clamp(10px, 0.9vw, 13px);
-  font-weight: 500;
-  color: var(--ink-500);
+.roster-badge-education {
+  background: var(--education-bg);
+  color: var(--education-text);
 }
 
 .roster-team {
@@ -3557,59 +3561,60 @@ textarea {
   background: #fafaf7;
 }
 
-.roster-row-vacation.roster-cell {
-  background: var(--purple-tint);
+/* ─────────────────────────────────────────────
+   손동작 인식: 추론용 숨김 video + 설정 모달 테스트 미리보기
+   ───────────────────────────────────────────── */
+.hand-gesture-capture {
+  position: fixed;
+  left: -10000px;
+  top: 0;
+  width: 320px;
+  height: 240px;
+  opacity: 0;
+  pointer-events: none;
 }
 
-/* ─────────────────────────────────────────────
-   손동작 인식 위젯 (웹캠 미리보기 + 상태)
-   ───────────────────────────────────────────── */
-.hand-gesture-widget {
-  position: fixed;
-  right: 14px;
-  bottom: 14px;
-  z-index: 45;
-  width: 168px;
+.gesture-preview {
+  margin-top: 10px;
   border-radius: var(--radius-md);
   overflow: hidden;
-  background: var(--surface-raised);
+  background: var(--surface);
   border: 0.5px solid var(--line-strong);
-  box-shadow: var(--shadow-md);
   transition: border-color 0.15s ease, box-shadow 0.15s ease;
 }
 
-.hand-gesture-widget.is-edge-on {
+.gesture-preview.is-gesture {
   border-color: var(--accent);
-  box-shadow: 0 0 0 2px var(--accent-tint), var(--shadow-md);
 }
 
-.hand-gesture-widget.is-swiped {
+.gesture-preview.is-pending {
+  box-shadow: 0 0 0 3px var(--accent-tint);
   border-color: var(--accent);
-  box-shadow: 0 0 0 3px var(--accent), var(--shadow-md);
 }
 
-.hand-gesture-widget.is-error {
+.gesture-preview.is-error {
   border-color: var(--danger);
 }
 
-.hand-gesture-preview {
+.gesture-preview-video {
   display: block;
   width: 100%;
+  max-height: 240px;
   aspect-ratio: 4 / 3;
   object-fit: cover;
   background: #111;
   transform: scaleX(-1); /* 거울 모드 */
 }
 
-.hand-gesture-status {
+.gesture-preview-status {
   margin: 0;
-  padding: 6px 8px;
-  font-size: 11px;
+  padding: 8px 10px;
+  font-size: 12px;
   line-height: 1.3;
   color: var(--ink-700);
   text-align: center;
 }
 
-.hand-gesture-widget.is-error .hand-gesture-status {
+.gesture-preview.is-error .gesture-preview-status {
   color: var(--danger);
 }

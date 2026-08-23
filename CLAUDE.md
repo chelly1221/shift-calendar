@@ -11,8 +11,8 @@
 - `app/src/preload`: 안전한 브리지 API
 - `app/src/renderer`: React UI (`CalendarPage`, `EventModal`, `RecurrencePicker`, `SettingsModal`, `SyncModal`, `SubstitutionFlow`, `RadialMenu`, `WeatherOverlay`, `ShiftRosterOverlay`, `HandGestureController`)
 - `app/src/renderer/utils`: UI 유틸리티 (`parseEducationTargets`, `parseVacationInfo`, `parseRoutineCompletions`)
-- `app/src/renderer/gesture`: 손날 스와이프 판별 순수 로직 (`handEdgeSwipe.ts`, DOM/MediaPipe 비의존)
-- `app/public/mediapipe`: 손 랜드마크 모델(`hand_landmarker.task`, 저장소 포함) + WASM 런타임(`wasm/`, `vite.config.ts`가 `node_modules/@mediapipe/tasks-vision`에서 자동 복사, gitignore)
+- `app/src/renderer/gesture`: 손 자세 → 화면 모드 순수 로직 (`handPoseMode.ts`), 인식기 상태 타입 (`gestureState.ts`) — DOM/MediaPipe 비의존
+- `app/public/mediapipe`: 제스처 인식 모델(`gesture_recognizer.task`, 저장소 포함) + WASM 런타임(`wasm/`, `vite.config.ts`가 `node_modules/@mediapipe/tasks-vision`에서 자동 복사, gitignore)
 - `app/src/shared`: 공유 타입/스키마 (`calendar.ts`), 반복 일정 확장(`expandRecurrence.ts`), 공휴일 판별(`koreanHolidays.ts`), RRULE 유틸리티(`rrule.ts`), 이벤트 제목 매핑(`eventTitleMapper.ts`)
 
 원칙: 네트워크/토큰/DB 로직은 `main`에 두고, `renderer`는 UI와 상태 표시만 담당합니다.
@@ -83,12 +83,14 @@ eventType은 Google extendedProperties.private.shiftCalendarEventType으로 양�
 - 약어/팀/주간근무자 변경 시 `reEnqueueShiftAbbreviationSync()`가 관련 근무 이벤트를 자동으로 재동기화
 
 ## Hand Gesture & Shift Roster Overlay
-- 설정 모달 "손동작 인식" 토글(localStorage `handGestureEnabled`) → `HandGestureController`가 웹캠 + `@mediapipe/tasks-vision` HandLandmarker(WASM, 네이티브 모듈 없음)로 손날 스와이프를 감지
-- 손날 판별: worldLandmarks로 손바닥 법선의 z 성분(`palmNormalZ ≤ 0.45`) + 손가락 펴짐(`fingerExtension ≥ 1.45`) — `computeHandPoseFeatures`/`isEdgeOnHand`
-- 스와이프 판별: `createSwipeDetector` (정규화 x 이동 ≥ 0.22, 80~650ms, 쿨다운 1000ms, 손날 아닌 샘플 유입 시 누적 초기화)
-- 스와이프(좌/우 무관) → `rosterOpen` 토글: 캘린더 화면 ↔ `ShiftRosterOverlay`(이번 주·다음 주 2주간 일근/주간/야간/휴가 이름만 크게 표시). 타이틀바 "근무표" 버튼·Esc로도 토글
-- 날짜별 근무자 계산은 `buildShiftDaySummary()` (CalendarPage) — 오늘 근무 카드와 근무표가 공용. 대체근무 반영, 휴가(시간차 제외)/교육 대상자 제외, 주말·공휴일은 일근 숨김
-- 모델은 XHR로 읽어 `modelAssetBuffer`로 전달 (file:// 환경에서 fetch 불가 대응), 추론은 ~15fps 스로틀, 창이 숨겨지면 추론 생략, GPU delegate 실패 시 CPU 폴백
+- 설정 모달 "손동작 인식" 토글(localStorage `handGestureEnabled`) → `HandGestureController`가 웹캠 + `@mediapipe/tasks-vision` GestureRecognizer(WASM, 네이티브 모듈 없음)로 손 자세를 분류
+- 자세 매핑은 `gestureToMode()` 한 곳: `Closed_Fist`(✊) → `calendar`, `Open_Palm`(🖐) → `roster`. 그 외 내장 분류(`Pointing_Up`, `Thumb_Up`, `Thumb_Down`, `Victory`, `ILoveYou`)는 현재 미사용
+- `createPoseModeResolver`: 신뢰도 ≥ 0.6인 같은 자세가 400ms 유지될 때만 모드 전환, 다른 자세/손 없음이 끼면 누적 초기화. 외부(Esc)로 모드가 바뀌면 `setCurrent()`로 동기화
+- 근무표(`ShiftRosterOverlay`)는 **제스처로만** 열고 닫음 — 별도 버튼 없음 (Esc는 비상용 닫기). 이번 주·다음 주 2주간 일근/주간/야간 이름만 크게 표시
+- 휴가/교육자는 명단에서 빼지 않고 **삭선 + 뱃지**(휴가종류 / 교육)로 표시. 시간차 휴가는 뱃지만(삭선 없음). 대체근무는 반영된 이름으로 표시
+- 날짜별 근무자 계산은 `buildShiftDaySummary()` (CalendarPage) — 오늘 근무 카드(`dayMembers` 등, 휴가/교육자 제외)와 근무표(`dayRoster` 등, absence 포함)가 공용
+- `HandGestureController`는 화면에 아무것도 그리지 않음(화면 밖 숨김 video로 추론). 웹캠 미리보기는 **설정 모달 안 테스트용**으로만 표시 — 인식기 상태(`HandGestureState`: status/stream/gesture/pendingMode)를 `onStateChange`로 올리고 설정 모달이 같은 `MediaStream`을 `<video>`에 붙임
+- 모델은 XHR로 읽어 `modelAssetBuffer`로 전달 (file:// 환경에서 fetch 불가 대응), 추론은 rAF + ~15fps 스로틀, 창이 숨겨지면 추론 생략, GPU delegate 실패 시 CPU 폴백
 - main: `session.setPermissionRequestHandler`로 `media` 권한은 video 전용만 허용(마이크 거부), 그 외 권한은 기본 허용 유지
 - 영상은 렌더러 메모리에서만 처리하고 저장·전송하지 않음
 
@@ -123,7 +125,7 @@ Google이 엄밀히 최신이면 로컬 변경을 폐기하고, 그 외에는 �
 - 참석자 초대/업데이트 전파
 - 네트워크 실패 및 복구 시나리오
 - 사용자 지정 약어 라운드트립 (`buildUniqueCharMap`, `resolveAbbreviationToName`, `buildShiftGoogleSummary`)
-- 손날 스와이프 판별 (`renderer/gesture/handEdgeSwipe.test.ts`: 손 자세 특징, 방향/미러, 쿨다운, 지터·느린 이동 제외)
+- 손 자세 → 모드 전환 (`renderer/gesture/handPoseMode.test.ts`: 유지 시간, 신뢰도, 끼어듦 초기화, 외부 동기화)
 
 Google API 호출은 모킹하고, 테스트 파일은 `*.test.ts` 패턴을 사용합니다.
 Vitest 설정은 `app/vitest.config.ts`에 있습니다.

@@ -1,24 +1,20 @@
-import { useEffect, useRef, useState } from 'react'
-import type { HandLandmarker as HandLandmarkerInstance } from '@mediapipe/tasks-vision'
-import {
-  computeHandPoseFeatures,
-  computePalmCenterX,
-  createSwipeDetector,
-  isEdgeOnHand,
-  type SwipeDirection,
-} from '../gesture/handEdgeSwipe'
-
-type GestureStatus = 'starting' | 'ready' | 'error'
+import { useEffect, useRef } from 'react'
+import type { GestureRecognizer as GestureRecognizerInstance } from '@mediapipe/tasks-vision'
+import { createPoseModeResolver, type ViewMode } from '../gesture/handPoseMode'
+import { INITIAL_HAND_GESTURE_STATE, type HandGestureState } from '../gesture/gestureState'
 
 interface HandGestureControllerProps {
   enabled: boolean
-  onSwipe: (direction: SwipeDirection) => void
+  /** 현재 화면 모드 — 외부에서 바뀐 경우에도 인식기와 동기화하기 위해 받습니다. */
+  mode: ViewMode
+  onModeChange: (mode: ViewMode) => void
+  onStateChange: (state: HandGestureState) => void
 }
 
-/** 추론 간격(ms). 15fps면 스와이프(80~650ms) 판정에 충분하고 CPU 부담이 적습니다. */
+/** 추론 간격(ms). ~15fps면 0.4초 유지 판정에 충분하고 CPU 부담이 적습니다. */
 const INFERENCE_INTERVAL_MS = 66
-const PREVIEW_WIDTH = 320
-const PREVIEW_HEIGHT = 240
+const CAPTURE_WIDTH = 320
+const CAPTURE_HEIGHT = 240
 
 function resolveAssetUrl(relativePath: string): string {
   return new URL(relativePath, document.baseURI).href
@@ -43,22 +39,26 @@ function loadBinary(url: string): Promise<Uint8Array> {
 }
 
 /**
- * 웹캠 영상에서 손날 스와이프를 인식해 onSwipe를 호출합니다.
+ * 웹캠 영상에서 손 자세를 인식합니다. 주먹 → 캘린더, 손바닥 → 근무표.
+ * 화면에는 아무것도 그리지 않고(숨김 video) 상태만 onStateChange로 올립니다.
  * 영상은 렌더러 메모리에서만 처리되며 저장·전송하지 않습니다.
  */
-export function HandGestureController({ enabled, onSwipe }: HandGestureControllerProps) {
+export function HandGestureController({ enabled, mode, onModeChange, onStateChange }: HandGestureControllerProps) {
   const videoRef = useRef<HTMLVideoElement | null>(null)
-  const onSwipeRef = useRef(onSwipe)
-  onSwipeRef.current = onSwipe
+  const onModeChangeRef = useRef(onModeChange)
+  onModeChangeRef.current = onModeChange
+  const onStateChangeRef = useRef(onStateChange)
+  onStateChangeRef.current = onStateChange
+  const resolverRef = useRef(createPoseModeResolver(mode))
 
-  const [status, setStatus] = useState<GestureStatus>('starting')
-  const [errorMessage, setErrorMessage] = useState<string | null>(null)
-  const [handVisible, setHandVisible] = useState(false)
-  const [edgeOn, setEdgeOn] = useState(false)
-  const [lastSwipe, setLastSwipe] = useState<SwipeDirection | null>(null)
+  // 버튼·Esc 등 외부에서 모드가 바뀌면 인식기 상태를 맞춰 같은 자세로 되돌아가는 일을 막습니다.
+  useEffect(() => {
+    resolverRef.current.setCurrent(mode)
+  }, [mode])
 
   useEffect(() => {
     if (!enabled) {
+      onStateChangeRef.current(INITIAL_HAND_GESTURE_STATE)
       return
     }
     const video = videoRef.current
@@ -68,37 +68,30 @@ export function HandGestureController({ enabled, onSwipe }: HandGestureControlle
 
     let disposed = false
     let stream: MediaStream | null = null
-    let landmarker: HandLandmarkerInstance | null = null
+    let recognizer: GestureRecognizerInstance | null = null
     let frameHandle: number | null = null
-    let usingVideoFrameCallback = false
     let lastInferenceAt = 0
     let lastVideoTime = -1
-    let handVisibleState = false
-    let edgeOnState = false
-    let swipeFlashTimer: ReturnType<typeof setTimeout> | null = null
-    const detector = createSwipeDetector()
+    let state: HandGestureState = { ...INITIAL_HAND_GESTURE_STATE }
+    const resolver = resolverRef.current
 
-    setStatus('starting')
-    setErrorMessage(null)
-    setHandVisible(false)
-    setEdgeOn(false)
-    setLastSwipe(null)
+    const patchState = (patch: Partial<HandGestureState>) => {
+      let changed = false
+      for (const key of Object.keys(patch) as (keyof HandGestureState)[]) {
+        if (state[key] !== patch[key]) {
+          changed = true
+          break
+        }
+      }
+      if (!changed) return
+      state = { ...state, ...patch }
+      onStateChangeRef.current(state)
+    }
 
-    const updateHandVisible = (next: boolean) => {
-      if (handVisibleState !== next) {
-        handVisibleState = next
-        setHandVisible(next)
-      }
-    }
-    const updateEdgeOn = (next: boolean) => {
-      if (edgeOnState !== next) {
-        edgeOnState = next
-        setEdgeOn(next)
-      }
-    }
+    onStateChangeRef.current(state)
 
     const processFrame = (now: number) => {
-      if (!landmarker || disposed) {
+      if (!recognizer || disposed) {
         return
       }
       if (document.hidden || video.readyState < 2) {
@@ -114,66 +107,42 @@ export function HandGestureController({ enabled, onSwipe }: HandGestureControlle
       lastVideoTime = video.currentTime
       lastInferenceAt = now
 
-      let result: ReturnType<HandLandmarkerInstance['detectForVideo']>
+      let result: ReturnType<GestureRecognizerInstance['recognizeForVideo']>
       try {
-        result = landmarker.detectForVideo(video, now)
+        result = recognizer.recognizeForVideo(video, now)
       } catch (err) {
         console.warn('손동작 추론 실패:', err)
         return
       }
 
-      const landmarks = result.landmarks[0]
-      const worldLandmarks = result.worldLandmarks[0]
-      if (!landmarks || !worldLandmarks) {
-        updateHandVisible(false)
-        updateEdgeOn(false)
-        detector.reset()
-        return
-      }
-
-      updateHandVisible(true)
-      const features = computeHandPoseFeatures(worldLandmarks)
-      const edge = isEdgeOnHand(features)
-      updateEdgeOn(edge)
-      const x = computePalmCenterX(landmarks)
-      if (x === null) {
-        return
-      }
-      const direction = detector.push({ t: now, x, edgeOn: edge })
-      if (direction) {
-        setLastSwipe(direction)
-        if (swipeFlashTimer) {
-          clearTimeout(swipeFlashTimer)
-        }
-        swipeFlashTimer = setTimeout(() => setLastSwipe(null), 900)
-        onSwipeRef.current(direction)
+      const top = result.gestures[0]?.[0]
+      const nextMode = resolver.push({ t: now, gesture: top?.categoryName ?? null, score: top?.score ?? 0 })
+      patchState({
+        handVisible: result.landmarks.length > 0,
+        gesture: top && top.categoryName !== 'None' ? top.categoryName : null,
+        pendingMode: resolver.pending()?.mode ?? null,
+      })
+      if (nextMode) {
+        onModeChangeRef.current(nextMode)
       }
     }
 
-    const scheduleNext = () => {
+    // rAF 사용: 숨김 video에서는 requestVideoFrameCallback이 프레임 제시 여부에 따라 멈출 수 있음
+    const loop = (now: number) => {
       if (disposed) {
         return
       }
-      if (usingVideoFrameCallback) {
-        frameHandle = video.requestVideoFrameCallback((now) => {
-          processFrame(now)
-          scheduleNext()
-        })
-        return
-      }
-      frameHandle = window.requestAnimationFrame((now) => {
-        processFrame(now)
-        scheduleNext()
-      })
+      processFrame(now)
+      frameHandle = window.requestAnimationFrame(loop)
     }
 
     const start = async () => {
       try {
-        const [{ FilesetResolver, HandLandmarker }, modelBuffer, mediaStream] = await Promise.all([
+        const [{ FilesetResolver, GestureRecognizer }, modelBuffer, mediaStream] = await Promise.all([
           import('@mediapipe/tasks-vision'),
-          loadBinary(resolveAssetUrl('mediapipe/hand_landmarker.task')),
+          loadBinary(resolveAssetUrl('mediapipe/gesture_recognizer.task')),
           navigator.mediaDevices.getUserMedia({
-            video: { width: { ideal: PREVIEW_WIDTH }, height: { ideal: PREVIEW_HEIGHT }, facingMode: 'user' },
+            video: { width: { ideal: CAPTURE_WIDTH }, height: { ideal: CAPTURE_HEIGHT }, facingMode: 'user' },
             audio: false,
           }),
         ])
@@ -184,32 +153,32 @@ export function HandGestureController({ enabled, onSwipe }: HandGestureControlle
         stream = mediaStream
         video.srcObject = mediaStream
         await video.play()
+        patchState({ stream: mediaStream })
 
         const fileset = await FilesetResolver.forVisionTasks(resolveAssetUrl('mediapipe/wasm'))
-        const createLandmarker = (delegate: 'GPU' | 'CPU') =>
-          HandLandmarker.createFromOptions(fileset, {
+        const createRecognizer = (delegate: 'GPU' | 'CPU') =>
+          GestureRecognizer.createFromOptions(fileset, {
             baseOptions: { modelAssetBuffer: modelBuffer, delegate },
             runningMode: 'VIDEO',
             numHands: 1,
-            minHandDetectionConfidence: 0.6,
-            minHandPresenceConfidence: 0.6,
+            minHandDetectionConfidence: 0.5,
+            minHandPresenceConfidence: 0.5,
             minTrackingConfidence: 0.5,
           })
         try {
-          landmarker = await createLandmarker('GPU')
+          recognizer = await createRecognizer('GPU')
         } catch (err) {
           console.warn('GPU delegate 초기화 실패, CPU로 폴백:', err)
-          landmarker = await createLandmarker('CPU')
+          recognizer = await createRecognizer('CPU')
         }
         if (disposed) {
-          landmarker.close()
-          landmarker = null
+          recognizer.close()
+          recognizer = null
           return
         }
 
-        usingVideoFrameCallback = typeof video.requestVideoFrameCallback === 'function'
-        setStatus('ready')
-        scheduleNext()
+        patchState({ status: 'ready' })
+        frameHandle = window.requestAnimationFrame(loop)
       } catch (err) {
         if (disposed) {
           return
@@ -218,16 +187,16 @@ export function HandGestureController({ enabled, onSwipe }: HandGestureControlle
         const message = err instanceof Error ? err.message : String(err)
         const errorName = err instanceof Error ? err.name : ''
         const combined = `${errorName} ${message}`
-        setErrorMessage(
-          /NotAllowed|Permission/i.test(combined)
+        patchState({
+          status: 'error',
+          errorMessage: /NotAllowed|Permission/i.test(combined)
             ? '카메라 권한이 거부되었습니다.'
             : /NotFound|Requested device not found/i.test(combined)
               ? '사용 가능한 카메라가 없습니다.'
               : /NotReadable|TrackStartError|in use/i.test(combined)
                 ? '다른 프로그램이 카메라를 사용 중입니다.'
                 : message,
-        )
-        setStatus('error')
+        })
       }
     }
 
@@ -236,20 +205,14 @@ export function HandGestureController({ enabled, onSwipe }: HandGestureControlle
     return () => {
       disposed = true
       if (frameHandle !== null) {
-        if (usingVideoFrameCallback) {
-          video.cancelVideoFrameCallback(frameHandle)
-        } else {
-          window.cancelAnimationFrame(frameHandle)
-        }
+        window.cancelAnimationFrame(frameHandle)
       }
-      if (swipeFlashTimer) {
-        clearTimeout(swipeFlashTimer)
-      }
-      landmarker?.close()
-      landmarker = null
+      recognizer?.close()
+      recognizer = null
       stream?.getTracks().forEach((track) => track.stop())
       stream = null
       video.srcObject = null
+      onStateChangeRef.current(INITIAL_HAND_GESTURE_STATE)
     }
   }, [enabled])
 
@@ -257,26 +220,6 @@ export function HandGestureController({ enabled, onSwipe }: HandGestureControlle
     return null
   }
 
-  const statusLabel =
-    status === 'starting'
-      ? '카메라 준비 중…'
-      : status === 'error'
-        ? (errorMessage ?? '오류')
-        : lastSwipe
-          ? (lastSwipe === 'left' ? '← 스와이프' : '스와이프 →')
-          : edgeOn
-            ? '손날 인식됨 — 좌우로 휘두르세요'
-            : handVisible
-              ? '손 감지됨 — 손날을 세우세요'
-              : '손을 카메라에 보여주세요'
-
-  return (
-    <div
-      className={`hand-gesture-widget is-${status}${edgeOn ? ' is-edge-on' : ''}${lastSwipe ? ' is-swiped' : ''}`}
-      aria-live="polite"
-    >
-      <video ref={videoRef} className="hand-gesture-preview" muted playsInline />
-      <p className="hand-gesture-status">{statusLabel}</p>
-    </div>
-  )
+  // 추론용 숨김 video — 화면 밖에 두되 display:none은 피함(디코딩이 멈출 수 있음)
+  return <video ref={videoRef} className="hand-gesture-capture" muted playsInline aria-hidden="true" />
 }

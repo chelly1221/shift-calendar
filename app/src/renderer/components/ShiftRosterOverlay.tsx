@@ -1,5 +1,10 @@
 import { useEffect } from 'react'
 
+export interface RosterMember {
+  name: string
+  absence: { kind: '휴가' | '교육'; label: string; partial: boolean } | null
+}
+
 export interface ShiftRosterDay {
   dateIso: string
   dayLabel: string
@@ -9,12 +14,11 @@ export interface ShiftRosterDay {
   holidayName: string | null
   dayTeams: string[]
   nightTeams: string[]
-  dayMembers: string[]
-  nightMembers: string[]
-  dayWorkerNames: string[]
+  dayRoster: RosterMember[]
+  nightRoster: RosterMember[]
+  dayWorkerRoster: RosterMember[]
   hideDayWorkers: boolean
   hasShiftTeams: boolean
-  vacations: { name: string; type: string | null }[]
 }
 
 interface ShiftRosterOverlayProps {
@@ -23,15 +27,29 @@ interface ShiftRosterOverlayProps {
   onClose: () => void
 }
 
-function NameList({ names, emptyLabel }: { names: string[]; emptyLabel?: string }) {
-  if (names.length === 0) {
-    return emptyLabel ? <span className="roster-empty">{emptyLabel}</span> : null
+function MemberList({ members, emptyLabel }: { members: RosterMember[]; emptyLabel: string }) {
+  if (members.length === 0) {
+    return <span className="roster-empty">{emptyLabel}</span>
   }
   return (
     <>
-      {names.map((name) => (
-        <span key={name} className="roster-name">{name}</span>
-      ))}
+      {members.map((member) => {
+        const absence = member.absence
+        const struck = Boolean(absence && !absence.partial)
+        return (
+          <span
+            key={member.name}
+            className={`roster-member${struck ? ' is-absent' : ''}${absence?.partial ? ' is-partial' : ''}`}
+          >
+            <span className="roster-name">{member.name}</span>
+            {absence ? (
+              <span className={`roster-badge roster-badge-${absence.kind === '교육' ? 'education' : 'vacation'}`}>
+                {absence.label}
+              </span>
+            ) : null}
+          </span>
+        )
+      })}
     </>
   )
 }
@@ -54,7 +72,7 @@ function RosterWeek({ days, title }: { days: ShiftRosterDay[]; title: string }) 
         <div className="roster-row-label roster-row-dayworker">일근</div>
         {days.map((day) => (
           <div key={`${day.dateIso}-dw`} className={`roster-cell roster-row-dayworker${day.isToday ? ' is-today' : ''}`}>
-            {day.hideDayWorkers ? <span className="roster-empty">—</span> : <NameList names={day.dayWorkerNames} emptyLabel="—" />}
+            {day.hideDayWorkers ? <span className="roster-empty">—</span> : <MemberList members={day.dayWorkerRoster} emptyLabel="—" />}
           </div>
         ))}
 
@@ -64,7 +82,7 @@ function RosterWeek({ days, title }: { days: ShiftRosterDay[]; title: string }) 
             {day.hasShiftTeams ? (
               <>
                 <span className="roster-team">{day.dayTeams.join('·')}</span>
-                <NameList names={day.dayMembers} emptyLabel="미지정" />
+                <MemberList members={day.dayRoster} emptyLabel="미지정" />
               </>
             ) : (
               <span className="roster-empty">—</span>
@@ -78,26 +96,10 @@ function RosterWeek({ days, title }: { days: ShiftRosterDay[]; title: string }) 
             {day.hasShiftTeams ? (
               <>
                 <span className="roster-team">{day.nightTeams.join('·')}</span>
-                <NameList names={day.nightMembers} emptyLabel="미지정" />
+                <MemberList members={day.nightRoster} emptyLabel="미지정" />
               </>
             ) : (
               <span className="roster-empty">—</span>
-            )}
-          </div>
-        ))}
-
-        <div className="roster-row-label roster-row-vacation">휴가</div>
-        {days.map((day) => (
-          <div key={`${day.dateIso}-vac`} className={`roster-cell roster-row-vacation${day.isToday ? ' is-today' : ''}`}>
-            {day.vacations.length === 0 ? (
-              <span className="roster-empty">—</span>
-            ) : (
-              day.vacations.map((vacation) => (
-                <span key={vacation.name} className="roster-name roster-name-vacation">
-                  {vacation.name}
-                  {vacation.type ? <small>{vacation.type}</small> : null}
-                </span>
-              ))
             )}
           </div>
         ))}
@@ -108,7 +110,8 @@ function RosterWeek({ days, title }: { days: ShiftRosterDay[]; title: string }) 
 
 /**
  * 2주간 근무자 이름만 크게 보여주는 전체 화면 오버레이.
- * 손날 스와이프 또는 타이틀바 "근무표" 버튼으로 열고 닫습니다. Esc로도 닫힙니다.
+ * 손 자세(손바닥 → 열기, 주먹 → 닫기)로만 전환합니다. Esc는 비상용 닫기.
+ * 휴가/교육자는 명단에서 빼지 않고 삭선 + 뱃지로 표시합니다 (시간차 휴가는 뱃지만).
  */
 export function ShiftRosterOverlay({ open, days, onClose }: ShiftRosterOverlayProps) {
   useEffect(() => {
@@ -140,9 +143,7 @@ export function ShiftRosterOverlay({ open, days, onClose }: ShiftRosterOverlayPr
         <p className="roster-range">
           {firstWeek[0]?.dayLabel} ~ {lastDay?.dayLabel}
         </p>
-        <button type="button" className="ghost-button roster-close" onClick={onClose}>
-          캘린더로 (Esc)
-        </button>
+        <p className="roster-gesture-hint">✊ 주먹을 쥐면 캘린더로 돌아갑니다</p>
       </header>
       <div className="roster-body">
         <RosterWeek days={firstWeek} title="이번 주" />

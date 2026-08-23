@@ -1,6 +1,8 @@
-import { useCallback, useEffect } from 'react'
+import { useCallback, useEffect, useRef } from 'react'
 import type { DayWorkerCount, ShiftTeamMode, ShiftType } from '../../shared/calendar'
 import type { WeatherOverlayMode } from './WeatherOverlay'
+import { describeGestureState, type HandGestureState } from '../gesture/gestureState'
+import { gestureToMode } from '../gesture/handPoseMode'
 
 interface SettingsModalProps {
   open: boolean
@@ -16,6 +18,7 @@ interface SettingsModalProps {
   onSetWeatherPreviewMode: (mode: WeatherOverlayMode | null) => void
   handGestureEnabled: boolean
   onSetHandGestureEnabled: (enabled: boolean) => void
+  handGestureState: HandGestureState
 }
 
 export function SettingsModal({
@@ -32,7 +35,23 @@ export function SettingsModal({
   onSetWeatherPreviewMode,
   handGestureEnabled,
   onSetHandGestureEnabled,
+  handGestureState,
 }: SettingsModalProps) {
+  const previewRef = useRef<HTMLVideoElement | null>(null)
+
+  // 인식기의 웹캠 스트림을 테스트용 미리보기에 붙입니다 (스트림은 두 video가 공유 가능).
+  useEffect(() => {
+    const video = previewRef.current
+    if (!video) return
+    const stream = open && handGestureEnabled ? handGestureState.stream : null
+    if (video.srcObject !== stream) {
+      video.srcObject = stream
+      if (stream) {
+        void video.play().catch(() => undefined)
+      }
+    }
+  }, [open, handGestureEnabled, handGestureState.stream])
+
   const handleExportDatabase = useCallback(() => {
     void window.calendarApi.exportDatabase().catch((err) => {
       console.error('DB 내보내기 실패:', err)
@@ -201,9 +220,17 @@ export function SettingsModal({
               </button>
             </div>
             <p className="settings-hint">
-              손날을 세운 채 좌우로 휘두르면 캘린더 화면과 2주 근무표를 번갈아 표시합니다.
+              🖐 손바닥을 펴면 2주 근무표, ✊ 주먹을 쥐면 캘린더로 돌아옵니다 (같은 자세 0.4초 유지).
               영상은 이 PC 안에서만 처리되며 저장·전송되지 않습니다.
             </p>
+            {handGestureEnabled ? (
+              <div
+                className={`gesture-preview is-${handGestureState.status}${handGestureState.pendingMode ? ' is-pending' : ''}${gestureToMode(handGestureState.gesture) ? ' is-gesture' : ''}`}
+              >
+                <video ref={previewRef} className="gesture-preview-video" muted playsInline />
+                <p className="gesture-preview-status">{describeGestureState(handGestureState)}</p>
+              </div>
+            ) : null}
           </section>
 
           <section className="settings-section">
