@@ -19,9 +19,12 @@ import { parseVacationInfo } from '../utils/parseVacationInfo'
 import { eventTypeSortIndex } from '../utils/eventTypeOrder'
 import { SettingsModal } from '../components/SettingsModal'
 import { SyncModal } from '../components/SyncModal'
+import { ShiftRosterOverlay } from '../components/ShiftRosterOverlay'
+import { HandGestureController } from '../components/HandGestureController'
 import { useCalendarStore } from '../state/useCalendarStore'
 
 const LEGACY_ROUTINE_COMPLETIONS_KEY = 'routineCompletions'
+const HAND_GESTURE_ENABLED_KEY = 'handGestureEnabled'
 const LEGACY_ROUTINE_COMPLETION_KEY_PATTERN = /^(.+)::(\d{4}-\d{2}-\d{2})$/
 const GIMPO_AIRPORT_WEATHER_URL =
   'https://api.open-meteo.com/v1/forecast?latitude=37.5583&longitude=126.7906&current=weather_code,precipitation,rain,snowfall&timezone=Asia%2FSeoul&forecast_days=1'
@@ -499,6 +502,134 @@ function collectShiftMembersWithSubstitutions(
   return members
 }
 
+interface ShiftDaySummary {
+  dateIso: string
+  dayTeams: ShiftTeamKey[]
+  nightTeams: ShiftTeamKey[]
+  /** 대체근무 반영 + 휴가/교육자 제외된 주간 근무자 */
+  dayMembers: string[]
+  /** 대체근무 반영 + 휴가/교육자 제외된 야간 근무자 */
+  nightMembers: string[]
+  /** 휴가/교육자 제외된 일근자 (주말·공휴일이면 빈 배열) */
+  dayWorkerNames: string[]
+  hideDayWorkers: boolean
+  hasShiftTeams: boolean
+  /** 해당 날짜에 걸친 휴가 (시간차 포함, 표시용) */
+  vacations: { name: string; type: string | null }[]
+}
+
+function eventCoversLocalDate(event: CalendarEvent, date: DateTime): boolean {
+  const start = DateTime.fromISO(event.startAtUtc).toLocal()
+  const end = DateTime.fromISO(event.endAtUtc).toLocal()
+  return start.startOf('day') <= date && end > date
+}
+
+/**
+ * 특정 날짜의 근무자 구성을 계산합니다 (오늘 근무 카드·2주 근무표 공용).
+ * contextEvents는 이미 반복 일정이 확장된 목록이어야 합니다.
+ */
+function buildShiftDaySummary(
+  dateIso: string,
+  contextEvents: CalendarEvent[],
+  teams: ShiftTeamAssignments,
+  dayWorkers: string[],
+  publicHolidayMap: Map<string, string>,
+): ShiftDaySummary {
+  const date = DateTime.fromISO(dateIso).startOf('day')
+  const dayTeams: ShiftTeamKey[] = []
+  const nightTeams: ShiftTeamKey[] = []
+  const substitutionsByTeamOriginal = new Map<string, string>()
+
+  for (const event of contextEvents) {
+    if (event.eventType !== '근무') continue
+    if (DateTime.fromISO(event.startAtUtc).toLocal().toISODate() !== dateIso) continue
+    const parsed = parseShiftTeamsFromSummary(event.summary)
+    if (!parsed) {
+      continue
+    }
+    if (!dayTeams.includes(parsed.dayTeam)) {
+      dayTeams.push(parsed.dayTeam)
+    }
+    if (!nightTeams.includes(parsed.nightTeam)) {
+      nightTeams.push(parsed.nightTeam)
+    }
+
+    const dayMembers = teams[parsed.dayTeam].map((name) => name.trim()).filter(Boolean)
+    const nightMembers = teams[parsed.nightTeam].map((name) => name.trim()).filter(Boolean)
+    const parsedDescription = parseShiftDescriptionState(event.description ?? '')
+    for (const substitution of parsedDescription.substitutions) {
+      const original = substitution.original.trim()
+      const substitute = substitution.substitute.trim()
+      if (!original || !substitute) {
+        continue
+      }
+      const isDayMember = dayMembers.includes(original)
+      const isNightMember = nightMembers.includes(original)
+      const targetTeam = isDayMember ? parsed.dayTeam : isNightMember ? parsed.nightTeam : null
+      if (!targetTeam) {
+        continue
+      }
+      substitutionsByTeamOriginal.set(`${targetTeam}:${original}`, substitute)
+    }
+  }
+
+  // 근무 제외 대상(휴가/교육) 이름 수집 — 시간차 휴가는 근무에서 빼지 않음
+  const unavailableNames = new Set<string>()
+  const vacations: { name: string; type: string | null }[] = []
+  for (const event of contextEvents) {
+    if (event.eventType !== '휴가') continue
+    if (!eventCoversLocalDate(event, date)) continue
+    const { targets, vacationType } = parseVacationInfo(event.description ?? '')
+    const isPartial = Boolean(vacationType && vacationType.startsWith('시간차'))
+    for (const name of targets) {
+      const trimmed = name.trim()
+      if (!trimmed) continue
+      if (!vacations.some((item) => item.name === trimmed)) {
+        vacations.push({ name: trimmed, type: vacationType })
+      }
+      if (!isPartial) unavailableNames.add(trimmed)
+    }
+  }
+
+  for (const event of contextEvents) {
+    if (event.eventType !== '교육') continue
+    if (!eventCoversLocalDate(event, date)) continue
+    const { targets } = parseEducationTargets(event.description ?? '')
+    for (const name of targets) {
+      const trimmed = name.trim()
+      if (trimmed) unavailableNames.add(trimmed)
+    }
+  }
+
+  const isWeekend = date.weekday === 6 || date.weekday === 7
+  const isHoliday = publicHolidayMap.has(dateIso)
+  const hideDayWorkers = isWeekend || isHoliday
+
+  const dayWorkerNames = hideDayWorkers
+    ? []
+    : dayWorkers.filter((name) => name.trim().length > 0 && !unavailableNames.has(name.trim()))
+  const hasShiftTeams = dayTeams.length > 0 || nightTeams.length > 0
+
+  const dayMembers = collectShiftMembersWithSubstitutions(dayTeams, teams, substitutionsByTeamOriginal).filter(
+    (name) => !unavailableNames.has(name.trim()),
+  )
+  const nightMembers = collectShiftMembersWithSubstitutions(nightTeams, teams, substitutionsByTeamOriginal).filter(
+    (name) => !unavailableNames.has(name.trim()),
+  )
+
+  return {
+    dateIso,
+    dayTeams,
+    nightTeams,
+    dayMembers,
+    nightMembers,
+    dayWorkerNames,
+    hideDayWorkers,
+    hasShiftTeams,
+    vacations,
+  }
+}
+
 function cloneShiftTeams(teams: ShiftTeamAssignments): ShiftTeamAssignments {
   return {
     A: [...teams.A],
@@ -684,6 +815,25 @@ export function CalendarPage() {
   const [editingMonthField, setEditingMonthField] = useState<'year' | 'month' | null>(null)
   const [monthFieldDraft, setMonthFieldDraft] = useState('')
   const [visibleMonth, setVisibleMonth] = useState(() => DateTime.local().startOf('month'))
+  const [rosterOpen, setRosterOpen] = useState(false)
+  const [handGestureEnabled, setHandGestureEnabledState] = useState<boolean>(() => {
+    try {
+      return localStorage.getItem(HAND_GESTURE_ENABLED_KEY) === 'true'
+    } catch {
+      return false
+    }
+  })
+  const setHandGestureEnabled = useCallback((enabled: boolean) => {
+    setHandGestureEnabledState(enabled)
+    try {
+      localStorage.setItem(HAND_GESTURE_ENABLED_KEY, enabled ? 'true' : 'false')
+    } catch (err) {
+      console.warn('손동작 인식 설정 저장 실패:', err)
+    }
+  }, [])
+  const toggleRoster = useCallback(() => {
+    setRosterOpen((prev) => !prev)
+  }, [])
   // FullCalendar 그리드에 실제로 그려지는 날짜 범위(주 단위 레인 정렬 스페이서 계산용). datesSet 에서 갱신.
   const [gridRange, setGridRange] = useState<{ start: string; end: string } | null>(null)
   const [shiftTeamDrafts, setShiftTeamDrafts] = useState<ShiftTeamAssignments>(() =>
@@ -1170,95 +1320,13 @@ export function CalendarPage() {
   const todayCount = todayEvents.length
 
   const todayShiftSummary = useMemo(() => {
-    const todayShiftEvents = todayContextEvents.filter(
-      (event) => event.eventType === '근무' && DateTime.fromISO(event.startAtUtc).toLocal().toISODate() === today,
-    )
-    const dayTeams: ShiftTeamKey[] = []
-    const nightTeams: ShiftTeamKey[] = []
-    const substitutionsByTeamOriginal = new Map<string, string>()
-
-    for (const event of todayShiftEvents) {
-      const parsed = parseShiftTeamsFromSummary(event.summary)
-      if (!parsed) {
-        continue
-      }
-      if (!dayTeams.includes(parsed.dayTeam)) {
-        dayTeams.push(parsed.dayTeam)
-      }
-      if (!nightTeams.includes(parsed.nightTeam)) {
-        nightTeams.push(parsed.nightTeam)
-      }
-
-      const dayMembers = shiftTeamDrafts[parsed.dayTeam].map((name) => name.trim()).filter(Boolean)
-      const nightMembers = shiftTeamDrafts[parsed.nightTeam].map((name) => name.trim()).filter(Boolean)
-      const parsedDescription = parseShiftDescriptionState(event.description ?? '')
-      for (const substitution of parsedDescription.substitutions) {
-        const original = substitution.original.trim()
-        const substitute = substitution.substitute.trim()
-        if (!original || !substitute) {
-          continue
-        }
-        const isDayMember = dayMembers.includes(original)
-        const isNightMember = nightMembers.includes(original)
-        const targetTeam = isDayMember ? parsed.dayTeam : isNightMember ? parsed.nightTeam : null
-        if (!targetTeam) {
-          continue
-        }
-        substitutionsByTeamOriginal.set(`${targetTeam}:${original}`, substitute)
-      }
-    }
-
-    // 오늘 근무 제외 대상(휴가/교육) 이름 수집
-    const todayUnavailableNames = new Set<string>()
-    for (const event of todayContextEvents) {
-      if (event.eventType !== '휴가') continue
-      const start = DateTime.fromISO(event.startAtUtc).toLocal()
-      const end = DateTime.fromISO(event.endAtUtc).toLocal()
-      const todayDtObj = DateTime.fromISO(today!)
-      if (start.startOf('day') <= todayDtObj && end > todayDtObj) {
-        const { targets, vacationType } = parseVacationInfo(event.description ?? '')
-        if (vacationType && vacationType.startsWith('시간차')) continue
-        for (const name of targets) {
-          const trimmed = name.trim()
-          if (trimmed) todayUnavailableNames.add(trimmed)
-        }
-      }
-    }
-
-    for (const event of todayContextEvents) {
-      if (event.eventType !== '교육') continue
-      const start = DateTime.fromISO(event.startAtUtc).toLocal()
-      const end = DateTime.fromISO(event.endAtUtc).toLocal()
-      const todayDtObj = DateTime.fromISO(today!)
-      if (start.startOf('day') <= todayDtObj && end > todayDtObj) {
-        const { targets } = parseEducationTargets(event.description ?? '')
-        for (const name of targets) {
-          const trimmed = name.trim()
-          if (trimmed) todayUnavailableNames.add(trimmed)
-        }
-      }
-    }
-
-    const todayDt = DateTime.local()
-    const isWeekend = todayDt.weekday === 6 || todayDt.weekday === 7
-    const isHoliday = publicHolidayMap.has(today!)
-    const hideDayWorkers = isWeekend || isHoliday
-
-    const dayWorkerNames = dayWorkerDrafts.filter(
-      (name) => name.trim().length > 0 && !todayUnavailableNames.has(name.trim()),
-    )
-    const hasShiftTeams = dayTeams.length > 0 || nightTeams.length > 0
+    const summary = buildShiftDaySummary(today, todayContextEvents, shiftTeamDrafts, dayWorkerDrafts, publicHolidayMap)
+    const { dayTeams, nightTeams, dayMembers, nightMembers, dayWorkerNames, hideDayWorkers, hasShiftTeams } = summary
 
     if (!hasShiftTeams && (hideDayWorkers || dayWorkerNames.length === 0)) {
       return null
     }
 
-    const dayMembers = collectShiftMembersWithSubstitutions(dayTeams, shiftTeamDrafts, substitutionsByTeamOriginal).filter(
-      (name) => !todayUnavailableNames.has(name.trim()),
-    )
-    const nightMembers = collectShiftMembersWithSubstitutions(nightTeams, shiftTeamDrafts, substitutionsByTeamOriginal).filter(
-      (name) => !todayUnavailableNames.has(name.trim()),
-    )
     const dayText = hasShiftTeams
       ? (dayMembers.length > 0 ? dayMembers.join(' · ') : `${dayTeams.join('·')}조 미지정`)
       : null
@@ -1280,6 +1348,23 @@ export function CalendarPage() {
       nightOverridden: todayShiftOverrides?.nightText !== undefined,
     }
   }, [todayContextEvents, shiftTeamDrafts, dayWorkerDrafts, publicHolidayMap, todayShiftOverrides, today])
+
+  const rosterDays = useMemo(() => {
+    const weekStart = DateTime.fromISO(today).startOf('week') // 월요일
+    return Array.from({ length: 14 }, (_, offset) => {
+      const date = weekStart.plus({ days: offset })
+      const dateIso = date.toISODate()!
+      const summary = buildShiftDaySummary(dateIso, todayContextEvents, shiftTeamDrafts, dayWorkerDrafts, publicHolidayMap)
+      return {
+        ...summary,
+        dayLabel: date.setLocale('ko').toFormat('M/d'),
+        weekdayLabel: date.setLocale('ko').toFormat('EEE'),
+        isToday: dateIso === today,
+        isWeekend: date.weekday === 6 || date.weekday === 7,
+        holidayName: publicHolidayMap.get(dateIso) ?? null,
+      }
+    })
+  }, [today, todayContextEvents, shiftTeamDrafts, dayWorkerDrafts, publicHolidayMap])
 
   const upcomingEventsByDate = useMemo(() => {
     const now = DateTime.now()
@@ -2223,6 +2308,14 @@ export function CalendarPage() {
             >
               동기화
             </button>
+            <button
+              type="button"
+              className={rosterOpen ? 'titlebar-roster-btn is-active' : 'titlebar-roster-btn'}
+              aria-pressed={rosterOpen}
+              onClick={toggleRoster}
+            >
+              근무표
+            </button>
             </div>
           </div>
           <div className="titlebar-monthbar">
@@ -2338,6 +2431,8 @@ export function CalendarPage() {
           </div>
         </div>
       ) : null}
+      <ShiftRosterOverlay open={rosterOpen} days={rosterDays} onClose={() => setRosterOpen(false)} />
+      <HandGestureController enabled={handGestureEnabled} onSwipe={toggleRoster} />
       <div className={useCustomTitlebar ? 'app-shell app-shell-with-titlebar' : 'app-shell'}>
       {googleConnected && !selectedCalendarId ? (
         <div className="warning-banner">동기화할 달력을 먼저 선택해 주세요.</div>
@@ -3345,6 +3440,8 @@ export function CalendarPage() {
         onSetShiftTeamMode={setShiftTeamMode}
         onSetDayWorkerCount={setDayWorkerCount}
         onSetWeatherPreviewMode={setWeatherPreviewMode}
+        handGestureEnabled={handGestureEnabled}
+        onSetHandGestureEnabled={setHandGestureEnabled}
       />
       <SyncModal
         open={syncOpen}

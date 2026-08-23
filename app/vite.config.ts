@@ -1,4 +1,5 @@
 import { defineConfig, type Plugin } from 'vite'
+import fs from 'node:fs'
 import path from 'node:path'
 import electron from 'vite-plugin-electron/simple'
 import react from '@vitejs/plugin-react'
@@ -41,6 +42,35 @@ function cjsInteropPlugin(packages: string[]): Plugin {
     },
   }
 }
+
+/**
+ * MediaPipe Tasks Vision의 WASM 런타임을 public/mediapipe/wasm 으로 복사합니다.
+ * FilesetResolver.forVisionTasks(basePath)가 고정 파일명(vision_wasm_internal.js 등)을 기대하므로
+ * Vite 해시 번들링 대신 public 자산으로 그대로 서빙합니다 (dev: /mediapipe/wasm, build: dist/mediapipe/wasm).
+ * 복사본은 .gitignore 대상이며 모델 파일(hand_landmarker.task)만 저장소에 포함합니다.
+ */
+function syncMediapipeWasm(): void {
+  const source = path.join(__dirname, 'node_modules/@mediapipe/tasks-vision/wasm')
+  const target = path.join(__dirname, 'public/mediapipe/wasm')
+  if (!fs.existsSync(source)) {
+    console.warn('[mediapipe] wasm 디렉터리를 찾을 수 없습니다. npm i 를 먼저 실행하세요.')
+    return
+  }
+  fs.mkdirSync(target, { recursive: true })
+  for (const name of fs.readdirSync(source)) {
+    const from = path.join(source, name)
+    const to = path.join(target, name)
+    const fromStat = fs.statSync(from)
+    if (!fromStat.isFile()) continue
+    // ES 모듈 변형(vision_wasm_module_*)은 forVisionTasks(basePath, useModule=false) 경로에서 쓰지 않으므로 제외
+    if (name.includes('_module_')) continue
+    const toStat = fs.existsSync(to) ? fs.statSync(to) : null
+    if (toStat && toStat.size === fromStat.size && toStat.mtimeMs >= fromStat.mtimeMs) continue
+    fs.copyFileSync(from, to)
+  }
+}
+
+syncMediapipeWasm()
 
 // https://vitejs.dev/config/
 export default defineConfig(({ command }) => ({

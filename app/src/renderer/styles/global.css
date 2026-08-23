@@ -3326,3 +3326,290 @@ textarea {
   border-color: var(--accent);
   color: var(--accent);
 }
+
+/* ─────────────────────────────────────────────
+   2주 근무표 오버레이 (손날 스와이프 / 타이틀바 버튼)
+   ───────────────────────────────────────────── */
+.titlebar-roster-btn {
+  border: 0.5px solid var(--line-strong);
+  background: rgba(255, 255, 255, 0.78);
+  color: var(--ink-700);
+  border-radius: var(--radius-sm);
+  min-height: 28px;
+  padding: 0 12px;
+  font-size: 12px;
+  font-weight: 600;
+  cursor: pointer;
+  transition: background-color 0.14s ease, color 0.14s ease;
+}
+
+.titlebar-roster-btn:hover {
+  background: rgba(255, 255, 255, 0.95);
+}
+
+.titlebar-roster-btn.is-active {
+  background: var(--accent);
+  border-color: var(--accent);
+  color: #fff;
+}
+
+.roster-overlay {
+  position: absolute;
+  top: var(--titlebar-height);
+  left: 0;
+  right: 0;
+  bottom: 0;
+  z-index: 40;
+  display: flex;
+  flex-direction: column;
+  background: var(--surface);
+  padding: clamp(12px, 2vh, 24px) clamp(16px, 2.5vw, 40px);
+  gap: clamp(8px, 1.5vh, 16px);
+  animation: roster-fade-in 0.18s ease-out;
+}
+
+@keyframes roster-fade-in {
+  from { opacity: 0; transform: translateY(6px); }
+  to { opacity: 1; transform: translateY(0); }
+}
+
+.roster-header {
+  display: flex;
+  align-items: baseline;
+  gap: 16px;
+  flex: 0 0 auto;
+}
+
+.roster-header h2 {
+  margin: 0;
+  font-family: var(--font-display);
+  font-size: clamp(22px, 2.6vw, 34px);
+  font-weight: 700;
+  color: var(--ink-900);
+  letter-spacing: -0.01em;
+}
+
+.roster-range {
+  margin: 0;
+  font-size: clamp(14px, 1.4vw, 18px);
+  color: var(--ink-500);
+  flex: 1;
+}
+
+.roster-close {
+  align-self: center;
+}
+
+.roster-body {
+  flex: 1 1 auto;
+  min-height: 0;
+  display: grid;
+  grid-template-rows: 1fr 1fr;
+  gap: clamp(8px, 1.5vh, 16px);
+}
+
+.roster-week {
+  min-height: 0;
+  display: flex;
+}
+
+.roster-grid {
+  flex: 1;
+  min-height: 0;
+  display: grid;
+  grid-template-columns: minmax(64px, 0.55fr) repeat(7, 1fr);
+  grid-template-rows: auto repeat(4, 1fr);
+  gap: 4px;
+}
+
+.roster-corner,
+.roster-day-header,
+.roster-row-label,
+.roster-cell {
+  border-radius: var(--radius-md);
+  min-width: 0;
+  min-height: 0;
+}
+
+.roster-corner {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  font-size: clamp(13px, 1.2vw, 16px);
+  font-weight: 700;
+  color: var(--ink-500);
+}
+
+.roster-day-header {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  padding: 6px 4px;
+  background: var(--surface-raised);
+  border: 0.5px solid var(--line);
+  line-height: 1.15;
+}
+
+.roster-day-date {
+  font-size: clamp(16px, 1.7vw, 24px);
+  font-weight: 700;
+  color: var(--ink-900);
+}
+
+.roster-day-weekday {
+  font-size: clamp(11px, 1vw, 14px);
+  color: var(--ink-500);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  max-width: 100%;
+}
+
+.roster-day-header.is-offday .roster-day-date,
+.roster-day-header.is-offday .roster-day-weekday {
+  color: var(--danger);
+}
+
+.roster-day-header.is-today {
+  background: var(--accent);
+  border-color: var(--accent);
+}
+
+.roster-day-header.is-today .roster-day-date,
+.roster-day-header.is-today .roster-day-weekday {
+  color: #fff;
+}
+
+.roster-row-label {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  font-size: clamp(14px, 1.4vw, 20px);
+  font-weight: 700;
+  color: var(--ink-700);
+  background: rgba(0, 0, 0, 0.03);
+}
+
+.roster-cell {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: 2px;
+  padding: 4px;
+  background: var(--surface-raised);
+  border: 0.5px solid var(--line);
+  overflow: hidden;
+  text-align: center;
+}
+
+.roster-cell.is-today {
+  border-color: var(--accent);
+  box-shadow: inset 0 0 0 1px var(--accent);
+}
+
+.roster-name {
+  font-size: clamp(17px, 2vw, 30px);
+  font-weight: 700;
+  color: var(--ink-900);
+  line-height: 1.2;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  max-width: 100%;
+}
+
+.roster-name-vacation {
+  display: inline-flex;
+  flex-direction: column;
+  align-items: center;
+  color: var(--purple);
+}
+
+.roster-name-vacation small {
+  font-size: clamp(10px, 0.9vw, 13px);
+  font-weight: 500;
+  color: var(--ink-500);
+}
+
+.roster-team {
+  font-size: clamp(11px, 1vw, 14px);
+  font-weight: 700;
+  color: var(--accent);
+  letter-spacing: 0.04em;
+}
+
+.roster-empty {
+  font-size: clamp(13px, 1.2vw, 18px);
+  color: var(--ink-500);
+}
+
+.roster-row-night .roster-name {
+  color: #1e3a8a;
+}
+
+.roster-row-night.roster-cell {
+  background: #eef2ff;
+}
+
+.roster-row-dayworker.roster-cell {
+  background: #fafaf7;
+}
+
+.roster-row-vacation.roster-cell {
+  background: var(--purple-tint);
+}
+
+/* ─────────────────────────────────────────────
+   손동작 인식 위젯 (웹캠 미리보기 + 상태)
+   ───────────────────────────────────────────── */
+.hand-gesture-widget {
+  position: fixed;
+  right: 14px;
+  bottom: 14px;
+  z-index: 45;
+  width: 168px;
+  border-radius: var(--radius-md);
+  overflow: hidden;
+  background: var(--surface-raised);
+  border: 0.5px solid var(--line-strong);
+  box-shadow: var(--shadow-md);
+  transition: border-color 0.15s ease, box-shadow 0.15s ease;
+}
+
+.hand-gesture-widget.is-edge-on {
+  border-color: var(--accent);
+  box-shadow: 0 0 0 2px var(--accent-tint), var(--shadow-md);
+}
+
+.hand-gesture-widget.is-swiped {
+  border-color: var(--accent);
+  box-shadow: 0 0 0 3px var(--accent), var(--shadow-md);
+}
+
+.hand-gesture-widget.is-error {
+  border-color: var(--danger);
+}
+
+.hand-gesture-preview {
+  display: block;
+  width: 100%;
+  aspect-ratio: 4 / 3;
+  object-fit: cover;
+  background: #111;
+  transform: scaleX(-1); /* 거울 모드 */
+}
+
+.hand-gesture-status {
+  margin: 0;
+  padding: 6px 8px;
+  font-size: 11px;
+  line-height: 1.3;
+  color: var(--ink-700);
+  text-align: center;
+}
+
+.hand-gesture-widget.is-error .hand-gesture-status {
+  color: var(--danger);
+}

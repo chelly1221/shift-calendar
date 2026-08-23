@@ -14,6 +14,8 @@ interface SettingsModalProps {
   onSetShiftTeamMode: (shiftTeamMode: ShiftTeamMode) => Promise<void>
   onSetDayWorkerCount: (dayWorkerCount: DayWorkerCount) => Promise<void>
   onSetWeatherPreviewMode: (mode: WeatherOverlayMode | null) => void
+  handGestureEnabled: boolean
+  onSetHandGestureEnabled: (enabled: boolean) => void
 }
 
 export function SettingsModal({
@@ -28,6 +30,8 @@ export function SettingsModal({
   onSetShiftTeamMode,
   onSetDayWorkerCount,
   onSetWeatherPreviewMode,
+  handGestureEnabled,
+  onSetHandGestureEnabled,
 }: SettingsModalProps) {
   const handleExportDatabase = useCallback(() => {
     void window.calendarApi.exportDatabase().catch((err) => {
@@ -173,6 +177,33 @@ export function SettingsModal({
               </button>
             </div>
             <p className="settings-hint">실시간 모드는 김포공항 현재 날씨(강수/적설) 기준으로 자동 반영됩니다.</p>
+          </section>
+
+          <section className="settings-section">
+            <div className="settings-row">
+              <p className="settings-label">손동작 인식 (웹캠)</p>
+              <p className="settings-value">{handGestureEnabled ? '켜짐' : '꺼짐'}</p>
+            </div>
+            <div className="settings-inline-actions" role="group" aria-label="손동작 인식">
+              <button
+                type="button"
+                className={handGestureEnabled ? 'ghost-button is-active' : 'ghost-button'}
+                onClick={() => onSetHandGestureEnabled(true)}
+              >
+                켜기
+              </button>
+              <button
+                type="button"
+                className={!handGestureEnabled ? 'ghost-button is-active' : 'ghost-button'}
+                onClick={() => onSetHandGestureEnabled(false)}
+              >
+                끄기
+              </button>
+            </div>
+            <p className="settings-hint">
+              손날을 세운 채 좌우로 휘두르면 캘린더 화면과 2주 근무표를 번갈아 표시합니다.
+              영상은 이 PC 안에서만 처리되며 저장·전송되지 않습니다.
+            </p>
           </section>
 
           <section className="settings-section">

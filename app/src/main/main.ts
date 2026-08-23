@@ -7,7 +7,7 @@ process.on('uncaughtException', (error) => {
   throw error
 })
 
-import { app, BrowserWindow, ipcMain } from 'electron'
+import { app, BrowserWindow, ipcMain, session } from 'electron'
 import path from 'node:path'
 import { fileURLToPath } from 'node:url'
 import { ensureSetting } from './db/settingRepository'
@@ -164,6 +164,17 @@ if (!gotTheLock) {
     }
 
     registerCalendarIpc()
+
+    // 손동작 인식(웹캠)용 카메라 권한만 허용하고 마이크는 거부. 그 외 권한은 기존(기본 허용) 동작 유지.
+    session.defaultSession.setPermissionRequestHandler((_webContents, permission, callback, details) => {
+      if (permission === 'media') {
+        const mediaTypes = 'mediaTypes' in details ? details.mediaTypes ?? [] : []
+        const videoOnly = mediaTypes.length > 0 && mediaTypes.every((type) => type === 'video')
+        callback(videoOnly)
+        return
+      }
+      callback(true)
+    })
 
     ipcMain.on(IPC_CHANNELS.windowMinimize, (event) => {
       BrowserWindow.fromWebContents(event.sender)?.minimize()

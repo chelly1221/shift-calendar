@@ -13,6 +13,8 @@ dist-electron
 dist-ssr
 release
 dev.db
+# MediaPipe WASM 런타임 복사본 (vite.config.ts가 node_modules에서 동기화)
+public/mediapipe/wasm
 *.local
 .env
 .env.*
