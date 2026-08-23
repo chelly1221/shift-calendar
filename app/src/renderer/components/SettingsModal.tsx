@@ -98,7 +98,8 @@ export function SettingsModal({
             닫기
           </button>
         </header>
-        <div className="settings-content">
+        <div className="settings-content settings-content-two-col">
+          <div className="settings-column">
           <section className="settings-section">
             <label className="calendar-target-control settings-calendar-control" htmlFor="settings-shift-type-select">
               <span>교대근무 타입</span>
@@ -199,6 +200,29 @@ export function SettingsModal({
           </section>
 
           <section className="settings-section">
+            <p className="settings-label">데이터 관리</p>
+            <div className="settings-inline-actions" role="group" aria-label="데이터 관리">
+              <button
+                type="button"
+                className="ghost-button"
+                onClick={handleExportDatabase}
+              >
+                내보내기
+              </button>
+              <button
+                type="button"
+                className="ghost-button"
+                onClick={handleImportDatabase}
+              >
+                가져오기
+              </button>
+            </div>
+            <p className="settings-hint">데이터베이스 파일을 내보내거나 가져올 수 있습니다. 가져오기 시 앱이 재시작됩니다.</p>
+          </section>
+          </div>
+
+          <div className="settings-column">
+          <section className="settings-section">
             <div className="settings-row">
               <p className="settings-label">손동작 인식 (웹캠)</p>
               <p className="settings-value">{handGestureEnabled ? '켜짐' : '꺼짐'}</p>
@@ -220,7 +244,7 @@ export function SettingsModal({
               </button>
             </div>
             <p className="settings-hint">
-              🖐 손바닥을 펴면 2주 근무표, ✊ 주먹을 쥐면 캘린더로 돌아옵니다 (같은 자세 0.4초 유지).
+              🖐 손바닥을 펴면 2주 근무표, ✊ 주먹을 쥐면 캘린더로 돌아옵니다 (자세를 1초쯤 유지, 전환 후 1.5초간 재전환 없음).
               영상은 이 PC 안에서만 처리되며 저장·전송되지 않습니다.
             </p>
             {handGestureEnabled ? (
@@ -232,27 +256,7 @@ export function SettingsModal({
               </div>
             ) : null}
           </section>
-
-          <section className="settings-section">
-            <p className="settings-label">데이터 관리</p>
-            <div className="settings-inline-actions" role="group" aria-label="데이터 관리">
-              <button
-                type="button"
-                className="ghost-button"
-                onClick={handleExportDatabase}
-              >
-                내보내기
-              </button>
-              <button
-                type="button"
-                className="ghost-button"
-                onClick={handleImportDatabase}
-              >
-                가져오기
-              </button>
-            </div>
-            <p className="settings-hint">데이터베이스 파일을 내보내거나 가져올 수 있습니다. 가져오기 시 앱이 재시작됩니다.</p>
-          </section>
+          </div>
         </div>
       </section>
     </div>

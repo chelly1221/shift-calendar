@@ -1,4 +1,4 @@
-import { useEffect } from 'react'
+import { useEffect, useLayoutEffect, useRef } from 'react'
 
 export interface RosterMember {
   name: string
@@ -72,35 +72,29 @@ function RosterWeek({ days, title }: { days: ShiftRosterDay[]; title: string }) 
         <div className="roster-row-label roster-row-dayworker">일근</div>
         {days.map((day) => (
           <div key={`${day.dateIso}-dw`} className={`roster-cell roster-row-dayworker${day.isToday ? ' is-today' : ''}`}>
-            {day.hideDayWorkers ? <span className="roster-empty">—</span> : <MemberList members={day.dayWorkerRoster} emptyLabel="—" />}
+            <div className="roster-cell-inner">
+              {day.hideDayWorkers ? <span className="roster-empty">—</span> : <MemberList members={day.dayWorkerRoster} emptyLabel="—" />}
+            </div>
           </div>
         ))}
 
         <div className="roster-row-label roster-row-day">주간</div>
         {days.map((day) => (
           <div key={`${day.dateIso}-day`} className={`roster-cell roster-row-day${day.isToday ? ' is-today' : ''}`}>
-            {day.hasShiftTeams ? (
-              <>
-                <span className="roster-team">{day.dayTeams.join('·')}</span>
-                <MemberList members={day.dayRoster} emptyLabel="미지정" />
-              </>
-            ) : (
-              <span className="roster-empty">—</span>
-            )}
+            {day.hasShiftTeams ? <span className="roster-team">{day.dayTeams.join('·')}</span> : null}
+            <div className="roster-cell-inner">
+              {day.hasShiftTeams ? <MemberList members={day.dayRoster} emptyLabel="미지정" /> : <span className="roster-empty">—</span>}
+            </div>
           </div>
         ))}
 
         <div className="roster-row-label roster-row-night">야간</div>
         {days.map((day) => (
           <div key={`${day.dateIso}-night`} className={`roster-cell roster-row-night${day.isToday ? ' is-today' : ''}`}>
-            {day.hasShiftTeams ? (
-              <>
-                <span className="roster-team">{day.nightTeams.join('·')}</span>
-                <MemberList members={day.nightRoster} emptyLabel="미지정" />
-              </>
-            ) : (
-              <span className="roster-empty">—</span>
-            )}
+            {day.hasShiftTeams ? <span className="roster-team">{day.nightTeams.join('·')}</span> : null}
+            <div className="roster-cell-inner">
+              {day.hasShiftTeams ? <MemberList members={day.nightRoster} emptyLabel="미지정" /> : <span className="roster-empty">—</span>}
+            </div>
           </div>
         ))}
       </div>
@@ -113,7 +107,66 @@ function RosterWeek({ days, title }: { days: ShiftRosterDay[]; title: string }) 
  * 손 자세(손바닥 → 열기, 주먹 → 닫기)로만 전환합니다. Esc는 비상용 닫기.
  * 휴가/교육자는 명단에서 빼지 않고 삭선 + 뱃지로 표시합니다 (시간차 휴가는 뱃지만).
  */
+const MIN_ROSTER_FONT_PX = 12
+const MAX_ROSTER_FONT_PX = 200
+
+/**
+ * 모든 셀이 넘치지 않는 가장 큰 폰트 크기를 이진탐색으로 찾아 --roster-font 에 적용합니다.
+ * 셀 크기는 그리드(1fr)로 정해지므로 폰트 ↑ → 넘침 ↑ 단조성이 성립합니다.
+ */
+function fitRosterFont(body: HTMLElement): void {
+  const cells = Array.from(body.querySelectorAll<HTMLElement>('.roster-cell'))
+  if (cells.length === 0) return
+  const overflows = (px: number): boolean => {
+    body.style.setProperty('--roster-font', `${px}px`)
+    for (const cell of cells) {
+      const inner = cell.querySelector<HTMLElement>('.roster-cell-inner')
+      if (!inner) continue
+      const style = getComputedStyle(cell)
+      const padX = parseFloat(style.paddingLeft) + parseFloat(style.paddingRight)
+      const padY = parseFloat(style.paddingTop) + parseFloat(style.paddingBottom)
+      if (inner.scrollHeight > cell.clientHeight - padY + 0.5) return true
+      if (inner.scrollWidth > cell.clientWidth - padX + 0.5) return true
+    }
+    return false
+  }
+  let lo = MIN_ROSTER_FONT_PX
+  let hi = MAX_ROSTER_FONT_PX
+  if (overflows(lo)) {
+    body.style.setProperty('--roster-font', `${lo}px`)
+    return
+  }
+  while (hi - lo > 1) {
+    const mid = Math.floor((lo + hi) / 2)
+    if (overflows(mid)) hi = mid
+    else lo = mid
+  }
+  body.style.setProperty('--roster-font', `${lo}px`)
+}
+
 export function ShiftRosterOverlay({ open, days, onClose }: ShiftRosterOverlayProps) {
+  const bodyRef = useRef<HTMLDivElement | null>(null)
+
+  useLayoutEffect(() => {
+    if (!open) return
+    const body = bodyRef.current
+    if (!body) return
+    let frame = 0
+    const schedule = () => {
+      cancelAnimationFrame(frame)
+      frame = requestAnimationFrame(() => fitRosterFont(body))
+    }
+    fitRosterFont(body)
+    const observer = new ResizeObserver(schedule)
+    observer.observe(body)
+    // 폰트 로딩 완료 후 글자 폭이 바뀔 수 있으므로 한 번 더
+    void document.fonts?.ready.then(schedule)
+    return () => {
+      observer.disconnect()
+      cancelAnimationFrame(frame)
+    }
+  }, [open, days])
+
   useEffect(() => {
     if (!open) {
       return
@@ -143,9 +196,9 @@ export function ShiftRosterOverlay({ open, days, onClose }: ShiftRosterOverlayPr
         <p className="roster-range">
           {firstWeek[0]?.dayLabel} ~ {lastDay?.dayLabel}
         </p>
-        <p className="roster-gesture-hint">✊ 주먹을 쥐면 캘린더로 돌아갑니다</p>
+        <p className="roster-gesture-hint">✊ 주먹을 쥐면 캘린더로</p>
       </header>
-      <div className="roster-body">
+      <div className="roster-body" ref={bodyRef}>
         <RosterWeek days={firstWeek} title="이번 주" />
         {secondWeek.length > 0 ? <RosterWeek days={secondWeek} title="다음 주" /> : null}
       </div>

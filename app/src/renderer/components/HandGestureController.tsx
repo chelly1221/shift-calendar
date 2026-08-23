@@ -11,10 +11,14 @@ interface HandGestureControllerProps {
   onStateChange: (state: HandGestureState) => void
 }
 
-/** 추론 간격(ms). ~15fps면 0.4초 유지 판정에 충분하고 CPU 부담이 적습니다. */
+/** 추론 간격(ms). ~15fps면 0.6초 다수결 창에 샘플 9개가 들어가고 CPU 부담이 적습니다. */
 const INFERENCE_INTERVAL_MS = 66
-const CAPTURE_WIDTH = 320
-const CAPTURE_HEIGHT = 240
+/**
+ * 캡처 해상도 FHD. 검출 단계는 내부적으로 192×192로 축소되지만, 손을 찾은 뒤 원본에서 잘라 쓰는
+ * 랜드마크/제스처 분류 단계는 해상도가 높을수록 멀리 있는 작은 손에서도 안정적입니다.
+ */
+const CAPTURE_WIDTH = 1920
+const CAPTURE_HEIGHT = 1080
 
 function resolveAssetUrl(relativePath: string): string {
   return new URL(relativePath, document.baseURI).href
@@ -161,9 +165,10 @@ export function HandGestureController({ enabled, mode, onModeChange, onStateChan
             baseOptions: { modelAssetBuffer: modelBuffer, delegate },
             runningMode: 'VIDEO',
             numHands: 1,
-            minHandDetectionConfidence: 0.5,
-            minHandPresenceConfidence: 0.5,
-            minTrackingConfidence: 0.5,
+            // 멀리 있는 작은 손도 놓치지 않도록 완화. 오탐은 handPoseMode의 다수결·dwell이 걸러냅니다.
+            minHandDetectionConfidence: 0.3,
+            minHandPresenceConfidence: 0.3,
+            minTrackingConfidence: 0.3,
           })
         try {
           recognizer = await createRecognizer('GPU')

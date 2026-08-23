@@ -28,7 +28,7 @@ export function describeGestureState(state: HandGestureState): string {
   if (state.status === 'starting') return '카메라 준비 중…'
   if (state.status === 'error') return state.errorMessage ?? '오류'
   if (state.pendingMode) {
-    return state.pendingMode === 'roster' ? '🖐 손바닥 유지 중 → 근무표' : '✊ 주먹 유지 중 → 캘린더'
+    return state.pendingMode === 'roster' ? '🖐 손바닥 인식 중 → 근무표' : '✊ 주먹 인식 중 → 캘린더'
   }
   const detectedMode = gestureToMode(state.gesture)
   if (detectedMode) return detectedMode === 'roster' ? '🖐 손바닥 → 근무표' : '✊ 주먹 → 캘린더'

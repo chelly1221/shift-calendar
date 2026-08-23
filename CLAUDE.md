@@ -85,7 +85,8 @@ eventType은 Google extendedProperties.private.shiftCalendarEventType으로 양�
 ## Hand Gesture & Shift Roster Overlay
 - 설정 모달 "손동작 인식" 토글(localStorage `handGestureEnabled`) → `HandGestureController`가 웹캠 + `@mediapipe/tasks-vision` GestureRecognizer(WASM, 네이티브 모듈 없음)로 손 자세를 분류
 - 자세 매핑은 `gestureToMode()` 한 곳: `Closed_Fist`(✊) → `calendar`, `Open_Palm`(🖐) → `roster`. 그 외 내장 분류(`Pointing_Up`, `Thumb_Up`, `Thumb_Down`, `Victory`, `ILoveYou`)는 현재 미사용
-- `createPoseModeResolver`: 신뢰도 ≥ 0.6인 같은 자세가 400ms 유지될 때만 모드 전환, 다른 자세/손 없음이 끼면 누적 초기화. 외부(Esc)로 모드가 바뀌면 `setCurrent()`로 동기화
+- `createPoseModeResolver`: 최근 600ms 창의 **다수결** — 샘플 ≥ 5개, 후보 자세 비율 ≥ 70%(신뢰도 < 0.5·None·손 없음은 무효표)면 전환. 전환 후 1500ms dwell 동안 재전환 금지(오분류 왕복 깜빡임 차단). 외부(Esc)로 모드가 바뀌면 `setCurrent()`로 동기화
+- 캡처는 FHD(1920×1080 ideal) 요청, MediaPipe 검출/추적 임계값 0.3 — 멀리 있는 작은 손 대응. 연속 유지 방식(프레임 하나만 빠져도 초기화)은 거리가 멀면 전환이 안 되거나 깜빡여서 폐기
 - 근무표(`ShiftRosterOverlay`)는 **제스처로만** 열고 닫음 — 별도 버튼 없음 (Esc는 비상용 닫기). 이번 주·다음 주 2주간 일근/주간/야간 이름만 크게 표시
 - 휴가/교육자는 명단에서 빼지 않고 **삭선 + 뱃지**(휴가종류 / 교육)로 표시. 시간차 휴가는 뱃지만(삭선 없음). 대체근무는 반영된 이름으로 표시
 - 날짜별 근무자 계산은 `buildShiftDaySummary()` (CalendarPage) — 오늘 근무 카드(`dayMembers` 등, 휴가/교육자 제외)와 근무표(`dayRoster` 등, absence 포함)가 공용
@@ -125,7 +126,7 @@ Google이 엄밀히 최신이면 로컬 변경을 폐기하고, 그 외에는 �
 - 참석자 초대/업데이트 전파
 - 네트워크 실패 및 복구 시나리오
 - 사용자 지정 약어 라운드트립 (`buildUniqueCharMap`, `resolveAbbreviationToName`, `buildShiftGoogleSummary`)
-- 손 자세 → 모드 전환 (`renderer/gesture/handPoseMode.test.ts`: 유지 시간, 신뢰도, 끼어듦 초기화, 외부 동기화)
+- 손 자세 → 모드 전환 (`renderer/gesture/handPoseMode.test.ts`: 다수결 비율, 프레임 누락 허용, 오분류 교대, dwell, 외부 동기화)
 
 Google API 호출은 모킹하고, 테스트 파일은 `*.test.ts` 패턴을 사용합니다.
 Vitest 설정은 `app/vitest.config.ts`에 있습니다.
