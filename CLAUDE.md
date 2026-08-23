@@ -36,7 +36,7 @@ eventType은 Google extendedProperties.private.shiftCalendarEventType으로 양�
 - `npm run lint`: 정적 검사
 - `npm run type-check`: TypeScript 엄격 타입 검사
 - `npm test`: Vitest 단위 테스트 실행
-- `npm run build`: 프로덕션 빌드 (WSL에서는 네이티브 모듈 문제로 빌드 불가, 반드시 Windows 측에서 실행: `cmd.exe /c "cd /d C:\dev\calendar\app && npm run build"`)
+- `npm run build`: 프로덕션 빌드 (WSL에서는 네이티브 모듈 문제로 빌드 불가, 반드시 Windows 측에서 실행: `cmd.exe /c "cd /d C:\code\calendar\app && npm run build"`)
 - `npx prisma migrate deploy`: 배포 마이그레이션 적용
 
 스키마 변경 시 `npx prisma generate`를 함께 실행하고 PR 설명에 반영합니다.
