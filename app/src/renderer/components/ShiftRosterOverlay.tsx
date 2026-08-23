@@ -58,6 +58,15 @@ function RosterWeek({ days, title }: { days: ShiftRosterDay[]; title: string }) 
   return (
     <section className="roster-week" aria-label={title}>
       <div className="roster-grid">
+        {/* 일자·일근·주간·야간 4칸을 하나의 굵은 테두리로 묶는 열 프레임 (셀 뒤에 깔림) */}
+        {days.map((day, index) => (
+          <div
+            key={`${day.dateIso}-frame`}
+            className={`roster-day-frame${day.isToday ? ' is-today' : ''}${day.isWeekend || day.holidayName ? ' is-offday' : ''}`}
+            style={{ gridColumn: index + 2, gridRow: '1 / span 4' }}
+            aria-hidden="true"
+          />
+        ))}
         <div className="roster-corner">{title}</div>
         {days.map((day) => (
           <div
