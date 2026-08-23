@@ -187,17 +187,10 @@ export function ShiftRosterOverlay({ open, days, onClose }: ShiftRosterOverlayPr
 
   const firstWeek = days.slice(0, 7)
   const secondWeek = days.slice(7, 14)
-  const lastDay = secondWeek[secondWeek.length - 1] ?? firstWeek[firstWeek.length - 1]
 
+  // 상단 제목줄은 두지 않음 — 날짜는 열 머리에 있고, 세로 공간은 전부 이름·일자 폰트에 씁니다.
   return (
     <div className="roster-overlay" role="region" aria-label="2주 근무표">
-      <header className="roster-header">
-        <h2>근무표</h2>
-        <p className="roster-range">
-          {firstWeek[0]?.dayLabel} ~ {lastDay?.dayLabel}
-        </p>
-        <p className="roster-gesture-hint">✊ 주먹을 쥐면 캘린더로</p>
-      </header>
       <div className="roster-body" ref={bodyRef}>
         <RosterWeek days={firstWeek} title="이번 주" />
         {secondWeek.length > 0 ? <RosterWeek days={secondWeek} title="다음 주" /> : null}

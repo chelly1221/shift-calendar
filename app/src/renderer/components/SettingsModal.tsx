@@ -244,7 +244,7 @@ export function SettingsModal({
               </button>
             </div>
             <p className="settings-hint">
-              🖐 손바닥을 펴면 2주 근무표, ✊ 주먹을 쥐면 캘린더로 돌아옵니다 (자세를 1초쯤 유지, 전환 후 1.5초간 재전환 없음).
+              🖐 손바닥을 펴면 2주 근무표, ✊ 주먹을 쥐면 캘린더로 돌아옵니다 (자세를 잠깐 유지하면 전환, 전환 후 0.5초간 재전환 없음).
               영상은 이 PC 안에서만 처리되며 저장·전송되지 않습니다.
             </p>
             {handGestureEnabled ? (

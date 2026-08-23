@@ -3360,8 +3360,7 @@ textarea {
   display: flex;
   flex-direction: column;
   background: var(--surface);
-  padding: 8px 14px 12px;
-  gap: 6px;
+  padding: 6px 10px 8px;
   animation: roster-fade-in 0.18s ease-out;
 }
 
@@ -3370,42 +3369,12 @@ textarea {
   to { opacity: 1; transform: translateY(0); }
 }
 
-.roster-header {
-  display: flex;
-  align-items: baseline;
-  gap: 12px;
-  flex: 0 0 auto;
-  line-height: 1.2;
-}
-
-.roster-header h2 {
-  margin: 0;
-  font-family: var(--font-display);
-  font-size: 18px;
-  font-weight: 700;
-  color: var(--ink-900);
-  letter-spacing: -0.01em;
-}
-
-.roster-range {
-  margin: 0;
-  font-size: 14px;
-  color: var(--ink-500);
-  flex: 1;
-}
-
-.roster-gesture-hint {
-  margin: 0;
-  font-size: 12px;
-  color: var(--ink-500);
-}
-
 .roster-body {
   flex: 1 1 auto;
   min-height: 0;
   display: grid;
   grid-template-rows: 1fr 1fr;
-  gap: 8px;
+  gap: 6px;
 }
 
 .roster-week {
@@ -3419,7 +3388,7 @@ textarea {
   display: grid;
   grid-template-columns: auto repeat(7, minmax(0, 1fr));
   grid-template-rows: auto repeat(3, minmax(0, 1fr));
-  gap: 3px;
+  gap: 2px;
 }
 
 .roster-corner,
@@ -3445,8 +3414,8 @@ textarea {
   display: flex;
   align-items: baseline;
   justify-content: center;
-  gap: 6px;
-  padding: 3px 4px;
+  gap: 0.3em;
+  padding: 1px 4px;
   background: var(--surface-raised);
   border: 0.5px solid var(--line);
   line-height: 1.15;
@@ -3454,14 +3423,16 @@ textarea {
   overflow: hidden;
 }
 
+/* 일자는 이름 폰트의 0.72배 — 상단 제목줄을 없애 확보한 세로 공간을 여기에 씁니다 */
 .roster-day-date {
-  font-size: clamp(14px, calc(var(--roster-font) * 0.45), 30px);
+  font-size: clamp(16px, calc(var(--roster-font) * 0.72), 48px);
   font-weight: 700;
   color: var(--ink-900);
+  line-height: 1.05;
 }
 
 .roster-day-weekday {
-  font-size: clamp(11px, calc(var(--roster-font) * 0.32), 20px);
+  font-size: clamp(12px, calc(var(--roster-font) * 0.42), 28px);
   color: var(--ink-500);
   overflow: hidden;
   text-overflow: ellipsis;
@@ -3499,7 +3470,7 @@ textarea {
   display: flex;
   align-items: center;
   justify-content: center;
-  padding: 2px 4px;
+  padding: 1px 3px;
   background: var(--surface-raised);
   border: 0.5px solid var(--line);
   overflow: hidden;

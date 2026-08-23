@@ -85,13 +85,13 @@ eventType은 Google extendedProperties.private.shiftCalendarEventType으로 양�
 ## Hand Gesture & Shift Roster Overlay
 - 설정 모달 "손동작 인식" 토글(localStorage `handGestureEnabled`) → `HandGestureController`가 웹캠 + `@mediapipe/tasks-vision` GestureRecognizer(WASM, 네이티브 모듈 없음)로 손 자세를 분류
 - 자세 매핑은 `gestureToMode()` 한 곳: `Closed_Fist`(✊) → `calendar`, `Open_Palm`(🖐) → `roster`. 그 외 내장 분류(`Pointing_Up`, `Thumb_Up`, `Thumb_Down`, `Victory`, `ILoveYou`)는 현재 미사용
-- `createPoseModeResolver`: 최근 600ms 창의 **다수결** — 샘플 ≥ 5개, 후보 자세 비율 ≥ 70%(신뢰도 < 0.5·None·손 없음은 무효표)면 전환. 전환 후 1500ms dwell 동안 재전환 금지(오분류 왕복 깜빡임 차단). 외부(Esc)로 모드가 바뀌면 `setCurrent()`로 동기화
+- `createPoseModeResolver`: 최근 400ms 창의 **다수결** — 샘플 ≥ 4개, 후보 자세 비율 ≥ 60%(신뢰도 < 0.5·None·손 없음은 무효표)면 전환. 전환 후 500ms dwell 동안 재전환 금지(오분류 왕복 깜빡임 차단). 추론 ~20fps(50ms). 외부(Esc)로 모드가 바뀌면 `setCurrent()`로 동기화. (600ms/5개/70%/1.5s는 안정적이지만 너무 둔감하다는 피드백으로 완화)
 - 캡처는 FHD(1920×1080 ideal) 요청, MediaPipe 검출/추적 임계값 0.3 — 멀리 있는 작은 손 대응. 연속 유지 방식(프레임 하나만 빠져도 초기화)은 거리가 멀면 전환이 안 되거나 깜빡여서 폐기
 - 근무표(`ShiftRosterOverlay`)는 **제스처로만** 열고 닫음 — 별도 버튼 없음 (Esc는 비상용 닫기). 이번 주·다음 주 2주간 일근/주간/야간 이름만 크게 표시
 - 휴가/교육자는 명단에서 빼지 않고 **삭선 + 뱃지**(휴가종류 / 교육)로 표시. 시간차 휴가는 뱃지만(삭선 없음). 대체근무는 반영된 이름으로 표시
 - 날짜별 근무자 계산은 `buildShiftDaySummary()` (CalendarPage) — 오늘 근무 카드(`dayMembers` 등, 휴가/교육자 제외)와 근무표(`dayRoster` 등, absence 포함)가 공용
 - `HandGestureController`는 화면에 아무것도 그리지 않음(화면 밖 숨김 video로 추론). 웹캠 미리보기는 **설정 모달 안 테스트용**으로만 표시 — 인식기 상태(`HandGestureState`: status/stream/gesture/pendingMode)를 `onStateChange`로 올리고 설정 모달이 같은 `MediaStream`을 `<video>`에 붙임
-- 모델은 XHR로 읽어 `modelAssetBuffer`로 전달 (file:// 환경에서 fetch 불가 대응), 추론은 rAF + ~15fps 스로틀, 창이 숨겨지면 추론 생략, GPU delegate 실패 시 CPU 폴백
+- 모델은 XHR로 읽어 `modelAssetBuffer`로 전달 (file:// 환경에서 fetch 불가 대응), 추론은 rAF + ~20fps 스로틀, 창이 숨겨지면 추론 생략, GPU delegate 실패 시 CPU 폴백
 - main: `session.setPermissionRequestHandler`로 `media` 권한은 video 전용만 허용(마이크 거부), 그 외 권한은 기본 허용 유지
 - 영상은 렌더러 메모리에서만 처리하고 저장·전송하지 않음
 

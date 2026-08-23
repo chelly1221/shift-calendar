@@ -2,6 +2,7 @@ import { describe, expect, it } from 'vitest'
 import {
   createPoseModeResolver,
   gestureToMode,
+  DEFAULT_POSE_MODE_OPTIONS,
   FIST_GESTURE,
   OPEN_PALM_GESTURE,
   type GestureSample,
@@ -27,6 +28,29 @@ describe('gestureToMode', () => {
     expect(gestureToMode('Thumb_Up')).toBeNull()
     expect(gestureToMode('None')).toBeNull()
     expect(gestureToMode(null)).toBeNull()
+  })
+})
+
+describe('createPoseModeResolver (기본 옵션: 반응성)', () => {
+  it('기본 옵션은 20fps 기준 약 0.2초 안에 전환되고 0.5초 dwell을 가진다', () => {
+    expect(DEFAULT_POSE_MODE_OPTIONS.dwellMs).toBe(500)
+    const resolver = createPoseModeResolver('calendar')
+    const results = Array.from({ length: 8 }, (_, i) =>
+      resolver.push({ t: i * 50, gesture: OPEN_PALM_GESTURE, score: 0.9 }),
+    )
+    const switchedIndex = results.findIndex((r) => r === 'roster')
+    expect(switchedIndex).toBeGreaterThanOrEqual(0)
+    expect(switchedIndex * 50).toBeLessThanOrEqual(200)
+    // dwell 안에서는 주먹이 와도 무시, 0.5초 뒤에는 전환
+    const t0 = switchedIndex * 50
+    const during = Array.from({ length: 8 }, (_, i) =>
+      resolver.push({ t: t0 + 50 + i * 50, gesture: FIST_GESTURE, score: 0.9 }),
+    )
+    expect(during.every((r) => r === null)).toBe(true)
+    const after = Array.from({ length: 8 }, (_, i) =>
+      resolver.push({ t: t0 + 600 + i * 50, gesture: FIST_GESTURE, score: 0.9 }),
+    )
+    expect(after.filter(Boolean)).toEqual(['calendar'])
   })
 })
 

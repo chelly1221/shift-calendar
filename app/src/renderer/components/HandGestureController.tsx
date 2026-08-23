@@ -11,8 +11,8 @@ interface HandGestureControllerProps {
   onStateChange: (state: HandGestureState) => void
 }
 
-/** 추론 간격(ms). ~15fps면 0.6초 다수결 창에 샘플 9개가 들어가고 CPU 부담이 적습니다. */
-const INFERENCE_INTERVAL_MS = 66
+/** 추론 간격(ms). ~20fps면 0.4초 다수결 창에 샘플 8개가 들어가 반응이 빠릅니다. */
+const INFERENCE_INTERVAL_MS = 50
 /**
  * 캡처 해상도 FHD. 검출 단계는 내부적으로 192×192로 축소되지만, 손을 찾은 뒤 원본에서 잘라 쓰는
  * 랜드마크/제스처 분류 단계는 해상도가 높을수록 멀리 있는 작은 손에서도 안정적입니다.

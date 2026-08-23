@@ -26,22 +26,22 @@ export interface GestureSample {
 export interface PoseModeResolverOptions {
   /** 이 신뢰도 미만은 "자세 없음"으로 취급 (기본 0.5) */
   minScore: number
-  /** 다수결을 계산할 최근 샘플 창 길이 ms (기본 600) */
+  /** 다수결을 계산할 최근 샘플 창 길이 ms (기본 400) */
   windowMs: number
-  /** 창 안에 최소 이만큼 샘플이 있어야 판정 (기본 5) */
+  /** 창 안에 최소 이만큼 샘플이 있어야 판정 (기본 4) */
   minSamples: number
-  /** 창 안 샘플 중 후보 자세 비율이 이 값 이상이면 전환 (기본 0.7) */
+  /** 창 안 샘플 중 후보 자세 비율이 이 값 이상이면 전환 (기본 0.6) */
   minRatio: number
-  /** 전환 후 이 시간(ms) 동안은 재전환 금지 (기본 1500) */
+  /** 전환 후 이 시간(ms) 동안은 재전환 금지 (기본 500) */
   dwellMs: number
 }
 
 export const DEFAULT_POSE_MODE_OPTIONS: PoseModeResolverOptions = {
   minScore: 0.5,
-  windowMs: 600,
-  minSamples: 5,
-  minRatio: 0.7,
-  dwellMs: 1500,
+  windowMs: 400,
+  minSamples: 4,
+  minRatio: 0.6,
+  dwellMs: 500,
 }
 
 export interface PoseModeResolver {
