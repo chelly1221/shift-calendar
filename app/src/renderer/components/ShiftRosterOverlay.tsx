@@ -127,7 +127,7 @@ function RosterWeek({ days, title }: { days: ShiftRosterDay[]; title: string }) 
 
 /**
  * 2주간 근무자 이름만 크게 보여주는 전체 화면 오버레이.
- * 손 자세(손바닥 → 열기, 주먹 → 닫기)로만 전환합니다. Esc는 비상용 닫기.
+ * 손 자세(주먹 → 열기, 손바닥 → 닫기)로만 전환합니다. Esc는 비상용 닫기.
  * 휴가/교육자는 명단에서 빼지 않고 삭선 + 뱃지로 표시합니다 (시간차 휴가는 뱃지만).
  */
 const MIN_ROSTER_FONT_PX = 12

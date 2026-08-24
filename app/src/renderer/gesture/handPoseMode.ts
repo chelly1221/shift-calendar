@@ -65,8 +65,8 @@ export interface PoseModeResolver {
 }
 
 export function gestureToMode(gesture: string | null): ViewMode | null {
-  if (gesture === FIST_GESTURE) return 'calendar'
-  if (gesture === OPEN_PALM_GESTURE) return 'roster'
+  if (gesture === FIST_GESTURE) return 'roster'
+  if (gesture === OPEN_PALM_GESTURE) return 'calendar'
   return null
 }
 

@@ -31,11 +31,11 @@ export function describeGestureState(state: HandGestureState): string {
   if (state.status === 'starting') return '카메라 준비 중…'
   if (state.status === 'error') return state.errorMessage ?? '오류'
   if (state.pendingMode) {
-    return state.pendingMode === 'roster' ? '🖐 손바닥 인식 중 → 근무표' : '✊ 주먹 인식 중 → 캘린더'
+    return state.pendingMode === 'roster' ? '✊ 주먹 인식 중 → 근무표' : '🖐 손바닥 인식 중 → 캘린더'
   }
   const detectedMode = gestureToMode(state.gesture)
-  if (detectedMode) return detectedMode === 'roster' ? '🖐 손바닥 → 근무표' : '✊ 주먹 → 캘린더'
-  if (state.handVisible) return '손 감지됨 — ✊ 주먹 = 캘린더 · 🖐 손바닥 = 근무표'
+  if (detectedMode) return detectedMode === 'roster' ? '✊ 주먹 → 근무표' : '🖐 손바닥 → 캘린더'
+  if (state.handVisible) return '손 감지됨 — ✊ 주먹 = 근무표 · 🖐 손바닥 = 캘린더'
   return '손을 카메라에 보여주세요'
 }
 

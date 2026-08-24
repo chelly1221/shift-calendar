@@ -84,7 +84,7 @@ eventType은 Google extendedProperties.private.shiftCalendarEventType으로 양�
 
 ## Hand Gesture & Shift Roster Overlay
 - 설정 모달 "손동작 인식" 토글(localStorage `handGestureEnabled`) → `HandGestureController`가 웹캠 + `@mediapipe/tasks-vision` GestureRecognizer(WASM, 네이티브 모듈 없음)로 손 자세를 분류
-- 자세 매핑은 `gestureToMode()` 한 곳: `Closed_Fist`(✊) → `calendar`, `Open_Palm`(🖐) → `roster`. 그 외 내장 분류(`Pointing_Up`, `Thumb_Up`, `Thumb_Down`, `Victory`, `ILoveYou`)는 현재 미사용
+- 자세 매핑은 `gestureToMode()` 한 곳: `Closed_Fist`(✊) → `roster`, `Open_Palm`(🖐) → `calendar`. 그 외 내장 분류(`Pointing_Up`, `Thumb_Up`, `Thumb_Down`, `Victory`, `ILoveYou`)는 현재 미사용
 - `createPoseModeResolver`: 최근 **유효표 6개**(주먹/손바닥으로 분류된 샘플만; 신뢰도 < 0.5·None·손 없음은 표에 넣지 않음)의 다수결 — 후보 자세 표 ≥ 3개(절대)이고 비율 ≥ 65%(6표 중 4표)면 전환. 1초 넘은 표는 폐기(손 내렸다 다시 들면 새로 셈). 전환 후 500ms dwell 동안 재전환 금지(오분류 왕복 깜빡임 차단). 추론 ~20fps(50ms) → 전환 약 0.2초. 외부(Esc)로 모드가 바뀌면 `setCurrent()`로 동기화
   - 창이 시간(ms)이 아니라 **표 개수** 기준인 이유: 카메라가 7.5fps로 떨어져도 같은 표 수로 판정되게. 무효 프레임을 표에서 빼는 이유: 멀리 있는 손은 프레임 절반이 검출에서 빠져 시간 창 비율을 희석 → 전환 불가였음. (이전 시도: 연속 유지 → 깜빡임, 600ms/5개/70%/1.5s → 둔감, 400ms 시간 창/≥4개/60% → 저fps·원거리에서 전환 안 됨)
 - 캡처는 FHD(1920×1080) + **30fps ideal** 요청 (ideal은 강제가 아니라 가장 가까운 모드 선택; fps를 같이 주지 않으면 1280×1024@7.5fps 같은 느린 모드가 잡힐 수 있음). 실제 잡힌 모드는 `HandGestureState.capture`로 올려 설정 모달 미리보기 하단에 표시(`describeCaptureMode`) + `console.debug`. MediaPipe 검출/추적 임계값 0.3 — 멀리 있는 작은 손 대응
