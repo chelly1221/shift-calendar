@@ -9,17 +9,18 @@ import {
   type ViewMode,
 } from './handPoseMode'
 
-/** 15fps(66ms 간격) 샘플 시퀀스를 넣고 전환 이벤트를 모읍니다. */
+/** 지정 간격(기본 15fps=66ms) 샘플 시퀀스를 넣고 전환 이벤트를 모읍니다. */
 function feed(
   resolver: ReturnType<typeof createPoseModeResolver>,
   gestures: (string | null)[],
   startT = 0,
   score = 0.9,
+  intervalMs = 66,
 ): (ViewMode | null)[] {
-  return gestures.map((gesture, i) => resolver.push({ t: startT + i * 66, gesture, score: gesture ? score : 0 }))
+  return gestures.map((gesture, i) => resolver.push({ t: startT + i * intervalMs, gesture, score: gesture ? score : 0 }))
 }
 
-const OPTS = { windowMs: 600, minSamples: 5, minRatio: 0.7, dwellMs: 1500, minScore: 0.5 }
+const OPTS = { voteCount: 6, minVotes: 3, minRatio: 0.65, maxAgeMs: 1000, dwellMs: 500, minScore: 0.5 }
 
 describe('gestureToMode', () => {
   it('주먹 → calendar, 손바닥 → roster, 그 외 → null', () => {
@@ -32,7 +33,7 @@ describe('gestureToMode', () => {
 })
 
 describe('createPoseModeResolver (기본 옵션: 반응성)', () => {
-  it('기본 옵션은 20fps 기준 약 0.2초 안에 전환되고 0.5초 dwell을 가진다', () => {
+  it('기본 옵션은 20fps 기준 약 0.15초 안에 전환되고 0.5초 dwell을 가진다', () => {
     expect(DEFAULT_POSE_MODE_OPTIONS.dwellMs).toBe(500)
     const resolver = createPoseModeResolver('calendar')
     const results = Array.from({ length: 8 }, (_, i) =>
@@ -52,30 +53,67 @@ describe('createPoseModeResolver (기본 옵션: 반응성)', () => {
     )
     expect(after.filter(Boolean)).toEqual(['calendar'])
   })
+
+  it('카메라가 7.5fps로 느려도(133ms 간격) 같은 표 수로 전환된다 — 창이 시간이 아닌 표 개수 기준', () => {
+    const fast = createPoseModeResolver('calendar')
+    const slow = createPoseModeResolver('calendar')
+    const fastResults = feed(fast, Array(10).fill(OPEN_PALM_GESTURE), 0, 0.9, 50)
+    const slowResults = feed(slow, Array(10).fill(OPEN_PALM_GESTURE), 0, 0.9, 133)
+    expect(fastResults.findIndex((r) => r === 'roster')).toBe(slowResults.findIndex((r) => r === 'roster'))
+    expect(slow.current()).toBe('roster')
+  })
+
+  it('자세를 바꾸면 직전 자세의 표가 창에 가득 차 있어도 6표 중 4표(0.2초)면 전환된다', () => {
+    const resolver = createPoseModeResolver('roster')
+    // 손바닥을 한참 유지(창이 roster 표로 가득) → 주먹으로 전환
+    feed(resolver, Array(20).fill(OPEN_PALM_GESTURE), 0, 0.9, 50)
+    const results = feed(resolver, Array(8).fill(FIST_GESTURE), 1000, 0.9, 50)
+    const switchedIndex = results.findIndex((r) => r === 'calendar')
+    expect(switchedIndex).toBe(3)
+  })
 })
 
-describe('createPoseModeResolver (다수결 창)', () => {
-  it('손바닥을 안정적으로 보이면 minSamples 도달 시점에 roster로 전환된다', () => {
+describe('createPoseModeResolver (유효표 다수결)', () => {
+  it('손바닥을 안정적으로 보이면 minVotes 도달 시점에 roster로 전환된다', () => {
     const resolver = createPoseModeResolver('calendar', OPTS)
     const results = feed(resolver, Array(6).fill(OPEN_PALM_GESTURE))
-    expect(results).toEqual([null, null, null, null, 'roster', null])
+    expect(results).toEqual([null, null, 'roster', null, null, null])
     expect(resolver.current()).toBe('roster')
   })
 
-  it('프레임 일부가 빠져도(손 미인식/None 섞임) 비율이 70% 이상이면 전환된다', () => {
+  it('손이 멀어 프레임 절반이 검출에서 빠져도(null/None 섞임) 전환된다 — 무효 프레임은 표를 희석하지 않음', () => {
     const resolver = createPoseModeResolver('calendar', OPTS)
-    // 10개 중 3개 누락 → 70%
-    const seq = [OPEN_PALM_GESTURE, null, OPEN_PALM_GESTURE, OPEN_PALM_GESTURE, 'None', OPEN_PALM_GESTURE, OPEN_PALM_GESTURE, null, OPEN_PALM_GESTURE, OPEN_PALM_GESTURE]
+    const seq = [OPEN_PALM_GESTURE, null, null, OPEN_PALM_GESTURE, 'None', null, OPEN_PALM_GESTURE, null, null]
     const results = feed(resolver, seq)
     expect(results.filter(Boolean)).toEqual(['roster'])
+    expect(results.indexOf('roster')).toBe(6)
   })
 
-  it('누락이 너무 많으면(비율 미달) 전환되지 않는다', () => {
+  it('후보 자세의 표가 minVotes 미만이면 전환되지 않는다', () => {
     const resolver = createPoseModeResolver('calendar', OPTS)
-    const seq = [OPEN_PALM_GESTURE, null, null, OPEN_PALM_GESTURE, null, null, OPEN_PALM_GESTURE, null, null]
+    const seq = [OPEN_PALM_GESTURE, null, null, OPEN_PALM_GESTURE, null, null, null, null]
     const results = feed(resolver, seq)
     expect(results.every((r) => r === null)).toBe(true)
     expect(resolver.current()).toBe('calendar')
+  })
+
+  it('표가 적을 때 2:1 같은 근소한 우세로는 전환하지 않는다 (절대 개수 조건)', () => {
+    const resolver = createPoseModeResolver('calendar', OPTS)
+    const results = feed(resolver, [OPEN_PALM_GESTURE, FIST_GESTURE, OPEN_PALM_GESTURE])
+    expect(results.every((r) => r === null)).toBe(true)
+    expect(resolver.pending()).toEqual({ mode: 'roster', ratio: 2 / 3 })
+  })
+
+  it('오래된 표(maxAgeMs 초과)는 버려져서 손을 내렸다가 다시 들면 새로 센다', () => {
+    const resolver = createPoseModeResolver('calendar', OPTS)
+    feed(resolver, [OPEN_PALM_GESTURE, OPEN_PALM_GESTURE], 0)
+    // 1.5초 동안 손 없음
+    const gap = feed(resolver, Array(5).fill(null), 500, 0.9, 100)
+    expect(gap.every((r) => r === null)).toBe(true)
+    // 다시 들었을 때 첫 표 하나로는 전환되지 않아야 함 (옛 2표가 남아 있었다면 3표가 되어 전환됨)
+    const back = resolver.push({ t: 1600, gesture: OPEN_PALM_GESTURE, score: 0.9 })
+    expect(back).toBeNull()
+    expect(resolver.pending()).toEqual({ mode: 'roster', ratio: 1 })
   })
 
   it('주먹/손바닥이 번갈아 나오는 오분류 상황에서는 전환하지 않는다', () => {
@@ -85,17 +123,25 @@ describe('createPoseModeResolver (다수결 창)', () => {
     expect(results.every((r) => r === null)).toBe(true)
   })
 
+  it('손바닥 유지 중 가끔 주먹으로 오분류되어도 전환하지 않는다', () => {
+    const resolver = createPoseModeResolver('roster', OPTS)
+    const seq = Array.from({ length: 30 }, (_, i) => (i % 4 === 3 ? FIST_GESTURE : OPEN_PALM_GESTURE))
+    const results = feed(resolver, seq)
+    expect(results.every((r) => r === null)).toBe(true)
+    expect(resolver.current()).toBe('roster')
+  })
+
   it('전환 직후 dwellMs 동안은 반대 자세가 와도 재전환하지 않고, 이후에는 전환된다', () => {
     const resolver = createPoseModeResolver('calendar', OPTS)
-    const first = feed(resolver, Array(5).fill(OPEN_PALM_GESTURE), 0)
-    expect(first[4]).toBe('roster')
-    const switchedAt = 4 * 66
-    // dwell 안 (1.5초 미만): 주먹을 확실히 보여도 무시
-    const during = feed(resolver, Array(10).fill(FIST_GESTURE), switchedAt + 100)
+    const first = feed(resolver, Array(3).fill(OPEN_PALM_GESTURE), 0)
+    expect(first[2]).toBe('roster')
+    const switchedAt = 2 * 66
+    // dwell 안 (0.5초 미만): 주먹을 확실히 보여도 무시
+    const during = feed(resolver, Array(5).fill(FIST_GESTURE), switchedAt + 50)
     expect(during.every((r) => r === null)).toBe(true)
     expect(resolver.current()).toBe('roster')
     // dwell 이후: 창이 새로 채워지면 전환
-    const after = feed(resolver, Array(8).fill(FIST_GESTURE), switchedAt + 1600)
+    const after = feed(resolver, Array(8).fill(FIST_GESTURE), switchedAt + 600)
     expect(after.filter(Boolean)).toEqual(['calendar'])
   })
 
@@ -105,11 +151,12 @@ describe('createPoseModeResolver (다수결 창)', () => {
     expect(results.filter(Boolean)).toEqual(['roster'])
   })
 
-  it('신뢰도가 낮은 샘플은 무효표로 처리된다', () => {
+  it('신뢰도가 낮은 샘플은 표로 세지 않는다', () => {
     const resolver = createPoseModeResolver('calendar', OPTS)
     const samples: GestureSample[] = Array.from({ length: 10 }, (_, i) => ({ t: i * 66, gesture: OPEN_PALM_GESTURE, score: 0.4 }))
     const results = samples.map((s) => resolver.push(s))
     expect(results.every((r) => r === null)).toBe(true)
+    expect(resolver.pending()).toBeNull()
   })
 
   it('인식 대상이 아닌 자세(Thumb_Up 등)는 현재 모드를 유지한다', () => {
@@ -119,9 +166,9 @@ describe('createPoseModeResolver (다수결 창)', () => {
     expect(resolver.current()).toBe('roster')
   })
 
-  it('pending()은 현재 모드와 다른 우세 후보와 비율을 돌려준다', () => {
+  it('pending()은 현재 모드와 다른 우세 후보와 유효표 기준 비율을 돌려준다', () => {
     const resolver = createPoseModeResolver('calendar', OPTS)
-    feed(resolver, [OPEN_PALM_GESTURE, OPEN_PALM_GESTURE, null])
+    feed(resolver, [OPEN_PALM_GESTURE, null, OPEN_PALM_GESTURE, FIST_GESTURE, null])
     expect(resolver.pending()).toEqual({ mode: 'roster', ratio: 2 / 3 })
     const same = createPoseModeResolver('roster', OPTS)
     feed(same, [OPEN_PALM_GESTURE, OPEN_PALM_GESTURE])
@@ -130,9 +177,9 @@ describe('createPoseModeResolver (다수결 창)', () => {
 
   it('setCurrent로 외부 변경을 동기화하면 창이 비워지고 같은 자세로는 전환되지 않는다', () => {
     const resolver = createPoseModeResolver('calendar', OPTS)
-    feed(resolver, Array(3).fill(OPEN_PALM_GESTURE))
+    feed(resolver, Array(2).fill(OPEN_PALM_GESTURE))
     resolver.setCurrent('roster')
-    const results = feed(resolver, Array(10).fill(OPEN_PALM_GESTURE), 3 * 66)
+    const results = feed(resolver, Array(10).fill(OPEN_PALM_GESTURE), 2 * 66)
     expect(results.every((r) => r === null)).toBe(true)
     const back = feed(resolver, Array(6).fill(FIST_GESTURE), 2000)
     expect(back.filter(Boolean)).toEqual(['calendar'])

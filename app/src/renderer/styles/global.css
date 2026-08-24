@@ -3653,3 +3653,11 @@ textarea {
 .gesture-preview.is-error .gesture-preview-status {
   color: var(--danger);
 }
+
+.gesture-preview-capture {
+  display: block;
+  margin-top: 2px;
+  font-size: 11px;
+  color: var(--ink-500);
+  font-variant-numeric: tabular-nums;
+}

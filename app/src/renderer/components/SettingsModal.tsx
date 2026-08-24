@@ -1,7 +1,7 @@
 import { useCallback, useEffect, useRef } from 'react'
 import type { DayWorkerCount, ShiftTeamMode, ShiftType } from '../../shared/calendar'
 import type { WeatherOverlayMode } from './WeatherOverlay'
-import { describeGestureState, type HandGestureState } from '../gesture/gestureState'
+import { describeCaptureMode, describeGestureState, type HandGestureState } from '../gesture/gestureState'
 import { gestureToMode } from '../gesture/handPoseMode'
 
 interface SettingsModalProps {
@@ -252,7 +252,12 @@ export function SettingsModal({
                 className={`gesture-preview is-${handGestureState.status}${handGestureState.pendingMode ? ' is-pending' : ''}${gestureToMode(handGestureState.gesture) ? ' is-gesture' : ''}`}
               >
                 <video ref={previewRef} className="gesture-preview-video" muted playsInline />
-                <p className="gesture-preview-status">{describeGestureState(handGestureState)}</p>
+                <p className="gesture-preview-status">
+                  {describeGestureState(handGestureState)}
+                  {describeCaptureMode(handGestureState) ? (
+                    <span className="gesture-preview-capture">{describeCaptureMode(handGestureState)}</span>
+                  ) : null}
+                </p>
               </div>
             ) : null}
           </section>

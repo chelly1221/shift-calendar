@@ -11,14 +11,21 @@ interface HandGestureControllerProps {
   onStateChange: (state: HandGestureState) => void
 }
 
-/** 추론 간격(ms). ~20fps면 0.4초 다수결 창에 샘플 8개가 들어가 반응이 빠릅니다. */
+/** 추론 간격(ms). ~20fps면 유효표 4개(전환 기준)가 0.2초 안에 모입니다. */
 const INFERENCE_INTERVAL_MS = 50
 /**
- * 캡처 해상도 FHD. 검출 단계는 내부적으로 192×192로 축소되지만, 손을 찾은 뒤 원본에서 잘라 쓰는
+ * 캡처 해상도 FHD(ideal). 검출 단계는 내부적으로 192×192로 축소되지만, 손을 찾은 뒤 원본에서 잘라 쓰는
  * 랜드마크/제스처 분류 단계는 해상도가 높을수록 멀리 있는 작은 손에서도 안정적입니다.
+ * ideal은 강제가 아니라서 카메라가 지원하는 가장 가까운 모드(예: 1280×1024, 1280×720)가 잡힙니다.
  */
 const CAPTURE_WIDTH = 1920
 const CAPTURE_HEIGHT = 1080
+/**
+ * 프레임레이트도 ideal로 함께 요청. 저가 웹캠은 최대 해상도에서 7.5~10fps로 떨어지는 모드가 많은데,
+ * 해상도만 요청하면 Chromium이 그 느린 모드를 고를 수 있습니다. fps를 같이 주면 해상도·fps를 합쳐
+ * 가장 가까운 모드를 고르므로 "조금 낮은 해상도 + 30fps" 쪽으로 기울어 표본이 끊기지 않습니다.
+ */
+const CAPTURE_FRAME_RATE = 30
 
 function resolveAssetUrl(relativePath: string): string {
   return new URL(relativePath, document.baseURI).href
@@ -146,7 +153,12 @@ export function HandGestureController({ enabled, mode, onModeChange, onStateChan
           import('@mediapipe/tasks-vision'),
           loadBinary(resolveAssetUrl('mediapipe/gesture_recognizer.task')),
           navigator.mediaDevices.getUserMedia({
-            video: { width: { ideal: CAPTURE_WIDTH }, height: { ideal: CAPTURE_HEIGHT }, facingMode: 'user' },
+            video: {
+              width: { ideal: CAPTURE_WIDTH },
+              height: { ideal: CAPTURE_HEIGHT },
+              frameRate: { ideal: CAPTURE_FRAME_RATE },
+              facingMode: 'user',
+            },
             audio: false,
           }),
         ])
@@ -157,7 +169,13 @@ export function HandGestureController({ enabled, mode, onModeChange, onStateChan
         stream = mediaStream
         video.srcObject = mediaStream
         await video.play()
-        patchState({ stream: mediaStream })
+        const settings = mediaStream.getVideoTracks()[0]?.getSettings()
+        const capture =
+          settings && settings.width && settings.height
+            ? { width: settings.width, height: settings.height, frameRate: settings.frameRate ?? null }
+            : null
+        console.debug('손동작 카메라 모드:', capture ?? settings)
+        patchState({ stream: mediaStream, capture })
 
         const fileset = await FilesetResolver.forVisionTasks(resolveAssetUrl('mediapipe/wasm'))
         const createRecognizer = (delegate: 'GPU' | 'CPU') =>
