@@ -1,7 +1,7 @@
 import { DateTime } from 'luxon'
 import { google, type calendar_v3 } from 'googleapis'
 import type { CalendarEvent, GoogleCalendarItem, OutboxOperation, SendUpdates } from '../../shared/calendar'
-import { collectShiftMemberNames, inferEventMetadata, toGoogleSummary, buildShiftGoogleSummary } from '../../shared/eventTitleMapper'
+import { buildShiftNameContext, inferEventMetadata, toGoogleSummary, buildShiftGoogleSummary, type ShiftNameContext } from '../../shared/eventTitleMapper'
 import type { ShiftTeamAssignments } from '../../shared/calendar'
 import { splitRRuleForFuture } from '../../shared/rrule'
 import type { RemoteEventSnapshot } from '../db/eventRepository'
@@ -152,10 +152,8 @@ function extractLocalIdHint(event: calendar_v3.Schema$Event): string | null {
   return trimmed || null
 }
 
-export interface RemoteSnapshotOptions {
-  /** 팀원 이름 목록 — 제목 기반 휴가 추론에서 대상자 인식에 사용 */
-  memberNames?: readonly string[]
-}
+/** 제목 기반 휴가 추론용 팀원 이름·약어 컨텍스트 */
+export type RemoteSnapshotOptions = ShiftNameContext
 
 export function toRemoteSnapshot(
   event: calendar_v3.Schema$Event,
@@ -205,7 +203,7 @@ export function toRemoteSnapshot(
   const rawEventType = extractEventType(event)
   const rawSummary = event.summary ?? '(No title)'
   const rawDescription = event.description ?? ''
-  const inferred = inferEventMetadata(rawSummary, rawDescription, rawEventType, { memberNames: options?.memberNames })
+  const inferred = inferEventMetadata(rawSummary, rawDescription, rawEventType, options)
 
   return {
     googleEventId,
@@ -441,13 +439,13 @@ function toGoogleCalendarItem(entry: calendar_v3.Schema$CalendarListEntry): Goog
   }
 }
 
-/** 제목 기반 휴가 추론용 팀원 이름 — 설정 조회 실패 시 빈 목록(추론은 휴리스틱만으로 진행) */
-async function loadMemberNamesForInference(): Promise<string[]> {
+/** 제목 기반 휴가 추론용 팀원 이름·약어 — 설정 조회 실패 시 빈 컨텍스트(추론은 휴리스틱만으로 진행) */
+async function loadShiftNameContext(): Promise<ShiftNameContext> {
   try {
-    return collectShiftMemberNames(await getShiftSettings())
+    return buildShiftNameContext(await getShiftSettings())
   } catch (error) {
-    console.warn('[CalendarService] failed to load shift member names for title inference', error)
-    return []
+    console.warn('[CalendarService] failed to load shift settings for title inference', error)
+    return {}
   }
 }
 
@@ -534,11 +532,11 @@ export function createGoogleCalendarService(): GoogleCalendarService {
       }
 
       const response = await calendar.events.list(listParams)
-      const memberNames = await loadMemberNamesForInference()
+      const nameContext = await loadShiftNameContext()
 
       const events = (response.data.items ?? [])
         .map((item) => {
-          const snapshot = toRemoteSnapshot(item, { memberNames })
+          const snapshot = toRemoteSnapshot(item, nameContext)
           if (!snapshot) {
             console.warn(`[CalendarService] skipped unmappable event: id=${item.id}, status=${item.status}`)
           }
@@ -621,7 +619,7 @@ export function createGoogleCalendarService(): GoogleCalendarService {
           eventId: googleEventId,
           alwaysIncludeEmail: true,
         })
-        return toRemoteSnapshot(response.data, { memberNames: await loadMemberNamesForInference() })
+        return toRemoteSnapshot(response.data, await loadShiftNameContext())
       } catch (error) {
         const status = (error as { code?: number; status?: number; response?: { status?: number } }).code
           ?? (error as any).status

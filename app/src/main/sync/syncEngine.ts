@@ -1,12 +1,13 @@
 import { DateTime } from 'luxon'
 import { OutboxStatus, SyncState } from '@prisma/client'
 import type { ForcePushResult, SyncResult } from '../../shared/calendar'
-import { ensureSetting, markSyncWindowUnbounded, setSyncToken } from '../db/settingRepository'
+import { ensureSetting, getShiftSettings, markSyncWindowUnbounded, setSyncToken } from '../db/settingRepository'
 import { upsertRemoteEvents } from '../db/eventRepository'
 import { prisma } from '../db/prisma'
 import { createGoogleCalendarService } from '../google/calendarService'
 import { isGoogleConnected, isGoogleOAuthConfigured } from '../google/oauthClient'
 import { enqueueOutboxOperation, getOutboxCount, processOutboxNow } from './outboxWorker'
+import { buildShiftNameContext, inferVacationEvent } from '../../shared/eventTitleMapper'
 
 interface SyncErrorShape {
   code?: number
@@ -25,6 +26,73 @@ function isSyncTokenExpiredError(error: unknown): boolean {
 let isSyncRunning = false
 let isForcePushRunning = false
 let isReEnqueueRunning = false
+let isVacationConversionRunning = false
+
+function hasRecurrenceRuleJson(recurrenceJson: unknown): boolean {
+  return Boolean(
+    recurrenceJson
+    && typeof recurrenceJson === 'object'
+    && !Array.isArray(recurrenceJson)
+    && 'rrule' in recurrenceJson,
+  )
+}
+
+/**
+ * 이미 로컬에 있는 '일반' 일정 중 제목에 휴가 키워드가 있는 것을 휴가로 변환하고 Google에 PATCH를 큐잉한다.
+ * 델타 동기화는 Google에서 바뀐 일정만 가져오므로, 기능 추가 이전에 받아둔 일정과 팀원/약어 설정 변경으로
+ * 새로 인식 가능해진 일정은 이 패스가 아니면 변환되지 않는다. runSyncNow 시작 시(오프라인 포함)와
+ * 팀원/약어 설정 변경 시 실행. 반복 일정(마스터/인스턴스)은 시리즈 처리 복잡성 때문에 건너뛴다.
+ */
+export async function convertBasicVacationEvents(): Promise<number> {
+  if (isVacationConversionRunning) {
+    return 0
+  }
+  isVacationConversionRunning = true
+  try {
+    const nameContext = buildShiftNameContext(await getShiftSettings())
+    const candidates = await prisma.event.findMany({
+      where: { eventType: '일반', isDeleted: false, recurringEventId: null },
+      select: { localId: true, googleEventId: true, summary: true, description: true, recurrenceJson: true },
+      orderBy: { localId: 'asc' },
+    })
+
+    const now = new Date()
+    let converted = 0
+    for (const event of candidates) {
+      if (hasRecurrenceRuleJson(event.recurrenceJson)) continue
+      const inferred = inferVacationEvent(event.summary, event.description ?? '', nameContext)
+      if (!inferred) continue
+
+      await prisma.event.update({
+        where: { localId: event.localId },
+        data: {
+          eventType: inferred.eventType,
+          summary: inferred.summary,
+          description: inferred.description || null,
+          localEditedAtUtc: now,
+          syncState: SyncState.PENDING,
+        },
+      })
+      // googleEventId 가 없으면 이미 큐잉된 CREATE(또는 reconcile)가 변환된 데이터를 그대로 올린다.
+      if (event.googleEventId) {
+        await enqueueOutboxOperation({
+          eventLocalId: event.localId,
+          operation: 'PATCH',
+          payload: { googleEventId: event.googleEventId, sendUpdates: 'none' },
+        })
+      }
+      console.debug(`[SyncEngine] 일반 → 휴가 자동 전환: "${event.summary}" → "${inferred.summary}"`)
+      converted += 1
+    }
+
+    if (converted > 0) {
+      console.log(`[SyncEngine] convertBasicVacationEvents converted ${converted} events`)
+    }
+    return converted
+  } finally {
+    isVacationConversionRunning = false
+  }
+}
 
 const UNBOUNDED_SYNC_WINDOW_START = DateTime.utc(1900, 1, 1).startOf('day')
 const UNBOUNDED_SYNC_WINDOW_END = DateTime.utc(9999, 12, 31).endOf('day')
@@ -343,6 +411,13 @@ export async function runSyncNow(options?: { reconcile?: boolean }): Promise<Syn
   }
   isSyncRunning = true
   try {
+    // 연결 여부와 무관하게 로컬 변환은 먼저 (오프라인이어도 화면에 휴가로 보이고, PATCH 는 연결 후 밀려 나감)
+    try {
+      await convertBasicVacationEvents()
+    } catch (error) {
+      console.warn('[SyncEngine] convertBasicVacationEvents failed:', error)
+    }
+
     if (!(await isGoogleOAuthConfigured()) || !(await isGoogleConnected())) {
       return {
         mode: 'SKIPPED',

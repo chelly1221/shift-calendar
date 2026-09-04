@@ -4,6 +4,7 @@ import {
   inferVacationFromSummary,
   inferVacationEvent,
   collectShiftMemberNames,
+  buildShiftNameContext,
   toGoogleSummary,
   buildUniqueCharMap,
   parseShiftAbbreviations,
@@ -193,18 +194,135 @@ describe('inferEventMetadata', () => {
     })
 
     it('긴 이름이 짧은 이름을 포함해도 긴 이름을 우선 매칭한다', () => {
-      const result = inferVacationFromSummary('이수진 연차', ['이수', '이수진'])
+      const result = inferVacationFromSummary('이수진 연차', { memberNames: ['이수', '이수진'] })
       expect(result?.targets).toEqual(['이수진'])
       expect(result?.vacationType).toBe('연차')
     })
 
     it('inferVacationEvent는 키워드가 없으면 null', () => {
-      expect(inferVacationEvent('팀 미팅', '', members)).toBeNull()
+      expect(inferVacationEvent('팀 미팅', '', { memberNames: members })).toBeNull()
     })
 
     it('inferVacationEvent는 기존 description 앞에 메타데이터를 넣는다', () => {
-      const result = inferVacationEvent('홍길동 병가', '시각: 09:00~12:00', members)
+      const result = inferVacationEvent('홍길동 병가', '시각: 09:00~12:00', { memberNames: members })
       expect(result?.description).toBe('휴가대상: 홍길동\n휴가종류: 병가\n시각: 09:00~12:00')
+    })
+  })
+
+  describe('실제 캘린더 표기 — 괄호·약어·붙여쓰기', () => {
+    // 실제 설정과 같은 구성: 팀원 10명 + 사용자 지정 1자 약어
+    const context = buildShiftNameContext({
+      teams: {
+        A: ['윤태연', '이명섭'],
+        B: ['서상현', '이상승'],
+        C: ['박혜지', '윤형집'],
+        D: ['신유철', '김수헌'],
+      },
+      dayWorkers: ['이종열', '채정원'],
+      abbreviations: {
+        박혜지: '혜', 윤형집: '집', 김수헌: '헌', 신유철: '신', 서상현: '서',
+        이상승: '승', 이명섭: '섭', 윤태연: '연', 채정원: '채', 이종열: '열',
+      },
+    })
+    const infer = (summary: string) => inferEventMetadata(summary, '', '일반', context)
+
+    it('"병가(이종열)" — 괄호 속 팀원 이름', () => {
+      const result = infer('병가(이종열)')
+      expect(result.eventType).toBe('휴가')
+      expect(result.summary).toBe('이종열 병가')
+      expect(result.description).toBe('휴가대상: 이종열\n휴가종류: 병가')
+    })
+
+    it('"이명섭(이사공가)" — 괄호 속 휴가 종류', () => {
+      const result = infer('이명섭(이사공가)')
+      expect(result.summary).toBe('이명섭 이사공가')
+      expect(result.description).toBe('휴가대상: 이명섭\n휴가종류: 이사공가')
+    })
+
+    it('"건강검진(채정원)"', () => {
+      const result = infer('건강검진(채정원)')
+      expect(result.summary).toBe('채정원 건강검진')
+      expect(result.description).toContain('휴가종류: 건강검진')
+    })
+
+    it('"신 대휴" — 사용자 지정 약어', () => {
+      const result = infer('신 대휴')
+      expect(result.summary).toBe('신유철 대휴')
+      expect(result.description).toBe('휴가대상: 신유철\n휴가종류: 대휴')
+    })
+
+    it('"채연차" — 약어와 키워드를 붙여 씀', () => {
+      const result = infer('채연차')
+      expect(result.summary).toBe('채정원 연차')
+      expect(result.description).toContain('휴가종류: 연차')
+    })
+
+    it('"채오후반차" — 약어 + 수식어 + 키워드', () => {
+      const result = infer('채오후반차')
+      expect(result.summary).toBe('채정원 오후반차')
+      expect(result.description).toContain('휴가종류: 오후반차')
+    })
+
+    it('"혜 시간차 (~11:30)" — 공백 있는 괄호도 시간차(…)로 정규화', () => {
+      const result = infer('혜 시간차 (~11:30)')
+      expect(result.summary).toBe('박혜지 시간차(~11:30)')
+      expect(result.description).toContain('휴가종류: 시간차(~11:30)')
+    })
+
+    it('"집 시간차(9~11)"', () => {
+      const result = infer('집 시간차(9~11)')
+      expect(result.summary).toBe('윤형집 시간차(9~11)')
+    })
+
+    it('"헌 시간차(3시부터)"', () => {
+      const result = infer('헌 시간차(3시부터)')
+      expect(result.summary).toBe('김수헌 시간차(3시부터)')
+    })
+
+    it('"소장님, 윤형집 대휴" — 명단 이름 + 콤마로 구분된 비명단 이름', () => {
+      const result = infer('소장님, 윤형집 대휴')
+      expect(result.description).toBe('휴가대상: 윤형집, 소장님\n휴가종류: 대휴')
+      expect(result.summary).toBe('윤형집, 소장님 대휴')
+    })
+
+    it('"소장님 시간차(16:30~)" — 비명단 이름 + 시간차', () => {
+      const result = infer('소장님 시간차(16:30~)')
+      expect(result.summary).toBe('소장님 시간차(16:30~)')
+    })
+
+    it('"서상현 대휴, 이상승 휴가" — 두 명단 이름', () => {
+      const result = infer('서상현 대휴, 이상승 휴가 ')
+      expect(result.description).toContain('휴가대상: 서상현, 이상승')
+      expect(result.description).toContain('휴가종류: 대휴 휴가')
+    })
+
+    it('"연차 신청" — 키워드 첫 글자(연=윤태연 약어)를 약어로 오인하지 않는다', () => {
+      const result = infer('연차 신청')
+      expect(result.eventType).toBe('휴가')
+      expect(result.description).not.toContain('휴가대상:')
+      expect(result.description).toContain('휴가종류: 연차 신청')
+    })
+
+    it('"원 대휴" — 약어가 아닌 1자는 이름으로 보지 않는다', () => {
+      const result = infer('원 대휴')
+      expect(result.description).not.toContain('휴가대상:')
+      expect(result.description).toContain('휴가종류: 원 대휴')
+    })
+
+    it('"박혜지 결혼 휴가" — 명단 이름이 있으면 수식어를 이름으로 오인하지 않는다', () => {
+      const result = infer('박혜지 결혼 휴가')
+      expect(result.description).toBe('휴가대상: 박혜지\n휴가종류: 결혼 휴가')
+    })
+
+    it('"채 대휴" 는 채정원 (약어 우선, 채 가 포함된 다른 이름 없음)', () => {
+      const result = infer('채 대휴')
+      expect(result.summary).toBe('채정원 대휴')
+    })
+
+    it('휴가 타입 보완도 약어를 인식한다', () => {
+      const result = inferEventMetadata('신 연차', '', '휴가', context)
+      expect(result.summary).toBe('신 연차')
+      expect(result.description).toBe('휴가대상: 신유철\n휴가종류: 연차')
     })
   })
 
@@ -294,6 +412,18 @@ describe('휴가 Pull→Push 라운드트립', () => {
     // Push: local → Google
     const googleSummary = toGoogleSummary(inferred.summary, inferred.description, inferred.eventType)
     expect(googleSummary).toBe('박혜지 대휴')
+  })
+})
+
+describe('buildShiftNameContext', () => {
+  it('팀원 이름과 약어를 함께 담는다', () => {
+    const context = buildShiftNameContext({
+      teams: { A: ['박혜지'], B: [], C: [], D: [] },
+      dayWorkers: ['이종열'],
+      abbreviations: { 박혜지: '혜' },
+    })
+    expect(context.memberNames).toEqual(['박혜지', '이종열'])
+    expect(context.abbreviations).toEqual({ 박혜지: '혜' })
   })
 })
 

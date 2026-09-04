@@ -590,7 +590,8 @@ function buildShiftDaySummary(
     if (event.eventType !== '휴가') continue
     if (!eventCoversLocalDate(event, date)) continue
     const { targets, vacationType } = parseVacationInfo(event.description ?? '')
-    const partial = Boolean(vacationType && vacationType.startsWith('시간차'))
+    // 시간차·반차는 하루 일부만 쉬므로 근무에서 빼지 않고 뱃지만 표시 ("오후 시간차"처럼 앞에 수식어가 와도 인식)
+    const partial = Boolean(vacationType && (vacationType.includes('시간차') || vacationType.includes('반차')))
     for (const name of targets) {
       const trimmed = name.trim()
       if (!trimmed) continue

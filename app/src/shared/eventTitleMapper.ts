@@ -227,14 +227,22 @@ export const VACATION_KEYWORDS: readonly string[] = [
 /** 팀원 명단에 없을 때 쓰는 선행 토큰 이름 휴리스틱에서 이름으로 오인하기 쉬운 수식어 */
 const VACATION_NAME_STOPWORDS = new Set([
   '오전', '오후', '종일', '전일', '반일', '하루', '이틀', '전체', '전원', '시간', '휴무', '출근', '퇴근',
+  '결혼', '출산', '장례', '조문', '예비군', '민방위', '병원', '진료', '검진', '치료', '수술', '가족', '자녀',
+  '육아', '본인', '개인', '사유', '신청', '사용',
 ])
 
-/** "이름(, 이름)* 나머지" — 이름 토큰은 한글 2~4자 또는 영문 2~20자 */
+/**
+ * "이름(, 이름)*[,] 나머지" — 이름 토큰은 한글 2~4자 또는 영문 2~20자.
+ * 그룹: 1=이름 목록, 2=이름 뒤 콤마(있으면 명단 매칭이 있어도 추가 이름으로 신뢰), 3=나머지
+ */
 const LEADING_NAMES_RE =
-  /^((?:[\p{Script=Hangul}]{2,4}|[A-Za-z]{2,20})(?:\s*,\s*(?:[\p{Script=Hangul}]{2,4}|[A-Za-z]{2,20}))*)\s+(.+)$/u
+  /^((?:[\p{Script=Hangul}]{2,4}|[A-Za-z]{2,20})(?:\s*,\s*(?:[\p{Script=Hangul}]{2,4}|[A-Za-z]{2,20}))*)(\s*,)?\s+(.+)$/u
 
-/** 시간차(09:00~13:00) — 시간 정보는 기호 제거 대상에서 제외하고 그대로 보존 */
-const TIMED_VACATION_TYPE_RE = /^시간차\([^)]+\)$/u
+const HANGUL_CHAR_RE = /^[\p{Script=Hangul}]$/u
+/** 이름 사이 구분 기호(공백/콤마/슬래시/가운뎃점) */
+const LEADING_SEPARATOR_RE = /^[\s,/／·]+/u
+/** 약어 1자 뒤에 올 수 있는 구분 기호(괄호 포함: "신(대휴)") */
+const AFTER_ABBREV_SEPARATOR_RE = /^[\s,/／·(]/u
 
 export function containsVacationKeyword(text: string): boolean {
   const normalized = text.replace(/\s+/g, '')
@@ -257,6 +265,35 @@ export function collectShiftMemberNames(settings: { teams: ShiftTeamAssignments;
   return names
 }
 
+export interface ShiftNameContext {
+  /** 팀원 이름 목록(teams + dayWorkers) — 제목 속 대상자 인식 */
+  memberNames?: readonly string[]
+  /** 팀원별 사용자 지정 1자 약어 — "신 대휴", "채연차" 같은 약어 표기 인식(buildUniqueCharMap과 동일 규칙) */
+  abbreviations?: Record<string, string>
+}
+
+/** ShiftSettings에서 휴가 추론용 이름 컨텍스트(팀원 이름 + 약어)를 만든다. */
+export function buildShiftNameContext(settings: {
+  teams: ShiftTeamAssignments
+  dayWorkers: string[]
+  abbreviations?: Record<string, string>
+}): ShiftNameContext {
+  return { memberNames: collectShiftMemberNames(settings), abbreviations: settings.abbreviations ?? {} }
+}
+
+/**
+ * 휴가 종류 정규화. 시간차는 뒤따르는 시간 정보(괄호/공백 무관)를 보존해 "시간차(…)"로,
+ * 그 외는 기호를 공백으로 치환한 텍스트로.
+ */
+function normalizeVacationType(remainder: string): string {
+  const timed = remainder.match(/^시간차\s*(.*)$/u)
+  if (timed) {
+    const inner = timed[1].replace(/^[\s(]+|[\s)]+$/gu, '').trim()
+    return inner ? `시간차(${inner})` : '시간차'
+  }
+  return remainder.replace(/[^\p{L}\p{N}\s]/gu, ' ').replace(/\s+/g, ' ').trim()
+}
+
 export interface InferredVacation {
   /** 제목에서 인식된 휴가 대상자 이름 */
   targets: string[]
@@ -269,48 +306,73 @@ export interface InferredVacation {
 /**
  * 제목에 휴가 키워드가 있으면 대상자 이름과 휴가 종류를 추출한다. 없으면 null.
  *
- * 1. 팀원 명단(memberNames) 이름은 제목 어디에 있어도 인식 (긴 이름부터 → 부분 겹침 방지)
- * 2. 명단에서 못 찾으면 "이름(, 이름)* 나머지" 형태의 선행 토큰을 이름으로 본다
- *    (키워드를 포함하거나 오전/오후 같은 수식어인 토큰은 제외)
- * 3. 이름을 뺀 나머지가 휴가 종류. 시간차(HH:MM~HH:MM)는 보존, 그 외는 기호를 공백으로 치환
+ * 1. 팀원 명단(memberNames) 이름은 제목 어디에 있어도 인식 — "병가(이종열)", "이명섭(이사공가)", "채정원건강검진"
+ *    (긴 이름부터 → 부분 겹침 방지)
+ * 2. 약어: 제목 앞의 1자 토큰을 buildUniqueCharMap(팀원 약어)으로 역매핑 — "신 대휴", "채연차", "혜 시간차 (~11:30)".
+ *    붙여 쓴 경우("채연차")는 사용자 지정 약어이고 약어를 뺀 나머지에 키워드가 온전히 남아야 인정
+ *    → "연차"의 '연', "이사공가"의 '이'(자동 약어)를 약어로 오인하지 않음
+ * 3. 명단/약어로 못 찾으면 "이름(, 이름)* 나머지" 선행 토큰을 이름으로 본다 (키워드 포함 토큰·오전/오후 등 수식어 제외).
+ *    이름 뒤에 콤마가 있으면("소장님, 윤형집 대휴") 명단 매칭이 있어도 추가 이름으로 인정
+ * 4. 이름을 뺀 나머지가 휴가 종류 — normalizeVacationType
  */
 export function inferVacationFromSummary(
   summary: string,
-  memberNames: readonly string[] = [],
+  context: ShiftNameContext = {},
 ): InferredVacation | null {
   const trimmed = summary.trim()
   if (!trimmed || !containsVacationKeyword(trimmed)) return null
 
+  const memberNames = [...new Set((context.memberNames ?? []).map((name) => name.trim()).filter(Boolean))]
   const targets: string[] = []
   let rest = trimmed
 
-  const knownNames = [...new Set(memberNames.map((name) => name.trim()).filter(Boolean))]
-    .sort((a, b) => b.length - a.length)
-  for (const name of knownNames) {
+  // 1) 전체 이름
+  for (const name of [...memberNames].sort((a, b) => b.length - a.length)) {
     if (!rest.includes(name)) continue
     targets.push(name)
     rest = rest.split(name).join(' ')
   }
 
-  if (targets.length === 0) {
-    const match = rest.match(LEADING_NAMES_RE)
-    if (match) {
-      const candidates = parseNames(match[1])
-      const looksLikeNames = candidates.every(
-        (candidate) => !containsVacationKeyword(candidate) && !VACATION_NAME_STOPWORDS.has(candidate),
-      )
-      if (looksLikeNames && containsVacationKeyword(match[2])) {
-        targets.push(...candidates)
-        rest = match[2]
-      }
+  // 2) 약어 (선행 1자 토큰)
+  const nameByChar = new Map<string, string>()
+  for (const [name, char] of buildUniqueCharMap(memberNames, context.abbreviations)) {
+    nameByChar.set(char, name)
+  }
+  if (nameByChar.size > 0) {
+    let cursor = rest.replace(LEADING_SEPARATOR_RE, '')
+    while (cursor.length > 0) {
+      const char = cursor[0]
+      const name = HANGUL_CHAR_RE.test(char) ? nameByChar.get(char) : undefined
+      if (!name || targets.includes(name)) break
+      const after = cursor.slice(1)
+      const separated = after.length === 0 || AFTER_ABBREV_SEPARATOR_RE.test(after)
+      // 붙여 쓴 약어("채연차")는 사용자 지정 약어일 때만 — 자동 약어는 "이사공가"의 '이'처럼 단어 첫 글자와 겹치기 쉬움
+      const glued = !separated && context.abbreviations?.[name] === char && containsVacationKeyword(after)
+      if (!separated && !glued) break
+      targets.push(name)
+      cursor = after.replace(LEADING_SEPARATOR_RE, '')
+    }
+    rest = cursor
+  }
+
+  // 3) 선행 토큰 휴리스틱
+  rest = rest.trim()
+  const match = rest.match(LEADING_NAMES_RE)
+  if (match && (targets.length === 0 || match[2])) {
+    const candidates = parseNames(match[1]).filter((candidate) => !targets.includes(candidate))
+    const looksLikeNames = candidates.length > 0 && candidates.every(
+      (candidate) => !containsVacationKeyword(candidate) && !VACATION_NAME_STOPWORDS.has(candidate),
+    )
+    if (looksLikeNames && containsVacationKeyword(match[3])) {
+      targets.push(...candidates)
+      rest = match[3]
     }
   }
 
+  // 4) 휴가 종류
   const remainder = rest.replace(/\s+/g, ' ').trim()
   if (!containsVacationKeyword(remainder)) return null
-  const vacationType = TIMED_VACATION_TYPE_RE.test(remainder)
-    ? remainder
-    : remainder.replace(/[^\p{L}\p{N}\s]/gu, ' ').replace(/\s+/g, ' ').trim()
+  const vacationType = normalizeVacationType(remainder)
   if (!vacationType) return null
 
   return {
@@ -372,9 +434,9 @@ function injectVacationMetadata(description: string, targets: string[], vacation
 export function inferVacationEvent(
   summary: string,
   description: string,
-  memberNames: readonly string[] = [],
+  context: ShiftNameContext = {},
 ): InferredMetadata | null {
-  const vacation = inferVacationFromSummary(summary, memberNames)
+  const vacation = inferVacationFromSummary(summary, context)
   if (!vacation) return null
   return {
     eventType: '휴가',
@@ -383,10 +445,7 @@ export function inferVacationEvent(
   }
 }
 
-export interface InferEventMetadataOptions {
-  /** 팀원 이름 목록 — 제목 속 휴가 대상자 인식에 사용 */
-  memberNames?: readonly string[]
-}
+export type InferEventMetadataOptions = ShiftNameContext
 
 /**
  * Inbound: infer eventType and enrich description from Google Calendar summary.
@@ -403,7 +462,7 @@ export function inferEventMetadata(
 ): InferredMetadata {
   if (currentEventType === '일반') {
     // Try vacation keywords (연차/병가/공가/건강검진 …) — 이름은 팀원 명단 우선, 없으면 선행 토큰 휴리스틱
-    const vacation = inferVacationEvent(summary, description, options?.memberNames)
+    const vacation = inferVacationEvent(summary, description, options)
     if (vacation) {
       return vacation
     }
@@ -455,7 +514,7 @@ export function inferEventMetadata(
     if (hasTargets && hasType) {
       return { eventType: currentEventType, summary, description }
     }
-    const vacation = inferVacationFromSummary(summary, options?.memberNames)
+    const vacation = inferVacationFromSummary(summary, options)
     if (vacation) {
       return {
         eventType: currentEventType,

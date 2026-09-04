@@ -3,7 +3,7 @@ import Database from 'better-sqlite3'
 import { copyFileSync, statSync, unlinkSync } from 'node:fs'
 import { loadRefreshToken, saveRefreshToken } from '../security/tokenStore'
 import { parseRRuleSegments, splitRRuleForFuture, withoutRRuleEnd } from '../../shared/rrule'
-import { collectShiftMemberNames, inferVacationEvent } from '../../shared/eventTitleMapper'
+import { buildShiftNameContext, inferVacationEvent } from '../../shared/eventTitleMapper'
 import {
   cancelOutboxJobInputSchema,
   calendarEventSchema,
@@ -55,7 +55,7 @@ import {
   onReauthRequired,
 } from '../google/oauthClient'
 import { cancelOutboxJob, enqueueOutboxOperation, getOutboxCount, requeueFailedJobs } from '../sync/outboxWorker'
-import { forcePushAllToGoogle, reEnqueueShiftAbbreviationSync, runSyncNow } from '../sync/syncEngine'
+import { convertBasicVacationEvents, forcePushAllToGoogle, reEnqueueShiftAbbreviationSync, runSyncNow } from '../sync/syncEngine'
 import { IPC_CHANNELS } from './channels'
 
 function wrapIpcError(error: unknown): Error {
@@ -76,8 +76,7 @@ async function applyVacationInferenceToBasicEvent(
 ): Promise<UpsertCalendarEventInput> {
   if ((input.eventType.trim() || '일반') !== '일반') return input
   if (existingEventType && existingEventType.trim() !== '일반') return input
-  const memberNames = collectShiftMemberNames(await getShiftSettings())
-  const inferred = inferVacationEvent(input.summary, input.description, memberNames)
+  const inferred = inferVacationEvent(input.summary, input.description, buildShiftNameContext(await getShiftSettings()))
   if (!inferred) return input
   console.debug(`[IPC] upsertEvent: 일반 → 휴가 자동 전환 ("${input.summary}" → "${inferred.summary}")`)
   return { ...input, eventType: inferred.eventType, summary: inferred.summary, description: inferred.description }
@@ -834,6 +833,10 @@ export function registerCalendarIpc(): void {
     if (teamsChanged || dayWorkersChanged || abbreviationsChanged) {
       void reEnqueueShiftAbbreviationSync().catch((error) => {
         console.error('[IPC] reEnqueueShiftAbbreviationSync failed:', error)
+      })
+      // 새 이름/약어로 인식 가능해진 일반 일정을 휴가로 변환
+      void convertBasicVacationEvents().catch((error) => {
+        console.error('[IPC] convertBasicVacationEvents failed:', error)
       })
     }
 

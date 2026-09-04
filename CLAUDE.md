@@ -34,10 +34,12 @@ eventType은 Google extendedProperties.private.shiftCalendarEventType으로 양�
 
 ### 일반 → 휴가 자동 변환
 `일반` 일정의 제목에 `shared/eventTitleMapper.ts`의 `VACATION_KEYWORDS`(`연차`, `반차`, `대휴`, `병가`, `공가`, `건강검진`, `시간차`, `휴가`, `경조` — 공백 제거 후 부분 일치, `공가`가 `이사공가` 등을 포괄)가 있으면 `휴가`로 자동 변환합니다 (`inferVacationFromSummary` / `inferVacationEvent`).
-- 적용 지점 두 곳: Google pull(`toRemoteSnapshot` → `inferEventMetadata`, extendedProperties 없는 이벤트)과 로컬 저장(IPC `upsertEvent`의 `applyVacationInferenceToBasicEvent`). 로컬 저장은 새 이벤트이거나 기존 타입이 `일반`일 때만 — 사용자가 다른 타입을 일부러 `일반`으로 바꾸는 편집은 존중
-- 대상자 이름: 팀원 명단(`collectShiftMemberNames` = teams + dayWorkers)에 있는 이름은 제목 어디에 있어도 인식(긴 이름 우선). 명단에 없으면 "이름(, 이름)* 나머지" 형태의 선행 토큰(한글 2~4자/영문)을 이름으로 보되, 키워드 포함 토큰과 `오전`/`오후` 같은 수식어는 제외
-- 휴가종류 뱃지: 이름을 뺀 나머지 텍스트에서 기호를 공백으로 치환·정리한 값 (`병가(오전)` → `병가 오전`). `시간차(HH:MM~HH:MM)`만 시간 정보를 보존
+- 적용 지점 세 곳: ① Google pull(`toRemoteSnapshot` → `inferEventMetadata`, extendedProperties 없는 이벤트) ② 로컬 저장(IPC `upsertEvent`의 `applyVacationInferenceToBasicEvent` — 새 이벤트이거나 기존 타입이 `일반`일 때만, 다른 타입을 일부러 `일반`으로 바꾸는 편집은 존중) ③ 로컬 재변환 패스 `convertBasicVacationEvents()`(syncEngine) — `runSyncNow` 시작 시(오프라인 포함)와 팀원/약어 설정 변경 시 기존 `일반` 일정을 스캔해 변환하고 Google에 PATCH 큐잉. 델타 동기화(syncToken)는 Google에서 바뀐 일정만 가져오므로 ③ 없이는 기존 일정이 영영 변환되지 않음. 반복 일정(마스터/인스턴스)은 건너뜀
+- 이름 컨텍스트는 `buildShiftNameContext(settings)` = 팀원 이름(teams + dayWorkers) + 사용자 지정 약어 (`ShiftNameContext`)
+- 대상자 인식 순서: (1) 팀원 이름은 제목 어디에 있어도(`병가(이종열)`, `이명섭(이사공가)`, 긴 이름 우선) (2) 제목 앞 1자 토큰을 `buildUniqueCharMap` 약어로 역매핑(`신 대휴`, `채연차`, `혜 시간차 (~11:30)`) — 붙여 쓴 경우 약어를 뺀 나머지에 키워드가 온전히 남아야 인정(`연차`의 `연`을 약어로 오인 방지) (3) 못 찾으면 "이름(, 이름)* 나머지" 선행 토큰(한글 2~4자/영문)을 이름으로 보되 키워드 포함 토큰·`오전`/`결혼` 같은 수식어(`VACATION_NAME_STOPWORDS`)는 제외. 이름 뒤 콤마가 있으면(`소장님, 윤형집 대휴`) 명단 매칭이 있어도 추가 인정
+- 휴가종류 뱃지: 이름을 뺀 나머지에서 기호를 공백으로 치환·정리한 값 (`병가(오전)` → `병가 오전`, `채오후반차` → `오후반차`). `시간차`로 시작하면 뒤의 시간 정보를 `시간차(…)`로 정규화 (`시간차 (~11:30)` → `시간차(~11:30)`)
 - 결과 제목은 `이름, 이름 휴가종류`로 정규화되고 description에 `휴가대상: `/`휴가종류: ` 줄을 주입(이미 있으면 유지). 렌더러는 제목에서 휴가종류를 뺀 부분만 표시하므로 대상자가 없으면 뱃지만 보임
+- 근무표/오늘 근무 카드에서 휴가종류에 `시간차` 또는 `반차`가 포함되면 부분 휴가(근무에서 빼지 않고 뱃지만)
 
 ## Build, Test, and Development Commands
 - `npm i`: 의존성 설치
@@ -134,7 +136,7 @@ Google이 엄밀히 최신이면 로컬 변경을 폐기하고, 그 외에는 �
 - 참석자 초대/업데이트 전파
 - 네트워크 실패 및 복구 시나리오
 - 사용자 지정 약어 라운드트립 (`buildUniqueCharMap`, `resolveAbbreviationToName`, `buildShiftGoogleSummary`)
-- 일반 → 휴가 키워드 변환 (`shared/eventTitleMapper.test.ts`: 팀원 이름 매칭·선행 토큰 휴리스틱·기호 제거·시간차 보존; `calendarService.test.ts`: `toRemoteSnapshot` memberNames 옵션)
+- 일반 → 휴가 키워드 변환 (`shared/eventTitleMapper.test.ts`: 팀원 이름 매칭·약어 역매핑·괄호/붙여쓰기 실제 표기·선행 토큰 휴리스틱·기호 제거·시간차 정규화; `calendarService.test.ts`: `toRemoteSnapshot` 이름 컨텍스트 옵션)
 - 손 자세 → 모드 전환 (`renderer/gesture/handPoseMode.test.ts`: 유효표 다수결·절대 개수 조건, 저fps 동등성, 프레임 누락 허용, 오래된 표 폐기, 오분류 교대, dwell, 외부 동기화)
 
 Google API 호출은 모킹하고, 테스트 파일은 `*.test.ts` 패턴을 사용합니다.
