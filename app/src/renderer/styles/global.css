@@ -2667,6 +2667,13 @@ textarea {
   width: 100%;
 }
 
+/* 멀티데이(이틀 이상)·종일 이벤트는 FC 가 블록형(.fc-h-event)으로 그리며 내부 .fc-event-main 색을
+   --fc-event-text-color(#fff)로 강제한다. 단일일 점형(dot) 이벤트와 동일하게 부모(타입별) 색을 상속시킨다.
+   (일반·반복 일반은 제목 요소에 색을 직접 주지 않아 흰색으로 바뀌던 문제) */
+.fc .fc-h-event .fc-event-main {
+  color: inherit;
+}
+
 .fc .fc-event-title-inline-wrap {
   width: 100%;
   min-width: 0;
