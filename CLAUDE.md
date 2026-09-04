@@ -32,6 +32,13 @@
 eventType은 Google extendedProperties.private.shiftCalendarEventType으로 양방향 동기화됩니다.
 `sendUpdates` 플래그는 `'all'`, `'none'`, `'externalOnly'` 중 선택 가능합니다.
 
+### 일반 → 휴가 자동 변환
+`일반` 일정의 제목에 `shared/eventTitleMapper.ts`의 `VACATION_KEYWORDS`(`연차`, `반차`, `대휴`, `병가`, `공가`, `건강검진`, `시간차`, `휴가`, `경조` — 공백 제거 후 부분 일치, `공가`가 `이사공가` 등을 포괄)가 있으면 `휴가`로 자동 변환합니다 (`inferVacationFromSummary` / `inferVacationEvent`).
+- 적용 지점 두 곳: Google pull(`toRemoteSnapshot` → `inferEventMetadata`, extendedProperties 없는 이벤트)과 로컬 저장(IPC `upsertEvent`의 `applyVacationInferenceToBasicEvent`). 로컬 저장은 새 이벤트이거나 기존 타입이 `일반`일 때만 — 사용자가 다른 타입을 일부러 `일반`으로 바꾸는 편집은 존중
+- 대상자 이름: 팀원 명단(`collectShiftMemberNames` = teams + dayWorkers)에 있는 이름은 제목 어디에 있어도 인식(긴 이름 우선). 명단에 없으면 "이름(, 이름)* 나머지" 형태의 선행 토큰(한글 2~4자/영문)을 이름으로 보되, 키워드 포함 토큰과 `오전`/`오후` 같은 수식어는 제외
+- 휴가종류 뱃지: 이름을 뺀 나머지 텍스트에서 기호를 공백으로 치환·정리한 값 (`병가(오전)` → `병가 오전`). `시간차(HH:MM~HH:MM)`만 시간 정보를 보존
+- 결과 제목은 `이름, 이름 휴가종류`로 정규화되고 description에 `휴가대상: `/`휴가종류: ` 줄을 주입(이미 있으면 유지). 렌더러는 제목에서 휴가종류를 뺀 부분만 표시하므로 대상자가 없으면 뱃지만 보임
+
 ## Build, Test, and Development Commands
 - `npm i`: 의존성 설치
 - `npm run dev`: Electron + Vite 개발 실행
@@ -127,6 +134,7 @@ Google이 엄밀히 최신이면 로컬 변경을 폐기하고, 그 외에는 �
 - 참석자 초대/업데이트 전파
 - 네트워크 실패 및 복구 시나리오
 - 사용자 지정 약어 라운드트립 (`buildUniqueCharMap`, `resolveAbbreviationToName`, `buildShiftGoogleSummary`)
+- 일반 → 휴가 키워드 변환 (`shared/eventTitleMapper.test.ts`: 팀원 이름 매칭·선행 토큰 휴리스틱·기호 제거·시간차 보존; `calendarService.test.ts`: `toRemoteSnapshot` memberNames 옵션)
 - 손 자세 → 모드 전환 (`renderer/gesture/handPoseMode.test.ts`: 유효표 다수결·절대 개수 조건, 저fps 동등성, 프레임 누락 허용, 오래된 표 폐기, 오분류 교대, dwell, 외부 동기화)
 
 Google API 호출은 모킹하고, 테스트 파일은 `*.test.ts` 패턴을 사용합니다.

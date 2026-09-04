@@ -3,6 +3,7 @@ import Database from 'better-sqlite3'
 import { copyFileSync, statSync, unlinkSync } from 'node:fs'
 import { loadRefreshToken, saveRefreshToken } from '../security/tokenStore'
 import { parseRRuleSegments, splitRRuleForFuture, withoutRRuleEnd } from '../../shared/rrule'
+import { collectShiftMemberNames, inferVacationEvent } from '../../shared/eventTitleMapper'
 import {
   cancelOutboxJobInputSchema,
   calendarEventSchema,
@@ -21,6 +22,7 @@ import {
   shiftSettingsSchema,
   syncResultSchema,
   upsertCalendarEventSchema,
+  type UpsertCalendarEventInput,
 } from '../../shared/calendar'
 import {
   applyEventTypeToRecurringSeries,
@@ -63,6 +65,24 @@ function wrapIpcError(error: unknown): Error {
   return new Error(String(error))
 }
 
+/**
+ * 일반 타입으로 저장되는 일정의 제목에 휴가 키워드(연차/병가/공가/건강검진 …)가 있으면
+ * 휴가 타입으로 자동 전환한다 — Google pull 경로(inferEventMetadata)와 같은 규칙.
+ * 이미 다른 타입인 이벤트를 사용자가 일부러 일반으로 바꾸는 편집은 그대로 둔다.
+ */
+async function applyVacationInferenceToBasicEvent(
+  input: UpsertCalendarEventInput,
+  existingEventType: string | null,
+): Promise<UpsertCalendarEventInput> {
+  if ((input.eventType.trim() || '일반') !== '일반') return input
+  if (existingEventType && existingEventType.trim() !== '일반') return input
+  const memberNames = collectShiftMemberNames(await getShiftSettings())
+  const inferred = inferVacationEvent(input.summary, input.description, memberNames)
+  if (!inferred) return input
+  console.debug(`[IPC] upsertEvent: 일반 → 휴가 자동 전환 ("${input.summary}" → "${inferred.summary}")`)
+  return { ...input, eventType: inferred.eventType, summary: inferred.summary, description: inferred.description }
+}
+
 export function registerCalendarIpc(): void {
   const googleCalendarService = createGoogleCalendarService()
   // If a dead token is detected anywhere (incl. sync/outbox runs), drop this long-lived
@@ -103,7 +123,9 @@ export function registerCalendarIpc(): void {
 
   ipcMain.handle(IPC_CHANNELS.upsertEvent, async (_event, payload: unknown) => {
     try {
-    const input = upsertCalendarEventSchema.parse(payload)
+    const parsedInput = upsertCalendarEventSchema.parse(payload)
+    const existing = parsedInput.localId ? await getCalendarEventByLocalId(parsedInput.localId) : null
+    const input = await applyVacationInferenceToBasicEvent(parsedInput, existing?.eventType ?? null)
     if (!input.localId) {
       const created = calendarEventSchema.parse(await upsertCalendarEvent(input))
       await enqueueOutboxOperation({
@@ -116,7 +138,6 @@ export function registerCalendarIpc(): void {
       return created
     }
 
-    const existing = await getCalendarEventByLocalId(input.localId)
     if (!existing) {
       const created = calendarEventSchema.parse(await upsertCalendarEvent(input))
       await enqueueOutboxOperation({

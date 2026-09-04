@@ -208,8 +208,117 @@ const VACATION_TARGET_PREFIX = '휴가대상: '
 const VACATION_TYPE_PREFIX = '휴가종류: '
 const EDUCATION_TARGET_PREFIX = '교육대상: '
 
-const VACATION_TITLE_RE =
-  /^([\p{Script=Hangul}]{2,4}(?:\s*,\s*[\p{Script=Hangul}]{2,4})*)\s+(대휴|연차|시간차(?:\([^)]+\))?|장기휴가)$/u
+/**
+ * 일반 일정 제목에서 휴가로 자동 전환할 키워드 (공백 제거 후 부분 일치).
+ * '공가'는 이사공가·예비군공가 등을, '휴가'는 장기휴가·여름휴가 등을 함께 잡는다.
+ */
+export const VACATION_KEYWORDS: readonly string[] = [
+  '연차',
+  '반차',
+  '대휴',
+  '병가',
+  '공가',
+  '건강검진',
+  '시간차',
+  '휴가',
+  '경조',
+]
+
+/** 팀원 명단에 없을 때 쓰는 선행 토큰 이름 휴리스틱에서 이름으로 오인하기 쉬운 수식어 */
+const VACATION_NAME_STOPWORDS = new Set([
+  '오전', '오후', '종일', '전일', '반일', '하루', '이틀', '전체', '전원', '시간', '휴무', '출근', '퇴근',
+])
+
+/** "이름(, 이름)* 나머지" — 이름 토큰은 한글 2~4자 또는 영문 2~20자 */
+const LEADING_NAMES_RE =
+  /^((?:[\p{Script=Hangul}]{2,4}|[A-Za-z]{2,20})(?:\s*,\s*(?:[\p{Script=Hangul}]{2,4}|[A-Za-z]{2,20}))*)\s+(.+)$/u
+
+/** 시간차(09:00~13:00) — 시간 정보는 기호 제거 대상에서 제외하고 그대로 보존 */
+const TIMED_VACATION_TYPE_RE = /^시간차\([^)]+\)$/u
+
+export function containsVacationKeyword(text: string): boolean {
+  const normalized = text.replace(/\s+/g, '')
+  return VACATION_KEYWORDS.some((keyword) => normalized.includes(keyword))
+}
+
+/** ShiftSettings(teams + dayWorkers)에서 중복 없는 팀원 이름 목록을 만든다. */
+export function collectShiftMemberNames(settings: { teams: ShiftTeamAssignments; dayWorkers: string[] }): string[] {
+  const names: string[] = []
+  for (const key of ['A', 'B', 'C', 'D'] as const) {
+    for (const member of settings.teams[key]) {
+      const trimmed = member.trim()
+      if (trimmed && !names.includes(trimmed)) names.push(trimmed)
+    }
+  }
+  for (const worker of settings.dayWorkers) {
+    const trimmed = worker.trim()
+    if (trimmed && !names.includes(trimmed)) names.push(trimmed)
+  }
+  return names
+}
+
+export interface InferredVacation {
+  /** 제목에서 인식된 휴가 대상자 이름 */
+  targets: string[]
+  /** 이름을 뺀 나머지 텍스트(기호 제거) — 휴가종류 뱃지 */
+  vacationType: string
+  /** 정규화된 제목: "이름, 이름 휴가종류" (이름 없으면 휴가종류만) */
+  summary: string
+}
+
+/**
+ * 제목에 휴가 키워드가 있으면 대상자 이름과 휴가 종류를 추출한다. 없으면 null.
+ *
+ * 1. 팀원 명단(memberNames) 이름은 제목 어디에 있어도 인식 (긴 이름부터 → 부분 겹침 방지)
+ * 2. 명단에서 못 찾으면 "이름(, 이름)* 나머지" 형태의 선행 토큰을 이름으로 본다
+ *    (키워드를 포함하거나 오전/오후 같은 수식어인 토큰은 제외)
+ * 3. 이름을 뺀 나머지가 휴가 종류. 시간차(HH:MM~HH:MM)는 보존, 그 외는 기호를 공백으로 치환
+ */
+export function inferVacationFromSummary(
+  summary: string,
+  memberNames: readonly string[] = [],
+): InferredVacation | null {
+  const trimmed = summary.trim()
+  if (!trimmed || !containsVacationKeyword(trimmed)) return null
+
+  const targets: string[] = []
+  let rest = trimmed
+
+  const knownNames = [...new Set(memberNames.map((name) => name.trim()).filter(Boolean))]
+    .sort((a, b) => b.length - a.length)
+  for (const name of knownNames) {
+    if (!rest.includes(name)) continue
+    targets.push(name)
+    rest = rest.split(name).join(' ')
+  }
+
+  if (targets.length === 0) {
+    const match = rest.match(LEADING_NAMES_RE)
+    if (match) {
+      const candidates = parseNames(match[1])
+      const looksLikeNames = candidates.every(
+        (candidate) => !containsVacationKeyword(candidate) && !VACATION_NAME_STOPWORDS.has(candidate),
+      )
+      if (looksLikeNames && containsVacationKeyword(match[2])) {
+        targets.push(...candidates)
+        rest = match[2]
+      }
+    }
+  }
+
+  const remainder = rest.replace(/\s+/g, ' ').trim()
+  if (!containsVacationKeyword(remainder)) return null
+  const vacationType = TIMED_VACATION_TYPE_RE.test(remainder)
+    ? remainder
+    : remainder.replace(/[^\p{L}\p{N}\s]/gu, ' ').replace(/\s+/g, ' ').trim()
+  if (!vacationType) return null
+
+  return {
+    targets,
+    vacationType,
+    summary: [targets.join(', '), vacationType].filter(Boolean).join(' '),
+  }
+}
 
 const EDUCATION_TITLE_RE =
   /^([\p{Script=Hangul}]{2,4}(?:\s*,\s*[\p{Script=Hangul}]{2,4})*)\s+(.+(?:교육|훈련).*)$/u
@@ -235,6 +344,50 @@ function prependMetadataLine(description: string, line: string): string {
   return description ? `${line}\n${description}` : line
 }
 
+/** description에 휴가대상/휴가종류 메타데이터 줄이 없으면 앞에 넣는다 (있으면 그대로). */
+function injectVacationMetadata(description: string, targets: string[], vacationType: string): string {
+  let desc = description
+  if (targets.length > 0 && !hasMetadataLine(desc, VACATION_TARGET_PREFIX)) {
+    desc = prependMetadataLine(desc, `${VACATION_TARGET_PREFIX}${targets.join(', ')}`)
+  }
+  if (!hasMetadataLine(desc, VACATION_TYPE_PREFIX)) {
+    // Insert after target line
+    const lines = desc.split(/\r?\n/)
+    const targetIdx = lines.findIndex((l) => l.startsWith(VACATION_TARGET_PREFIX))
+    if (targetIdx >= 0) {
+      lines.splice(targetIdx + 1, 0, `${VACATION_TYPE_PREFIX}${vacationType}`)
+      desc = lines.join('\n')
+    } else {
+      desc = prependMetadataLine(desc, `${VACATION_TYPE_PREFIX}${vacationType}`)
+    }
+  }
+  return desc
+}
+
+/**
+ * 일반 일정(summary/description)에 휴가 키워드가 있으면 휴가 이벤트로 변환한 결과를 돌려준다.
+ * 제목은 "이름, 이름 휴가종류"로 정규화되고 description에 휴가대상/휴가종류 줄이 주입된다.
+ * 키워드가 없으면 null. Google pull(inferEventMetadata)과 로컬 저장(IPC upsert)이 공용.
+ */
+export function inferVacationEvent(
+  summary: string,
+  description: string,
+  memberNames: readonly string[] = [],
+): InferredMetadata | null {
+  const vacation = inferVacationFromSummary(summary, memberNames)
+  if (!vacation) return null
+  return {
+    eventType: '휴가',
+    summary: vacation.summary,
+    description: injectVacationMetadata(description, vacation.targets, vacation.vacationType),
+  }
+}
+
+export interface InferEventMetadataOptions {
+  /** 팀원 이름 목록 — 제목 속 휴가 대상자 인식에 사용 */
+  memberNames?: readonly string[]
+}
+
 /**
  * Inbound: infer eventType and enrich description from Google Calendar summary.
  *
@@ -246,31 +399,13 @@ export function inferEventMetadata(
   summary: string,
   description: string,
   currentEventType: string,
+  options?: InferEventMetadataOptions,
 ): InferredMetadata {
   if (currentEventType === '일반') {
-    // Try vacation pattern
-    const vacMatch = summary.match(VACATION_TITLE_RE)
-    if (vacMatch) {
-      const names = parseNames(vacMatch[1])
-      const vacationType = vacMatch[2]
-      let desc = description
-
-      if (!hasMetadataLine(desc, VACATION_TARGET_PREFIX)) {
-        desc = prependMetadataLine(desc, `${VACATION_TARGET_PREFIX}${names.join(', ')}`)
-      }
-      if (!hasMetadataLine(desc, VACATION_TYPE_PREFIX)) {
-        // Insert after target line
-        const lines = desc.split(/\r?\n/)
-        const targetIdx = lines.findIndex((l) => l.startsWith(VACATION_TARGET_PREFIX))
-        if (targetIdx >= 0) {
-          lines.splice(targetIdx + 1, 0, `${VACATION_TYPE_PREFIX}${vacationType}`)
-          desc = lines.join('\n')
-        } else {
-          desc = prependMetadataLine(desc, `${VACATION_TYPE_PREFIX}${vacationType}`)
-        }
-      }
-
-      return { eventType: '휴가', summary, description: desc }
+    // Try vacation keywords (연차/병가/공가/건강검진 …) — 이름은 팀원 명단 우선, 없으면 선행 토큰 휴리스틱
+    const vacation = inferVacationEvent(summary, description, options?.memberNames)
+    if (vacation) {
+      return vacation
     }
 
     // Try education pattern
@@ -314,28 +449,19 @@ export function inferEventMetadata(
   }
 
   if (currentEventType === '휴가') {
-    // Supplement description metadata from summary if missing
-    const vacMatch = summary.match(VACATION_TITLE_RE)
-    if (vacMatch) {
-      const names = parseNames(vacMatch[1])
-      const vacationType = vacMatch[2]
-      let desc = description
-
-      if (!hasMetadataLine(desc, VACATION_TARGET_PREFIX)) {
-        desc = prependMetadataLine(desc, `${VACATION_TARGET_PREFIX}${names.join(', ')}`)
+    // Supplement description metadata from summary if missing (summary는 건드리지 않음)
+    const hasTargets = hasMetadataLine(description, VACATION_TARGET_PREFIX)
+    const hasType = hasMetadataLine(description, VACATION_TYPE_PREFIX)
+    if (hasTargets && hasType) {
+      return { eventType: currentEventType, summary, description }
+    }
+    const vacation = inferVacationFromSummary(summary, options?.memberNames)
+    if (vacation) {
+      return {
+        eventType: currentEventType,
+        summary,
+        description: injectVacationMetadata(description, vacation.targets, vacation.vacationType),
       }
-      if (!hasMetadataLine(desc, VACATION_TYPE_PREFIX)) {
-        const lines = desc.split(/\r?\n/)
-        const targetIdx = lines.findIndex((l) => l.startsWith(VACATION_TARGET_PREFIX))
-        if (targetIdx >= 0) {
-          lines.splice(targetIdx + 1, 0, `${VACATION_TYPE_PREFIX}${vacationType}`)
-          desc = lines.join('\n')
-        } else {
-          desc = prependMetadataLine(desc, `${VACATION_TYPE_PREFIX}${vacationType}`)
-        }
-      }
-
-      return { eventType: currentEventType, summary, description: desc }
     }
     return { eventType: currentEventType, summary, description }
   }

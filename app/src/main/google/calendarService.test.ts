@@ -304,6 +304,19 @@ describe('제목 기반 eventType 추론 - toRemoteSnapshot', () => {
     expect(snapshot?.eventType).toBe('일반')
     expect(snapshot?.summary).toBe('팀 미팅')
   })
+
+  it('memberNames 옵션으로 제목 속 팀원 이름을 휴가 대상자로 인식한다', () => {
+    const googleEvent = makeGoogleEvent({
+      summary: '병가(오전) 홍길동',
+      extendedProperties: undefined,
+    })
+    const snapshot = toRemoteSnapshot(googleEvent, { memberNames: ['홍길동', '박혜지'] })
+
+    expect(snapshot?.eventType).toBe('휴가')
+    expect(snapshot?.summary).toBe('홍길동 병가 오전')
+    expect(snapshot?.description).toContain('휴가대상: 홍길동')
+    expect(snapshot?.description).toContain('휴가종류: 병가 오전')
+  })
 })
 
 describe('교육 이벤트 Push 시 toGoogleEventRequest', () => {

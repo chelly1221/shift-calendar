@@ -1,6 +1,9 @@
 import { describe, it, expect } from 'vitest'
 import {
   inferEventMetadata,
+  inferVacationFromSummary,
+  inferVacationEvent,
+  collectShiftMemberNames,
   toGoogleSummary,
   buildUniqueCharMap,
   parseShiftAbbreviations,
@@ -119,6 +122,101 @@ describe('inferEventMetadata', () => {
     })
   })
 
+  describe('eventType=일반 → 휴가 키워드 감지 (병가/공가/건강검진 등)', () => {
+    const members = ['박혜지', '이종열', '홍길동', '김영희']
+
+    it('병가 키워드를 휴가로 감지하고 팀원 이름을 대상자로 뽑는다', () => {
+      const result = inferEventMetadata('홍길동 병가', '', '일반', { memberNames: members })
+      expect(result.eventType).toBe('휴가')
+      expect(result.summary).toBe('홍길동 병가')
+      expect(result.description).toContain('휴가대상: 홍길동')
+      expect(result.description).toContain('휴가종류: 병가')
+    })
+
+    it('키워드가 이름 앞에 와도 팀원 이름을 인식한다', () => {
+      const result = inferEventMetadata('이사공가 홍길동', '', '일반', { memberNames: members })
+      expect(result.eventType).toBe('휴가')
+      expect(result.summary).toBe('홍길동 이사공가')
+      expect(result.description).toContain('휴가대상: 홍길동')
+      expect(result.description).toContain('휴가종류: 이사공가')
+    })
+
+    it('이름을 뺀 나머지에서 기호를 제거해 휴가종류로 쓴다', () => {
+      const result = inferEventMetadata('홍길동 - 건강검진(오전)', '', '일반', { memberNames: members })
+      expect(result.eventType).toBe('휴가')
+      expect(result.summary).toBe('홍길동 건강검진 오전')
+      expect(result.description).toContain('휴가종류: 건강검진 오전')
+    })
+
+    it('공백 없이 붙은 팀원 이름도 인식한다', () => {
+      const result = inferEventMetadata('박혜지연차', '', '일반', { memberNames: members })
+      expect(result.eventType).toBe('휴가')
+      expect(result.summary).toBe('박혜지 연차')
+      expect(result.description).toContain('휴가대상: 박혜지')
+      expect(result.description).toContain('휴가종류: 연차')
+    })
+
+    it('여러 팀원 이름을 모두 대상자로 뽑는다', () => {
+      const result = inferEventMetadata('박혜지/이종열 공가', '', '일반', { memberNames: members })
+      expect(result.eventType).toBe('휴가')
+      expect(result.summary).toBe('박혜지, 이종열 공가')
+      expect(result.description).toContain('휴가대상: 박혜지, 이종열')
+      expect(result.description).toContain('휴가종류: 공가')
+    })
+
+    it('이름이 없으면 대상자 없이 휴가종류만 넣는다', () => {
+      const result = inferEventMetadata('건강검진 안내', '', '일반', { memberNames: members })
+      expect(result.eventType).toBe('휴가')
+      expect(result.summary).toBe('건강검진 안내')
+      expect(result.description).not.toContain('휴가대상:')
+      expect(result.description).toContain('휴가종류: 건강검진 안내')
+    })
+
+    it('오전/오후 같은 수식어는 이름으로 오인하지 않는다', () => {
+      const result = inferEventMetadata('오전 반차', '', '일반', { memberNames: members })
+      expect(result.eventType).toBe('휴가')
+      expect(result.description).not.toContain('휴가대상:')
+      expect(result.description).toContain('휴가종류: 오전 반차')
+    })
+
+    it('명단에 없는 한글 이름은 선행 토큰 휴리스틱으로 인식한다', () => {
+      const result = inferEventMetadata('최민수 대휴', '', '일반', { memberNames: members })
+      expect(result.eventType).toBe('휴가')
+      expect(result.description).toContain('휴가대상: 최민수')
+      expect(result.description).toContain('휴가종류: 대휴')
+    })
+
+    it('시간차(HH:MM~HH:MM)는 시간 정보를 보존한다', () => {
+      const result = inferEventMetadata('홍길동 시간차(09:00~13:00)', '', '일반', { memberNames: members })
+      expect(result.summary).toBe('홍길동 시간차(09:00~13:00)')
+      expect(result.description).toContain('휴가종류: 시간차(09:00~13:00)')
+    })
+
+    it('긴 이름이 짧은 이름을 포함해도 긴 이름을 우선 매칭한다', () => {
+      const result = inferVacationFromSummary('이수진 연차', ['이수', '이수진'])
+      expect(result?.targets).toEqual(['이수진'])
+      expect(result?.vacationType).toBe('연차')
+    })
+
+    it('inferVacationEvent는 키워드가 없으면 null', () => {
+      expect(inferVacationEvent('팀 미팅', '', members)).toBeNull()
+    })
+
+    it('inferVacationEvent는 기존 description 앞에 메타데이터를 넣는다', () => {
+      const result = inferVacationEvent('홍길동 병가', '시각: 09:00~12:00', members)
+      expect(result?.description).toBe('휴가대상: 홍길동\n휴가종류: 병가\n시각: 09:00~12:00')
+    })
+  })
+
+  describe('eventType=휴가 메타데이터 보완 (키워드 기반)', () => {
+    it('병가처럼 프리셋이 아닌 종류도 보완한다', () => {
+      const result = inferEventMetadata('홍길동 병가', '', '휴가', { memberNames: ['홍길동'] })
+      expect(result.summary).toBe('홍길동 병가')
+      expect(result.description).toContain('휴가대상: 홍길동')
+      expect(result.description).toContain('휴가종류: 병가')
+    })
+  })
+
   describe('비매칭 케이스', () => {
     it('일반 미팅은 변경하지 않는다', () => {
       const result = inferEventMetadata('팀 미팅', '', '일반')
@@ -127,9 +225,17 @@ describe('inferEventMetadata', () => {
       expect(result.description).toBe('')
     })
 
-    it('영어 이름은 매칭하지 않는다', () => {
+    it('영어 이름도 선행 토큰이면 대상자로 인식한다', () => {
       const result = inferEventMetadata('John 대휴', '', '일반')
+      expect(result.eventType).toBe('휴가')
+      expect(result.description).toContain('휴가대상: John')
+      expect(result.description).toContain('휴가종류: 대휴')
+    })
+
+    it('휴가 키워드가 없는 이름+텍스트는 변경하지 않는다', () => {
+      const result = inferEventMetadata('홍길동 회식', '', '일반')
       expect(result.eventType).toBe('일반')
+      expect(result.summary).toBe('홍길동 회식')
     })
 
     it('근무 타입은 변경하지 않는다', () => {
@@ -188,6 +294,16 @@ describe('휴가 Pull→Push 라운드트립', () => {
     // Push: local → Google
     const googleSummary = toGoogleSummary(inferred.summary, inferred.description, inferred.eventType)
     expect(googleSummary).toBe('박혜지 대휴')
+  })
+})
+
+describe('collectShiftMemberNames', () => {
+  it('팀원과 주간 근무자를 공백 정리·중복 제거해 모은다', () => {
+    const names = collectShiftMemberNames({
+      teams: { A: ['박혜지 ', '이종열'], B: ['홍길동'], C: [''], D: ['이종열'] },
+      dayWorkers: [' 김영희', '홍길동'],
+    })
+    expect(names).toEqual(['박혜지', '이종열', '홍길동', '김영희'])
   })
 })
 

@@ -2963,7 +2963,8 @@ export function CalendarPage() {
                       )
                     )}
                     <span className="fc-vacation-title">
-                      {displayTitle || arg.event.title}
+                      {/* 제목이 휴가종류만으로 이루어진 경우(대상자 없음) 뱃지와 같은 글자를 반복하지 않는다 */}
+                      {displayTitle}
                       {vacEndLabel && <span className="fc-vacation-until">{vacEndLabel}</span>}
                     </span>
                   </div>
