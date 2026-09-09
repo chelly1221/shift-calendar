@@ -57,11 +57,11 @@ export class VoiceCommandService {
     const command = parseVoiceCommand(query.text, this.now())
     if (command.kind === 'clarify') return this.reply('CLARIFY', command.text)
     if (command.kind === 'control') {
-      try { return this.reply('ANSWER', await this.deps.control(command.control)) }
+      try { await this.deps.control(command.control); return this.reply('ANSWER', '') }
       catch { return this.reply('UNAVAILABLE', 'PC 화면에서 명령을 처리했는지 확인하지 못했습니다. PC 앱 상태를 확인해 주세요.') }
     }
     if (command.kind === 'sync') {
-      try { return this.reply('ANSWER', await this.deps.sync()) }
+      try { await this.deps.sync(); return this.reply('ANSWER', '') }
       catch { return this.reply('UNAVAILABLE', '동기화를 완료하지 못했습니다. PC의 동기화 화면을 확인해 주세요.') }
     }
     const [events, settings] = await Promise.all([this.deps.events(), this.deps.settings()])

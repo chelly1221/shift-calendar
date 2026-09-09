@@ -56,6 +56,36 @@ describe('voice action previews and writes', () => {
     await s.service.confirm(preview.confirmationId!, true)
     expect(s.upsert).toHaveBeenCalledWith(expect.objectContaining({ recurrenceScope: 'THIS', description: '반복완료: 2026-09-10' }))
   })
-  it('waits for the PC to acknowledge navigation', async () => { const s = setup(); expect((await s.query('다음 달 보여줘')).text).toBe('화면 이동 완료'); expect(s.control).toHaveBeenCalledWith({ type: 'NEXT_MONTH' }) })
+  it.each([
+    ['다음 달 보여줘', 'NEXT_MONTH'], ['이전 달 보여줘', 'PREVIOUS_MONTH'],
+    ['오늘 보여줘', 'TODAY'], ['9월 달력 보여줘', 'GOTO_DATE'],
+    ['근무표 열어줘', 'OPEN_ROSTER'], ['달력 열어줘', 'OPEN_CALENDAR'],
+    ['설정 열어줘', 'OPEN_SETTINGS'], ['동기화 창 열어줘', 'OPEN_SYNC'],
+  ])('executes %s without a spoken or written acknowledgement', async (text, type) => {
+    const s = setup()
+    expect(await s.query(text)).toMatchObject({ status: 'ANSWER', text: '', speech: '' })
+    expect(s.control).toHaveBeenCalledExactlyOnceWith(expect.objectContaining({ type }))
+  })
+  it('waits for screen control to finish before returning its silent result', async () => {
+    const s = setup()
+    let finish!: (value: string) => void
+    s.control.mockReturnValueOnce(new Promise<string>((resolve) => { finish = resolve }))
+    const completed = vi.fn()
+    const result = s.query('다음 달 보여줘').then(completed)
+    await Promise.resolve()
+    expect(completed).not.toHaveBeenCalled()
+    finish('화면 이동 완료')
+    await result
+    expect(completed).toHaveBeenCalledWith(expect.objectContaining({ text: '', speech: '' }))
+  })
+  it('keeps synchronization commands silent', async () => {
+    expect(await setup().query('동기화해줘')).toMatchObject({ status: 'ANSWER', text: '', speech: '' })
+  })
+  it('still reports a failed screen command', async () => {
+    const s = setup(); s.control.mockRejectedValue(new Error('closed'))
+    const result = await s.query('다음 달 보여줘')
+    expect(result.status).toBe('UNAVAILABLE')
+    expect(result.speech).toContain('PC 앱 상태를 확인')
+  })
   it('does not report failure to refresh as failure to save', async () => { const s = setup(); s.control.mockRejectedValue(new Error('closed')); const preview = await s.query('내일 종일 회의 등록해줘'); const result = await s.service.confirm(preview.confirmationId!, true); expect(result.status).toBe('ANSWER'); expect(result.text).toContain('새로고침을 확인하지 못했습니다'); expect(s.upsert).toHaveBeenCalledTimes(1) })
 })

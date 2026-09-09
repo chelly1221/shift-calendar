@@ -1,6 +1,7 @@
 import { contextBridge, ipcRenderer } from 'electron'
 import { IPC_CHANNELS } from '../main/ipc/channels'
 import { VOICE_CHANNELS, voiceControlSchema, type VoiceApi } from '../shared/voice'
+import type { CalendarCaptureRect } from '../shared/windowCapture'
 import type {
   CancelOutboxJobInput,
   CalendarApi,
@@ -93,6 +94,7 @@ const voiceApi: VoiceApi = {
 contextBridge.exposeInMainWorld('voiceApi', voiceApi)
 
 contextBridge.exposeInMainWorld('windowApi', {
+  captureCalendar: (rect: CalendarCaptureRect) => ipcRenderer.invoke(IPC_CHANNELS.windowCaptureCalendar, rect) as Promise<string>,
   minimize: () => ipcRenderer.send(IPC_CHANNELS.windowMinimize),
   maximize: () => ipcRenderer.send(IPC_CHANNELS.windowMaximize),
   close: () => ipcRenderer.send(IPC_CHANNELS.windowClose),

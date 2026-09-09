@@ -14,6 +14,7 @@ import { ensureSetting } from './db/settingRepository'
 import { IPC_CHANNELS } from './ipc/channels'
 import { registerCalendarIpc } from './ipc/registerCalendarIpc'
 import { registerVoiceIpc, voiceServer } from './ipc/registerVoiceIpc'
+import { registerWindowCaptureIpc } from './ipc/registerWindowCaptureIpc'
 import { prisma } from './db/prisma'
 import { startOutboxWorker, stopOutboxWorker } from './sync/outboxWorker'
 import { runSyncNow } from './sync/syncEngine'
@@ -21,10 +22,8 @@ import { onReauthRequired } from './google/oauthClient'
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url))
 
-app.disableHardwareAcceleration()
 if (process.platform === 'win32') app.setAppUserModelId('com.radar.shift-schedule-manager')
-app.commandLine.appendSwitch('disable-gpu')
-app.commandLine.appendSwitch('disable-gpu-compositing')
+// Use Electron's GPU acceleration for the calendar's curved 3D page surface.
 app.commandLine.appendSwitch('force-color-profile', 'srgb')
 
 process.env.APP_ROOT = process.env.APP_ROOT ?? path.join(__dirname, '..')
@@ -190,6 +189,7 @@ if (!gotTheLock) {
     ipcMain.on(IPC_CHANNELS.windowMinimize, (event) => {
       BrowserWindow.fromWebContents(event.sender)?.minimize()
     })
+    registerWindowCaptureIpc()
     ipcMain.on(IPC_CHANNELS.windowMaximize, (event) => {
       const win = BrowserWindow.fromWebContents(event.sender)
       if (win) {

@@ -28,6 +28,11 @@ export class VoiceServer {
 
   private prepareAnswer(answer: VoiceAnswer): VoiceAnswer {
     const parsed = voiceAnswerSchema.parse(answer)
+    // A completed screen command has no utterance. A terminal playback result
+    // also lets installed phone clients resume listening without polling or TTS.
+    if (!parsed.speech.trim()) return {
+      ...parsed, speech: '', playback: { id: null, status: 'done', text: '', chunk: '' },
+    }
     if (!this.speech) return parsed
     const playback = this.speech.speak(parsed.speech)
     // Older Android clients ignore playback; blank speech prevents duplicate phone audio.

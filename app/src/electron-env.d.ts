@@ -12,6 +12,7 @@ interface Window {
   voiceApi: import('./shared/voice').VoiceApi
   calendarApi: import('./shared/calendar').CalendarApi
   windowApi: {
+    captureCalendar: (rect: import('./shared/windowCapture').CalendarCaptureRect) => Promise<string>
     minimize: () => void
     maximize: () => void
     close: () => void

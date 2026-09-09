@@ -33,6 +33,17 @@ class PcSpeechPlaybackTest {
     private fun playback(status: String, id: String = "answer-1", chunk: String = ""): JSONObject = JSONObject()
         .put("id", id).put("status", status).put("text", "주간 A조 김수헌\n야간 B조 이상승").put("chunk", chunk)
 
+    @Test fun silentPcCommandCompletesImmediatelyWithoutSpeechOrPolling() {
+        val fixture = Fixture()
+        fixture.watch(JSONObject().put("id", JSONObject.NULL).put("status", "done").put("text", "").put("chunk", ""))
+        assertEquals(listOf(true), fixture.results)
+        fixture.advance(60_000)
+        assertTrue(fixture.requests.isEmpty())
+        assertTrue(fixture.jobs.isEmpty())
+        assertTrue(fixture.chunks.isEmpty())
+        assertNull(fixture.speech.error)
+    }
+
     @Test fun watchesExistingPcAnswerWithoutStartingAnotherUtterance() {
         val fixture = Fixture()
         fixture.watch(playback("queued"))

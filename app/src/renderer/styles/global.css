@@ -1038,6 +1038,16 @@ body {
 }
 
 /* ── Calendar Panel ── */
+.calendar-page-turn {
+  position: fixed;
+  z-index: 40;
+  pointer-events: none;
+}
+
+.calendar-page-turn canvas {
+  display: block;
+}
+
 .calendar-panel {
   padding: 0;
   background: var(--surface-raised);

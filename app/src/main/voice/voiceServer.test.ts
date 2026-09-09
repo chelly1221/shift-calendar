@@ -84,6 +84,18 @@ describe('PC speech output', () => {
     expect(confirm).toHaveBeenCalledExactlyOnceWith(id, true)
     expect(output.speak).toHaveBeenCalledExactlyOnceWith('테스트')
   })
+  it('finishes silent commands immediately without touching playback or its queue', async () => {
+    const { output, post } = await setupSpeech()
+    query.mockResolvedValueOnce({ ...answer, text: '', speech: '' })
+    const response = await post('/v1/query', { text: '다음 달 보여줘' })
+    expect(await response.json()).toEqual({ ...answer, text: '', speech: '',
+      playback: { id: null, status: 'done', text: '', chunk: '' } })
+    expect(output.speak).not.toHaveBeenCalled()
+    expect(output.getState).not.toHaveBeenCalled()
+    expect(output.stop).not.toHaveBeenCalled()
+    await post('/v1/query', { text: '오늘 휴가 누구야?' })
+    expect(output.speak).toHaveBeenCalledExactlyOnceWith('테스트')
+  })
   it('polls playback independently without exhausting the question rate limit', async () => {
     const { output, url, post } = await setupSpeech()
     for (let index = 0; index < 65; index++) expect((await fetch(`${url}/v1/speech?id=${id}`)).status).toBe(200)

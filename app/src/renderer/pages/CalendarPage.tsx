@@ -18,6 +18,7 @@ import { parseEducationTargets } from '../utils/parseEducationTargets'
 import { parseRoutineCompletions, serializeRoutineCompletions } from '../utils/parseRoutineCompletions'
 import { parseVacationInfo } from '../utils/parseVacationInfo'
 import { eventTypeSortIndex } from '../utils/eventTypeOrder'
+import { useCalendarPageTurn } from '../utils/useCalendarPageTurn'
 import { SettingsModal } from '../components/SettingsModal'
 import { SyncModal } from '../components/SyncModal'
 import { ShiftRosterOverlay } from '../components/ShiftRosterOverlay'
@@ -593,12 +594,25 @@ export function CalendarPage() {
   const [editingTodayShiftRow, setEditingTodayShiftRow] = useState<'dayWorker' | 'day' | 'night' | null>(null)
   const [editingTodayShiftDraft, setEditingTodayShiftDraft] = useState('')
   const calendarRef = useRef<FullCalendar | null>(null)
+  const calendarPanelRef = useRef<HTMLElement>(null)
+  const requestedMonthRef = useRef<DateTime | null>(null)
+  const turnCalendarPage = useCalendarPageTurn(calendarPanelRef)
+  const navigateCalendarMonth = useCallback(async (target: DateTime) => {
+    const api = calendarRef.current?.getApi()
+    if (!api || !target.isValid) return
+    const current = (requestedMonthRef.current ?? DateTime.fromJSDate(api.getDate())).startOf('month')
+    const next = target.startOf('month')
+    if (current.toMillis() === next.toMillis()) return
+    requestedMonthRef.current = next
+    try { await turnCalendarPage(next > current ? 'next' : 'prev', () => api.gotoDate(next.toJSDate())) }
+    finally { if (requestedMonthRef.current === next) requestedMonthRef.current = null }
+  }, [turnCalendarPage])
   useEffect(() => window.voiceApi.onControl(async (control) => {
     if (control.type === 'REFRESH') {
       await hydrate()
       return 'PC 일정을 새로 불러왔습니다.'
     }
-    if (editingEvent || editingShiftBadge || editingShiftSummary || editingTitleEventId || abbreviationModal || substitutionFlow || editingMonthField) return 'PC에서 편집 중입니다. 편집을 마친 뒤 화면 이동을 다시 요청해 주세요.'
+    if (editingEvent || editingShiftBadge || editingShiftSummary || editingTitleEventId || abbreviationModal || substitutionFlow || editingMonthField) throw new Error('PC에서 편집 중입니다. 편집을 마친 뒤 화면 이동을 다시 요청해 주세요.')
     setRadialMenu(null)
     setSettingsOpen(control.type === 'OPEN_SETTINGS')
     setSyncOpen(control.type === 'OPEN_SYNC')
@@ -610,13 +624,13 @@ export function CalendarPage() {
     if (control.type === 'OPEN_CALENDAR') return 'PC 캘린더를 표시했습니다.'
     const api = calendarRef.current?.getApi()
     if (!api) throw new Error('캘린더가 준비되지 않았습니다.')
-    if (control.type === 'NEXT_MONTH') api.next()
-    if (control.type === 'PREVIOUS_MONTH') api.prev()
-    if (control.type === 'TODAY') api.today()
-    if (control.type === 'GOTO_DATE' && control.date) api.gotoDate(control.date)
+    const current = requestedMonthRef.current ?? DateTime.fromJSDate(api.getDate())
+    if (control.type === 'NEXT_MONTH') await navigateCalendarMonth(current.plus({ months: 1 }))
+    if (control.type === 'PREVIOUS_MONTH') await navigateCalendarMonth(current.minus({ months: 1 }))
+    if (control.type === 'TODAY') await navigateCalendarMonth(DateTime.local())
+    if (control.type === 'GOTO_DATE' && control.date) await navigateCalendarMonth(DateTime.fromISO(control.date))
     return `PC 캘린더를 ${DateTime.fromJSDate(api.getDate()).toFormat('yyyy년 M월')}로 이동했습니다.`
-  }), [hydrate, editingEvent, editingShiftBadge, editingShiftSummary, editingTitleEventId, abbreviationModal, substitutionFlow, editingMonthField])
-  const calendarPanelRef = useRef<HTMLElement>(null)
+  }), [hydrate, editingEvent, editingShiftBadge, editingShiftSummary, editingTitleEventId, abbreviationModal, substitutionFlow, editingMonthField, navigateCalendarMonth])
   const eventsRef = useRef<CalendarEvent[]>(events)
   const allEventsRef = useRef<CalendarEvent[]>(allEvents)
   const legacyRoutineMigrationRunningRef = useRef(false)
@@ -1569,15 +1583,9 @@ export function CalendarPage() {
     if (!calendarApi) {
       return
     }
-    if (direction === 'prev') {
-      calendarApi.prev()
-      return
-    }
-    if (direction === 'next') {
-      calendarApi.next()
-      return
-    }
-    calendarApi.today()
+    const current = requestedMonthRef.current ?? DateTime.fromJSDate(calendarApi.getDate())
+    void navigateCalendarMonth(direction === 'today' ? DateTime.local()
+      : direction === 'prev' ? current.minus({ months: 1 }) : current.plus({ months: 1 }))
   }
 
   const startMonthFieldEdit = (field: 'year' | 'month') => {
@@ -1601,10 +1609,7 @@ export function CalendarPage() {
     if (Number.isFinite(parsed)) {
       const year = field === 'year' ? Math.min(2999, Math.max(1900, parsed)) : visibleMonth.year
       const month = field === 'month' ? Math.min(12, Math.max(1, parsed)) : visibleMonth.month
-      const calendarApi = calendarRef.current?.getApi()
-      if (calendarApi) {
-        calendarApi.gotoDate(DateTime.local(year, month, 1).toJSDate())
-      }
+      void navigateCalendarMonth(DateTime.local(year, month, 1))
     }
     cancelMonthFieldEdit()
   }
