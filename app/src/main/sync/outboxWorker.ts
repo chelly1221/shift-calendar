@@ -1,9 +1,10 @@
 import { OutboxStatus, OutboxOperationType, SyncState, type Prisma } from '@prisma/client'
 import { DateTime } from 'luxon'
 import type { OutboxOperation, SendUpdates } from '../../shared/calendar'
+import { LOCAL_SERIES_PREFIX } from '../../shared/expandRecurrence'
 import { getCalendarEventByLocalId, updateEventSyncState, upsertRemoteEvent } from '../db/eventRepository'
 import { prisma } from '../db/prisma'
-import { getSelectedCalendar, getShiftSettings } from '../db/settingRepository'
+import { getSelectedCalendar, getShiftSettings, isCalendarSwitching } from '../db/settingRepository'
 import { createGoogleCalendarService, type ShiftContext } from '../google/calendarService'
 import { isGoogleConnected } from '../google/oauthClient'
 import { classifyGoogleError } from '../google/oauthErrors'
@@ -19,9 +20,13 @@ interface OutboxPayload {
 const RETRY_DELAYS_MS = [60_000, 5 * 60_000, 15 * 60_000, 60 * 60_000]
 const MAX_RETRY_LIFETIME_MS = 30 * 24 * 60 * 60 * 1000
 let timer: NodeJS.Timeout | null = null
-let isProcessing = false
+let processingPromise: Promise<number> | null = null
 let pendingFlush = false
 let isStopped = false
+
+export function isOutboxProcessing(): boolean {
+  return processingPromise !== null
+}
 
 export function requestOutboxFlush(): void {
   void processOutboxNow().catch((error) => {
@@ -163,6 +168,12 @@ async function processJob(jobId: string): Promise<boolean> {
   const operation = job.operation as OutboxOperation
   const payload = asObjectPayload(job.payloadJson)
   const localEvent = job.eventLocalId ? await getCalendarEventByLocalId(job.eventLocalId) : null
+  const seriesId = payload.recurringEventId ?? localEvent?.recurringEventId
+  if (seriesId?.startsWith(LOCAL_SERIES_PREFIX)) {
+    const master = await getCalendarEventByLocalId(seriesId.slice(LOCAL_SERIES_PREFIX.length))
+    if (!master?.googleEventId) throw new Error('Recurring master is waiting to sync.')
+    payload.recurringEventId = master.googleEventId
+  }
 
   if (operation !== 'DELETE' && !localEvent) {
     await cancelJob(job.id, 'Cancelled: local event not found.')
@@ -177,7 +188,9 @@ async function processJob(jobId: string): Promise<boolean> {
     if (remoteSnapshot?.googleUpdatedAtUtc && localEvent) {
       const remoteDt = DateTime.fromISO(remoteSnapshot.googleUpdatedAtUtc, { zone: 'utc' })
       const localDt = DateTime.fromISO(localEvent.localEditedAtUtc, { zone: 'utc' })
-      if (remoteDt.isValid && localDt.isValid && remoteDt.toMillis() > localDt.toMillis()) {
+      const knownRemoteMs = localEvent.googleUpdatedAtUtc ? Date.parse(localEvent.googleUpdatedAtUtc) : 0
+      if (remoteDt.isValid && localDt.isValid && remoteDt.toMillis() > localDt.toMillis()
+        && remoteDt.toMillis() > knownRemoteMs) {
         await upsertRemoteEvent(remoteSnapshot)
         await cancelJob(job.id, 'Cancelled: remote version is newer or equal.')
         return true
@@ -205,11 +218,19 @@ async function processJob(jobId: string): Promise<boolean> {
   const pushResult = await google.pushLocalChange(operation, localEvent, payload, shiftContext)
 
   if (job.eventLocalId) {
+    const remainingJobs = await prisma.outboxJob.count({
+      where: {
+        eventLocalId: job.eventLocalId,
+        id: { not: job.id },
+        status: { in: [OutboxStatus.QUEUED, OutboxStatus.RUNNING, OutboxStatus.FAILED] },
+      },
+    })
     const shouldAdoptGoogleEventId =
       Boolean(pushResult.googleEventId)
       && !localEvent?.googleEventId
     await updateEventSyncState(job.eventLocalId, {
-      syncState: SyncState.CLEAN,
+      syncState: remainingJobs > 0 ? SyncState.PENDING : SyncState.CLEAN,
+      expectedLocalEditedAtUtc: localEvent?.localEditedAtUtc,
       googleEventId: shouldAdoptGoogleEventId ? (pushResult.googleEventId ?? undefined) : undefined,
       googleUpdatedAtUtc: pushResult.googleUpdatedAtUtc ?? undefined,
     })
@@ -245,7 +266,7 @@ export async function enqueueOutboxOperation(input: {
       orderBy: { createdAt: 'asc' },
     })
 
-    if (existing && !existing.dependsOnOutboxId) {
+    if (existing && !existing.dependsOnOutboxId && !input.dependsOnOutboxId) {
       await prisma.outboxJob.update({
         where: { id: existing.id },
         data: {
@@ -255,6 +276,7 @@ export async function enqueueOutboxOperation(input: {
           lastError: null,
         },
       })
+      await updateEventSyncState(input.eventLocalId, { syncState: SyncState.PENDING })
       requestOutboxFlush()
       return existing.id
     }
@@ -326,26 +348,28 @@ export async function cancelOutboxJob(jobId: string): Promise<boolean> {
   return true
 }
 
-export async function processOutboxNow(): Promise<number> {
-  if (isProcessing) {
+export function processOutboxNow(): Promise<number> {
+  if (processingPromise) {
     pendingFlush = true
-    return 0
+    return processingPromise
   }
-  isProcessing = true
-  try {
-    let total = 0
-    do {
-      pendingFlush = false
-      total += await doProcessOutbox()
-    } while (pendingFlush)
-    return total
-  } finally {
-    isProcessing = false
-  }
+  processingPromise = (async () => {
+    try {
+      let total = 0
+      do {
+        pendingFlush = false
+        total += await doProcessOutbox()
+      } while (pendingFlush && !isStopped)
+      return total
+    } finally {
+      processingPromise = null
+    }
+  })()
+  return processingPromise
 }
 
 async function doProcessOutbox(): Promise<number> {
-  if (isStopped) {
+  if (isStopped || isCalendarSwitching()) {
     return 0
   }
 
@@ -380,6 +404,7 @@ async function doProcessOutbox(): Promise<number> {
 
   // Process all jobs due now.
   for (;;) {
+    if (isStopped) break
     const next = await findNextDueJob()
     if (!next) {
       break
@@ -474,9 +499,9 @@ export function startOutboxWorker(): void {
   }
 
   isStopped = false
-  void processOutboxNow()
+  requestOutboxFlush()
   timer = setInterval(() => {
-    void processOutboxNow()
+    requestOutboxFlush()
   }, 60_000)
 }
 

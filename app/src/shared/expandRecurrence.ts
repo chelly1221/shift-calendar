@@ -5,6 +5,7 @@ import { parseRRuleSegments, parseUntilToUtcIso } from './rrule'
 import type { WeekdayCode } from './rrule'
 
 export const VIRTUAL_INSTANCE_PREFIX = 'v::'
+export const LOCAL_SERIES_PREFIX = 'local::'
 /** @deprecated kept for backwards compatibility with persisted IDs */
 const LEGACY_VIRTUAL_PREFIX = 'virtual::'
 
@@ -107,10 +108,9 @@ function* generateOccurrences(options: OccurrenceGeneratorOptions): Generator<Da
       // Nth weekday of month (e.g., 2nd Tuesday)
       let cursor = masterStartLocal.startOf('month')
       while (cursor <= effectiveEnd) {
-        for (const dayCode of byday) {
-          const nthResult = nthWeekdayOfMonth(cursor.year, cursor.month, WEEKDAY_TO_LUXON[dayCode], bysetpos, masterStartLocal)
-          if (!nthResult) continue
-          if (nthResult < masterStartLocal) { /* skip before master start */ }
+        {
+          const nthResult = nthWeekdayOfMonth(cursor.year, cursor.month, byday.map((day) => WEEKDAY_TO_LUXON[day]), bysetpos, masterStartLocal)
+          if (!nthResult || nthResult < masterStartLocal) { /* skip before master start or missing position */ }
           else if (nthResult > effectiveEnd) { /* skip after range end */ }
           else {
             if (count !== null && yielded >= count) return
@@ -130,8 +130,9 @@ function* generateOccurrences(options: OccurrenceGeneratorOptions): Generator<Da
     while (cursor <= effectiveEnd) {
       for (const day of days) {
         const daysInMonth = cursor.daysInMonth ?? 31
-        if (day > daysInMonth) continue
-        const candidate = cursor.set({ day }).set({
+        const monthDay = day < 0 ? daysInMonth + day + 1 : day
+        if (monthDay < 1 || monthDay > daysInMonth) continue
+        const candidate = cursor.set({ day: monthDay }).set({
           hour: masterStartLocal.hour,
           minute: masterStartLocal.minute,
           second: masterStartLocal.second,
@@ -153,7 +154,7 @@ function* generateOccurrences(options: OccurrenceGeneratorOptions): Generator<Da
     const masterMonth = masterStartLocal.month
     const masterDay = masterStartLocal.day
     let cursorYear = masterStartLocal.year
-    while (true) {
+    while (cursorYear <= effectiveEnd.year) {
       if (count !== null && yielded >= count) break
       if (yielded >= MAX_INSTANCES_PER_MASTER) break
       // For Feb 29 events, skip non-leap years
@@ -180,7 +181,7 @@ function* generateOccurrences(options: OccurrenceGeneratorOptions): Generator<Da
 function nthWeekdayOfMonth(
   year: number,
   month: number,
-  weekday: number,
+  weekdays: number[],
   setpos: number,
   masterStartLocal: DateTime,
 ): DateTime | null {
@@ -194,7 +195,7 @@ function nthWeekdayOfMonth(
     let found = 0
     for (let day = 1; day <= daysInMonth; day++) {
       const dt = firstOfMonth.set({ day })
-      if (dt.weekday === weekday) {
+      if (weekdays.includes(dt.weekday)) {
         found++
         if (found === setpos) {
           return dt.set({
@@ -214,7 +215,7 @@ function nthWeekdayOfMonth(
   let found = 0
   for (let day = daysInMonth; day >= 1; day--) {
     const dt = firstOfMonth.set({ day })
-    if (dt.weekday === weekday) {
+    if (weekdays.includes(dt.weekday)) {
       found++
       if (found === absPos) {
         return dt.set({
@@ -254,13 +255,30 @@ export function expandRecurringEvents(
   rangeEndUtc: string,
   holidayDates?: Set<string>,
 ): CalendarEvent[] {
+  const mastersById = new Map<string, CalendarEvent>()
+  for (const event of events) {
+    if (event.recurrenceRule && !event.recurringEventId && !event.isDeleted) {
+      mastersById.set(`${LOCAL_SERIES_PREFIX}${event.localId}`, event)
+      if (event.googleEventId) mastersById.set(event.googleEventId, event)
+    }
+  }
+  const replacedInstances = new Set<string>()
   // Collect googleEventIds that already have child instances
-  const masterIdsWithInstances = new Set<string>()
+
   // Track cancelled/override instance timestamps per master googleEventId
   const cancelledTimestamps = new Map<string, Set<string>>()
   for (const event of events) {
     if (event.recurringEventId) {
-      masterIdsWithInstances.add(event.recurringEventId)
+
+      const master = mastersById.get(event.recurringEventId)
+      const isUnmodified = master && !event.isDeleted
+        && Date.parse(event.startAtUtc) === Date.parse(event.originalStartTimeUtc ?? '')
+        && event.summary === master.summary && event.description === master.description
+        && event.location === master.location && event.eventType === master.eventType
+      if (master?.skipWeekendsAndHolidays && holidayDates && isUnmodified) {
+        replacedInstances.add(event.localId)
+        continue
+      }
       if (event.originalStartTimeUtc) {
         let timestamps = cancelledTimestamps.get(event.recurringEventId)
         if (!timestamps) {
@@ -272,38 +290,16 @@ export function expandRecurringEvents(
     }
   }
 
-  // Identify masters that need virtual expansion despite having Google instances
-  // (skipWeekendsAndHolidays requires virtual expansion to apply the shift)
-  const mastersNeedingVirtualExpansion = new Set<string>()
-  for (const event of events) {
-    if (
-      event.recurrenceRule
-      && !event.recurringEventId
-      && event.skipWeekendsAndHolidays
-      && holidayDates
-      && event.googleEventId
-      && masterIdsWithInstances.has(event.googleEventId)
-    ) {
-      mastersNeedingVirtualExpansion.add(event.googleEventId)
-    }
-  }
-
   const result: CalendarEvent[] = []
 
   for (const event of events) {
+    if (event.isDeleted) continue
     // Not a master event → keep as-is (but skip Google instances for masters being re-expanded)
     if (!event.recurrenceRule || event.recurringEventId) {
-      if (event.recurringEventId && mastersNeedingVirtualExpansion.has(event.recurringEventId)) {
+      if (replacedInstances.has(event.localId)) {
         // Skip Google instances — virtual expansion with shift will replace them
         continue
       }
-      result.push(event)
-      continue
-    }
-
-    // Master has real instances from Google and does NOT need shift → keep master as-is
-    if (event.googleEventId && masterIdsWithInstances.has(event.googleEventId)
-      && !mastersNeedingVirtualExpansion.has(event.googleEventId)) {
       result.push(event)
       continue
     }
@@ -316,14 +312,14 @@ export function expandRecurringEvents(
       continue
     }
 
-    const interval = Number.parseInt(segments.get('INTERVAL') ?? '1', 10) || 1
+    const interval = Math.max(1, Number.parseInt(segments.get('INTERVAL') ?? '1', 10) || 1)
     const countStr = segments.get('COUNT')
     const count = countStr ? Number.parseInt(countStr, 10) : null
     const untilStr = parseUntilToUtcIso(segments.get('UNTIL'))
 
     const bydayStr = segments.get('BYDAY')
     const byday: WeekdayCode[] = bydayStr
-      ? (bydayStr.split(',').map((s) => s.trim().replace(/^[+-]?\d+/, '').toUpperCase()).filter(Boolean) as WeekdayCode[])
+      ? bydayStr.split(',').map((s) => s.trim().replace(/^[+-]?\d+/, '').toUpperCase()).filter((day): day is WeekdayCode => day in WEEKDAY_TO_LUXON)
       : []
 
     const bymonthdayStr = segments.get('BYMONTHDAY')
@@ -332,7 +328,8 @@ export function expandRecurringEvents(
       : []
 
     const bysetposStr = segments.get('BYSETPOS')
-    const bysetpos = bysetposStr ? Number.parseInt(bysetposStr, 10) : null
+    const ordinalByDay = bydayStr?.match(/^([+-]?\d+)(?:MO|TU|WE|TH|FR|SA|SU)$/i)?.[1]
+    const bysetpos = bysetposStr || ordinalByDay ? Number.parseInt(bysetposStr ?? ordinalByDay!, 10) : null
 
     const zone = event.timeZone || 'UTC'
     const masterStartLocal = DateTime.fromISO(event.startAtUtc, { zone: 'utc' }).setZone(zone)
@@ -343,12 +340,12 @@ export function expandRecurringEvents(
     const untilLocal = untilStr ? DateTime.fromISO(untilStr, { zone: 'utc' }).setZone(zone) : null
 
     // Build set of cancelled/override timestamps for this master.
-    // When re-expanding a Google-synced master for shift, skip cancelled timestamp filtering
-    // because ALL Google instances (not just cancelled ones) contribute to cancelledTimestamps.
-    const isVirtualReExpansion = event.googleEventId && mastersNeedingVirtualExpansion.has(event.googleEventId)
-    const masterCancelledTs = !isVirtualReExpansion && event.googleEventId
-      ? cancelledTimestamps.get(event.googleEventId)
-      : undefined
+
+
+    const masterCancelledTs = new Set([
+      ...(cancelledTimestamps.get(event.googleEventId ?? '') ?? []),
+      ...(cancelledTimestamps.get(`${LOCAL_SERIES_PREFIX}${event.localId}`) ?? []),
+    ])
 
     const shouldShift = event.skipWeekendsAndHolidays && holidayDates
 
@@ -385,14 +382,6 @@ export function expandRecurringEvents(
 
       const wasShifted = effectiveLocal.toMillis() !== occurrenceLocal.toMillis()
 
-      // Skip occurrences that match a cancelled/override instance
-      const originalUtcMs = occurrenceLocal.toUTC().toMillis().toString()
-      if (masterCancelledTs?.has(originalUtcMs)) continue
-
-      // Skip occurrences before range
-      const occEndMs = effectiveLocal.toMillis() + durationMs
-      if (occEndMs < rangeStartMs) continue
-
       candidates.push({ occurrenceLocal, effectiveLocal, wasShifted })
 
       // For non-shift mode, respect count naturally
@@ -426,6 +415,9 @@ export function expandRecurringEvents(
     }
 
     for (const { occurrenceLocal, effectiveLocal, wasShifted } of emitted) {
+      if (masterCancelledTs.has(occurrenceLocal.toMillis().toString())) continue
+      // COUNT belongs to the entire series, including occurrences before the visible range.
+      if (effectiveLocal.toMillis() + durationMs < rangeStartMs) continue
       const occStartUtc = effectiveLocal.toUTC()
       const occEndUtc = DateTime.fromMillis(effectiveLocal.toMillis() + durationMs, { zone: 'utc' })
       const occStartUtcIso = occStartUtc.toISO()!

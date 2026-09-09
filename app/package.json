@@ -10,7 +10,9 @@
     "dev": "vite",
     "pretype-check": "npm run prisma:generate",
     "type-check": "tsc --noEmit",
-    "prebuild": "npm run prisma:generate",
+    "test": "vitest run",
+    "prebuild": "npm run stop:app && npm run prisma:generate",
+    "stop:app": "node scripts/stop-running-app.cjs",
     "build": "tsc && vite build && electron-builder",
     "lint": "eslint . --ext ts,tsx --report-unused-disable-directives --max-warnings 0",
     "preview": "vite preview"

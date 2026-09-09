@@ -1,5 +1,6 @@
 import { contextBridge, ipcRenderer } from 'electron'
 import { IPC_CHANNELS } from '../main/ipc/channels'
+import { VOICE_CHANNELS, voiceControlSchema, type VoiceApi } from '../shared/voice'
 import type {
   CancelOutboxJobInput,
   CalendarApi,
@@ -72,6 +73,24 @@ const calendarApi: CalendarApi = {
 }
 
 contextBridge.exposeInMainWorld('calendarApi', calendarApi)
+
+const voiceApi: VoiceApi = {
+  getConnection: () => ipcRenderer.invoke(VOICE_CHANNELS.getConnection),
+  setEnabled: (enabled: boolean) => ipcRenderer.invoke(VOICE_CHANNELS.setEnabled, enabled),
+  onControl: (callback) => {
+    const handler = (_event: Electron.IpcRendererEvent, payload: { id: string; control: unknown }) => {
+      const control = voiceControlSchema.safeParse(payload?.control)
+      if (!control.success || typeof payload.id !== 'string') return
+      void callback(control.data).then(
+        (text) => ipcRenderer.send(VOICE_CHANNELS.controlResult, { id: payload.id, text, failed: false }),
+        () => ipcRenderer.send(VOICE_CHANNELS.controlResult, { id: payload.id, text: 'PC 화면 처리 실패', failed: true }),
+      )
+    }
+    ipcRenderer.on(VOICE_CHANNELS.control, handler)
+    return () => ipcRenderer.removeListener(VOICE_CHANNELS.control, handler)
+  },
+}
+contextBridge.exposeInMainWorld('voiceApi', voiceApi)
 
 contextBridge.exposeInMainWorld('windowApi', {
   minimize: () => ipcRenderer.send(IPC_CHANNELS.windowMinimize),

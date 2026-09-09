@@ -22,6 +22,7 @@
     "node_modules/keytar/**"
   ],
   "icon": "build/icon.ico",
+  "extraResources": [{ "from": "build/icon.ico", "to": "icon.ico" }],
   "win": {
     "target": [
       {

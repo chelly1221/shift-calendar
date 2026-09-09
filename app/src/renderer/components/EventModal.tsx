@@ -16,7 +16,7 @@ interface EventModalProps {
   memberNames: string[]
   onClose: () => void
   onSave: (event: EditableEvent) => Promise<void>
-  onDelete: (localId: string, sendUpdates: SendUpdates, recurrenceScope?: RecurrenceEditScope) => Promise<void>
+  onDelete: (localId: string, sendUpdates: SendUpdates, recurrenceScope?: RecurrenceEditScope, originalStartTimeUtc?: string) => Promise<void>
 }
 
 const EDUCATION_TARGET_PREFIX = '교육대상: '
@@ -579,6 +579,7 @@ export function EventModal({ open, value, memberNames, onClose, onSave, onDelete
                       localId,
                       sendUpdates,
                       hasRecurringContext ? recurrenceScope : undefined,
+                      originalStartTimeUtc ?? value?.startAtUtc,
                     )
                   } catch (err) {
                     console.error('Failed to delete event:', err)

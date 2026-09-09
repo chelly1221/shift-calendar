@@ -1,3 +1,4 @@
+import { buildShiftDaySummary, parseShiftTeamsFromSummary, parseShiftDescriptionState, serializeShiftDescriptionState } from '../../shared/shiftSummary'
 import FullCalendar from '@fullcalendar/react'
 import dayGridPlugin from '@fullcalendar/daygrid'
 import interactionPlugin from '@fullcalendar/interaction'
@@ -26,6 +27,7 @@ import type { ViewMode } from '../gesture/handPoseMode'
 import { useCalendarStore } from '../state/useCalendarStore'
 
 const LEGACY_ROUTINE_COMPLETIONS_KEY = 'routineCompletions'
+const eventTipCleanups = new WeakMap<HTMLElement, () => void>()
 const HAND_GESTURE_ENABLED_KEY = 'handGestureEnabled'
 const LEGACY_ROUTINE_COMPLETION_KEY_PATTERN = /^(.+)::(\d{4}-\d{2}-\d{2})$/
 const GIMPO_AIRPORT_WEATHER_URL =
@@ -322,17 +324,6 @@ const shiftTeamKeys = ['A', 'B', 'C', 'D'] as const
 type ShiftTeamKey = (typeof shiftTeamKeys)[number]
 type SubstitutionWorkType = '대리근무' | '대체근무'
 
-interface ShiftSubstitutionMeta {
-  substitute: string
-  type: SubstitutionWorkType
-  original: string
-}
-
-interface ShiftDescriptionState {
-  baseLines: string[]
-  substitutions: ShiftSubstitutionMeta[]
-}
-
 interface ShiftBadgeSelection {
   eventLocalId: string
   substitutionIndex: number
@@ -382,272 +373,6 @@ function parseShiftBadgeSelection(badgeEl: HTMLElement): ShiftBadgeSelection | n
   }
 }
 
-function parseShiftTeamsFromSummary(summary: string): { dayTeam: ShiftTeamKey; nightTeam: ShiftTeamKey } | null {
-  const normalized = summary.toUpperCase()
-  const separators = [...normalized.matchAll(/[/／]/g)]
-  const maxDistance = 12
-
-  for (const separator of separators) {
-    if (separator.index == null) {
-      continue
-    }
-
-    let dayTeam: ShiftTeamKey | null = null
-    for (let cursor = separator.index - 1; cursor >= 0 && separator.index - cursor <= maxDistance; cursor -= 1) {
-      const letter = normalized[cursor]
-      if (letter === 'A' || letter === 'B' || letter === 'C' || letter === 'D') {
-        dayTeam = letter
-        break
-      }
-    }
-
-    if (!dayTeam) {
-      continue
-    }
-
-    let nightTeam: ShiftTeamKey | null = null
-    for (
-      let cursor = separator.index + 1;
-      cursor < normalized.length && cursor - separator.index <= maxDistance;
-      cursor += 1
-    ) {
-      const letter = normalized[cursor]
-      if (letter === 'A' || letter === 'B' || letter === 'C' || letter === 'D') {
-        nightTeam = letter
-        break
-      }
-    }
-
-    if (!nightTeam) {
-      continue
-    }
-
-    return { dayTeam, nightTeam }
-  }
-
-  return null
-}
-
-function parseShiftDescriptionState(description: string): ShiftDescriptionState {
-  const lines = description
-    .split(/\r?\n/)
-    .map((line) => line.trim())
-    .filter((line) => line.length > 0)
-  const baseLines: string[] = []
-  const substitutions: ShiftSubstitutionMeta[] = []
-
-  for (let index = 0; index < lines.length; index += 1) {
-    const substituteMatch = lines[index].match(/^대체근무자\s*:\s*(.+)$/)
-    if (!substituteMatch) {
-      baseLines.push(lines[index])
-      continue
-    }
-
-    const typeMatch = lines[index + 1]?.match(/^근무종류\s*:\s*(대리근무|대체근무)$/)
-    const originalMatch = lines[index + 2]?.match(/^원근무자\s*:\s*(.+)$/)
-    if (!typeMatch || !originalMatch) {
-      baseLines.push(lines[index])
-      continue
-    }
-
-    const substitute = substituteMatch[1].trim()
-    const original = originalMatch[1].trim()
-    if (!substitute || !original) {
-      baseLines.push(lines[index])
-      continue
-    }
-
-    substitutions.push({
-      substitute,
-      type: typeMatch[1] as SubstitutionWorkType,
-      original,
-    })
-    index += 2
-  }
-
-  return {
-    baseLines,
-    substitutions,
-  }
-}
-
-function serializeShiftDescriptionState(state: ShiftDescriptionState): string {
-  const base = state.baseLines.map((line) => line.trim()).filter((line) => line.length > 0)
-  const substitutionLines = state.substitutions.flatMap((entry) => [
-    `대체근무자: ${entry.substitute}`,
-    `근무종류: ${entry.type}`,
-    `원근무자: ${entry.original}`,
-  ])
-  return [...base, ...substitutionLines].join('\n')
-}
-
-function collectShiftMembersWithSubstitutions(
-  teamKeys: ShiftTeamKey[],
-  teams: ShiftTeamAssignments,
-  substitutionsByTeamOriginal: Map<string, string>,
-): string[] {
-  const members: string[] = []
-  for (const teamKey of teamKeys) {
-    for (const rawName of teams[teamKey]) {
-      const originalName = rawName.trim()
-      if (!originalName) {
-        continue
-      }
-
-      const replacedName = substitutionsByTeamOriginal.get(`${teamKey}:${originalName}`)?.trim() || originalName
-      if (!replacedName || members.includes(replacedName)) {
-        continue
-      }
-      members.push(replacedName)
-    }
-  }
-  return members
-}
-
-/** 근무표 표시용 — 휴가/교육으로 빠지는 사람도 삭선+뱃지로 남겨둡니다. */
-interface RosterMember {
-  name: string
-  /** 휴가/교육 사유. null이면 정상 근무 */
-  absence: { kind: '휴가' | '교육'; label: string; /** 시간차 등 부분 휴가는 근무에서 빠지지 않음 */ partial: boolean } | null
-}
-
-interface ShiftDaySummary {
-  dateIso: string
-  dayTeams: ShiftTeamKey[]
-  nightTeams: ShiftTeamKey[]
-  /** 대체근무 반영 + 휴가/교육자 제외된 주간 근무자 (오늘 근무 카드용) */
-  dayMembers: string[]
-  /** 대체근무 반영 + 휴가/교육자 제외된 야간 근무자 (오늘 근무 카드용) */
-  nightMembers: string[]
-  /** 휴가/교육자 제외된 일근자 (주말·공휴일이면 빈 배열) */
-  dayWorkerNames: string[]
-  /** 근무표용 전체 명단 (휴가/교육자 포함, absence 표시) */
-  dayRoster: RosterMember[]
-  nightRoster: RosterMember[]
-  dayWorkerRoster: RosterMember[]
-  hideDayWorkers: boolean
-  hasShiftTeams: boolean
-}
-
-function eventCoversLocalDate(event: CalendarEvent, date: DateTime): boolean {
-  const start = DateTime.fromISO(event.startAtUtc).toLocal()
-  const end = DateTime.fromISO(event.endAtUtc).toLocal()
-  return start.startOf('day') <= date && end > date
-}
-
-/**
- * 특정 날짜의 근무자 구성을 계산합니다 (오늘 근무 카드·2주 근무표 공용).
- * contextEvents는 이미 반복 일정이 확장된 목록이어야 합니다.
- */
-function buildShiftDaySummary(
-  dateIso: string,
-  contextEvents: CalendarEvent[],
-  teams: ShiftTeamAssignments,
-  dayWorkers: string[],
-  publicHolidayMap: Map<string, string>,
-): ShiftDaySummary {
-  const date = DateTime.fromISO(dateIso).startOf('day')
-  const dayTeams: ShiftTeamKey[] = []
-  const nightTeams: ShiftTeamKey[] = []
-  const substitutionsByTeamOriginal = new Map<string, string>()
-
-  for (const event of contextEvents) {
-    if (event.eventType !== '근무') continue
-    if (DateTime.fromISO(event.startAtUtc).toLocal().toISODate() !== dateIso) continue
-    const parsed = parseShiftTeamsFromSummary(event.summary)
-    if (!parsed) {
-      continue
-    }
-    if (!dayTeams.includes(parsed.dayTeam)) {
-      dayTeams.push(parsed.dayTeam)
-    }
-    if (!nightTeams.includes(parsed.nightTeam)) {
-      nightTeams.push(parsed.nightTeam)
-    }
-
-    const dayMembers = teams[parsed.dayTeam].map((name) => name.trim()).filter(Boolean)
-    const nightMembers = teams[parsed.nightTeam].map((name) => name.trim()).filter(Boolean)
-    const parsedDescription = parseShiftDescriptionState(event.description ?? '')
-    for (const substitution of parsedDescription.substitutions) {
-      const original = substitution.original.trim()
-      const substitute = substitution.substitute.trim()
-      if (!original || !substitute) {
-        continue
-      }
-      const isDayMember = dayMembers.includes(original)
-      const isNightMember = nightMembers.includes(original)
-      const targetTeam = isDayMember ? parsed.dayTeam : isNightMember ? parsed.nightTeam : null
-      if (!targetTeam) {
-        continue
-      }
-      substitutionsByTeamOriginal.set(`${targetTeam}:${original}`, substitute)
-    }
-  }
-
-  // 근무 제외 대상(휴가/교육) 수집 — 시간차 휴가는 근무에서 빼지 않음(뱃지만 표시)
-  const absenceByName = new Map<string, RosterMember['absence']>()
-  for (const event of contextEvents) {
-    if (event.eventType !== '휴가') continue
-    if (!eventCoversLocalDate(event, date)) continue
-    const { targets, vacationType } = parseVacationInfo(event.description ?? '')
-    // 시간차·반차는 하루 일부만 쉬므로 근무에서 빼지 않고 뱃지만 표시 ("오후 시간차"처럼 앞에 수식어가 와도 인식)
-    const partial = Boolean(vacationType && (vacationType.includes('시간차') || vacationType.includes('반차')))
-    for (const name of targets) {
-      const trimmed = name.trim()
-      if (!trimmed) continue
-      const existing = absenceByName.get(trimmed)
-      // 전일 휴가가 시간차보다 우선
-      if (existing && !existing.partial) continue
-      absenceByName.set(trimmed, { kind: '휴가', label: vacationType ?? '휴가', partial })
-    }
-  }
-
-  for (const event of contextEvents) {
-    if (event.eventType !== '교육') continue
-    if (!eventCoversLocalDate(event, date)) continue
-    const { targets } = parseEducationTargets(event.description ?? '')
-    for (const name of targets) {
-      const trimmed = name.trim()
-      if (!trimmed) continue
-      const existing = absenceByName.get(trimmed)
-      if (existing && !existing.partial) continue
-      absenceByName.set(trimmed, { kind: '교육', label: '교육', partial: false })
-    }
-  }
-  const unavailableNames = new Set<string>()
-  for (const [name, absence] of absenceByName) {
-    if (absence && !absence.partial) unavailableNames.add(name)
-  }
-  const toRoster = (names: string[]): RosterMember[] =>
-    names.map((name) => ({ name, absence: absenceByName.get(name.trim()) ?? null }))
-
-  const isWeekend = date.weekday === 6 || date.weekday === 7
-  const isHoliday = publicHolidayMap.has(dateIso)
-  const hideDayWorkers = isWeekend || isHoliday
-
-  const allDayWorkers = hideDayWorkers ? [] : dayWorkers.filter((name) => name.trim().length > 0)
-  const dayWorkerNames = allDayWorkers.filter((name) => !unavailableNames.has(name.trim()))
-  const hasShiftTeams = dayTeams.length > 0 || nightTeams.length > 0
-
-  const allDayMembers = collectShiftMembersWithSubstitutions(dayTeams, teams, substitutionsByTeamOriginal)
-  const allNightMembers = collectShiftMembersWithSubstitutions(nightTeams, teams, substitutionsByTeamOriginal)
-  const dayMembers = allDayMembers.filter((name) => !unavailableNames.has(name.trim()))
-  const nightMembers = allNightMembers.filter((name) => !unavailableNames.has(name.trim()))
-
-  return {
-    dateIso,
-    dayTeams,
-    nightTeams,
-    dayMembers,
-    nightMembers,
-    dayWorkerNames,
-    dayRoster: toRoster(allDayMembers),
-    nightRoster: toRoster(allNightMembers),
-    dayWorkerRoster: toRoster(allDayWorkers),
-    hideDayWorkers,
-    hasShiftTeams,
-  }
-}
 
 function cloneShiftTeams(teams: ShiftTeamAssignments): ShiftTeamAssignments {
   return {
@@ -868,6 +593,29 @@ export function CalendarPage() {
   const [editingTodayShiftRow, setEditingTodayShiftRow] = useState<'dayWorker' | 'day' | 'night' | null>(null)
   const [editingTodayShiftDraft, setEditingTodayShiftDraft] = useState('')
   const calendarRef = useRef<FullCalendar | null>(null)
+  useEffect(() => window.voiceApi.onControl(async (control) => {
+    if (control.type === 'REFRESH') {
+      await hydrate()
+      return 'PC 일정을 새로 불러왔습니다.'
+    }
+    if (editingEvent || editingShiftBadge || editingShiftSummary || editingTitleEventId || abbreviationModal || substitutionFlow || editingMonthField) return 'PC에서 편집 중입니다. 편집을 마친 뒤 화면 이동을 다시 요청해 주세요.'
+    setRadialMenu(null)
+    setSettingsOpen(control.type === 'OPEN_SETTINGS')
+    setSyncOpen(control.type === 'OPEN_SYNC')
+    setRosterOpen(control.type === 'OPEN_ROSTER')
+    if (control.type === 'OPEN_SETTINGS') return 'PC 설정 화면을 열었습니다.'
+    if (control.type === 'OPEN_SYNC') return 'PC 동기화 화면을 열었습니다.'
+    if (control.type === 'OPEN_ROSTER') { setRosterOpen(true); return 'PC의 2주 근무표를 표시했습니다.' }
+    setRosterOpen(false)
+    if (control.type === 'OPEN_CALENDAR') return 'PC 캘린더를 표시했습니다.'
+    const api = calendarRef.current?.getApi()
+    if (!api) throw new Error('캘린더가 준비되지 않았습니다.')
+    if (control.type === 'NEXT_MONTH') api.next()
+    if (control.type === 'PREVIOUS_MONTH') api.prev()
+    if (control.type === 'TODAY') api.today()
+    if (control.type === 'GOTO_DATE' && control.date) api.gotoDate(control.date)
+    return `PC 캘린더를 ${DateTime.fromJSDate(api.getDate()).toFormat('yyyy년 M월')}로 이동했습니다.`
+  }), [hydrate, editingEvent, editingShiftBadge, editingShiftSummary, editingTitleEventId, abbreviationModal, substitutionFlow, editingMonthField])
   const calendarPanelRef = useRef<HTMLElement>(null)
   const eventsRef = useRef<CalendarEvent[]>(events)
   const allEventsRef = useRef<CalendarEvent[]>(allEvents)
@@ -943,27 +691,28 @@ export function CalendarPage() {
     sendUpdates: SendUpdates = 'none',
     recurrenceScope?: RecurrenceEditScope,
     trackUndo = true,
+    originalStartTimeUtc?: string,
   ) => {
     if (!trackUndo || applyingUndoRef.current) {
-      await deleteEvent(localId, sendUpdates, recurrenceScope)
+      await deleteEvent(localId, sendUpdates, recurrenceScope, originalStartTimeUtc)
       return
     }
 
     const beforeEvent = useCalendarStore.getState().allEvents.find((event) => event.localId === localId) ?? null
     if (!beforeEvent) {
-      await deleteEvent(localId, sendUpdates, recurrenceScope)
+      await deleteEvent(localId, sendUpdates, recurrenceScope, originalStartTimeUtc)
       return
     }
 
     const hasRecurringContext = Boolean(beforeEvent.recurrenceRule) || Boolean(beforeEvent.recurringEventId)
     const effectiveScope = hasRecurringContext ? (recurrenceScope ?? 'ALL') : 'ALL'
-    const shouldUseSnapshot = hasRecurringContext && (effectiveScope === 'ALL' || effectiveScope === 'FUTURE')
+    const shouldUseSnapshot = hasRecurringContext && (effectiveScope === 'ALL' || effectiveScope === 'FUTURE' || effectiveScope === 'THIS')
     if (shouldUseSnapshot) {
-      await runWithSnapshotUndoTracking(() => deleteEvent(localId, sendUpdates, recurrenceScope))
+      await runWithSnapshotUndoTracking(() => deleteEvent(localId, sendUpdates, recurrenceScope, originalStartTimeUtc))
       return
     }
 
-    await deleteEvent(localId, sendUpdates, recurrenceScope)
+    await deleteEvent(localId, sendUpdates, recurrenceScope, originalStartTimeUtc)
     const stillExists = useCalendarStore.getState().allEvents.some((event) => event.localId === localId)
     if (!stillExists) {
       pushUndoOperations([{
@@ -1608,7 +1357,7 @@ export function CalendarPage() {
     }
 
     return displays
-  }, [events, shiftTeamDrafts, allMemberNames, shiftSettings.teams, shiftSettings.abbreviations])
+  }, [events, shiftTeamDrafts, allMemberNames, shiftSettings.abbreviations])
 
   useEffect(() => {
     const frame = requestAnimationFrame(() => {
@@ -3089,16 +2838,17 @@ export function CalendarPage() {
               cancelInlineTitleEdit()
               setEditingEvent(toEditableEvent(selected, allEvents))
             }
-            ;(arg.el as any)._tipCleanup = () => {
+            eventTipCleanups.set(arg.el, () => {
               if (rafId) { cancelAnimationFrame(rafId); rafId = 0 }
               hideTip()
               arg.el.removeEventListener('pointerenter', showTip)
               arg.el.removeEventListener('pointermove', showTip)
               arg.el.removeEventListener('pointerleave', hideTip)
-            }
+            })
           }}
           eventWillUnmount={(arg) => {
-            ;(arg.el as any)._tipCleanup?.()
+            eventTipCleanups.get(arg.el)?.()
+            eventTipCleanups.delete(arg.el)
             arg.el.oncontextmenu = null
           }}
           dayCellContent={(arg) => {
@@ -3442,8 +3192,8 @@ export function CalendarPage() {
           await saveEventWithUndo(event)
           setEditingEvent(null)
         }}
-        onDelete={async (localId, sendUpdates, recurrenceScope) => {
-          await deleteEventWithUndo(localId, sendUpdates, recurrenceScope)
+        onDelete={async (localId, sendUpdates, recurrenceScope, originalStartTimeUtc) => {
+          await deleteEventWithUndo(localId, sendUpdates, recurrenceScope, true, originalStartTimeUtc)
           setEditingEvent(null)
         }}
       />

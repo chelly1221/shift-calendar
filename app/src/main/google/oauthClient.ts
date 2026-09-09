@@ -83,7 +83,6 @@ async function createOAuthClient(redirectUri: string): Promise<OAuth2Client> {
 async function waitForAuthorizationCode(timeoutMs = 180_000): Promise<{ code: string; redirectUri: string }> {
   return new Promise((resolve, reject) => {
     let settled = false
-    let timeoutId: ReturnType<typeof setTimeout>
     const server = createServer((request, response) => {
       const requestUrl = request.url ? new URL(request.url, 'http://127.0.0.1') : null
       const code = requestUrl?.searchParams.get('code')
@@ -180,7 +179,7 @@ async function waitForAuthorizationCode(timeoutMs = 180_000): Promise<{ code: st
       }
     })
 
-    timeoutId = setTimeout(() => {
+    const timeoutId = setTimeout(() => {
       if (!settled) {
         settled = true
         server.close()

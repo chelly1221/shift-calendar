@@ -65,6 +65,13 @@ describe('isReauthOAuthErrorCode / isPermanentOAuthErrorCode', () => {
 })
 
 describe('classifyGoogleError', () => {
+  it.each(['rateLimitExceeded', 'userRateLimitExceeded', 'quotaExceeded'])('retries Google 403 %s errors', (reason) => {
+    expect(classifyGoogleError({ response: { status: 403, data: { error: { errors: [{ reason }] } } } })).toBe('RATE_LIMITED')
+  })
+
+  it.each([null, undefined, 'network error'])('handles an unstructured rejection: %s', (error) => {
+    expect(classifyGoogleError(error)).toBe('TRANSIENT')
+  })
   it('GoogleAuthError는 AUTH_REQUIRED로 분류한다', () => {
     const err = new GoogleAuthError('재인증', { code: 'invalid_grant', needsReauth: true })
     expect(classifyGoogleError(err)).toBe('AUTH_REQUIRED')

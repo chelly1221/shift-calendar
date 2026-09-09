@@ -1,11 +1,13 @@
 import { OutboxOperationType, OutboxStatus, Prisma, SyncState } from '@prisma/client'
 import type { CalendarEvent, ListEventsInput, UpsertCalendarEventInput } from '../../shared/calendar'
 import { splitRRuleForFuture, withoutRRuleEnd } from '../../shared/rrule'
+import { LOCAL_SERIES_PREFIX } from '../../shared/expandRecurrence'
 import { prisma } from './prisma'
 
 export interface RemoteEventSnapshot {
   googleEventId: string
   eventType: string
+  eventTypeIsExplicit?: boolean
   summary: string
   description: string
   location: string
@@ -133,6 +135,7 @@ function toCalendarEvent(event: {
   googleUpdatedAtUtc: Date | null
   localEditedAtUtc: Date
   syncState: SyncState
+  isDeleted?: boolean
 }): CalendarEvent {
   return {
     localId: event.localId,
@@ -154,11 +157,13 @@ function toCalendarEvent(event: {
     googleUpdatedAtUtc: toIsoOrNull(event.googleUpdatedAtUtc),
     localEditedAtUtc: event.localEditedAtUtc.toISOString(),
     syncState: event.syncState,
+    isDeleted: event.isDeleted ?? false,
   }
 }
 
 function buildRangeFilter(input?: ListEventsInput): Prisma.EventWhereInput {
-  const where: Prisma.EventWhereInput = { isDeleted: false }
+  // Deleted instances are tombstones needed to suppress virtual recurrence occurrences.
+  const where: Prisma.EventWhereInput = { OR: [{ isDeleted: false }, { recurringEventId: { not: null } }] }
   if (!input?.rangeStartUtc && !input?.rangeEndUtc) {
     return where
   }
@@ -176,13 +181,10 @@ function buildRangeFilter(input?: ListEventsInput): Prisma.EventWhereInput {
   return where
 }
 
-const LIST_EVENTS_MAX = 10_000
-
 export async function listCalendarEvents(input?: ListEventsInput): Promise<CalendarEvent[]> {
   const events = await prisma.event.findMany({
     where: buildRangeFilter(input),
     orderBy: { startAtUtc: 'asc' },
-    take: LIST_EVENTS_MAX,
   })
   return events.map(toCalendarEvent)
 }
@@ -341,16 +343,6 @@ export async function applyFutureSplitForDelete(
     throw new Error('FUTURE delete split requires recurring master event with RRULE.')
   }
 
-  // Cannot split by recurringEventId when master has no googleEventId
-  // Just mark the source as deleted
-  if (!source.googleEventId) {
-    const updated = await prisma.event.update({
-      where: { localId: source.localId },
-      data: { isDeleted: true, localEditedAtUtc: new Date(), syncState: SyncState.PENDING },
-    })
-    return { splitSourceEvent: toCalendarEvent(updated) }
-  }
-
   const splitRule = splitRRuleForFuture(sourceRule, splitStartUtc)
   const sourceSkipFlag = parseSkipWeekendsAndHolidays(source.recurrenceJson)
   const cutoffTime = new Date()
@@ -368,7 +360,7 @@ export async function applyFutureSplitForDelete(
 
     await tx.event.updateMany({
       where: {
-        recurringEventId: source.googleEventId,
+        recurringEventId: { in: [source.googleEventId, `${LOCAL_SERIES_PREFIX}${source.localId}`].filter((id): id is string => Boolean(id)) },
         startAtUtc: { gte: splitStart },
         isDeleted: false,
       },
@@ -382,7 +374,7 @@ export async function applyFutureSplitForDelete(
     // Create DELETE outbox jobs for each deleted instance that has a Google ID
     const deletedInstances = await tx.event.findMany({
       where: {
-        recurringEventId: source.googleEventId,
+        recurringEventId: { in: [source.googleEventId, `${LOCAL_SERIES_PREFIX}${source.localId}`].filter((id): id is string => Boolean(id)) },
         startAtUtc: { gte: splitStart },
         isDeleted: true,
         localEditedAtUtc: { gte: cutoffTime },
@@ -425,12 +417,12 @@ export async function removeCalendarEvent(localId: string): Promise<boolean> {
 
 export async function updateEventSyncState(
   localId: string,
-  input: { syncState: SyncState; googleUpdatedAtUtc?: string | null; googleEventId?: string | null },
+  input: { syncState: SyncState; googleUpdatedAtUtc?: string | null; googleEventId?: string | null; expectedLocalEditedAtUtc?: string },
 ): Promise<void> {
   await prisma.event.update({
     where: { localId },
     data: {
-      syncState: input.syncState,
+      syncState: input.expectedLocalEditedAtUtc ? undefined : input.syncState,
       googleUpdatedAtUtc:
         input.googleUpdatedAtUtc === undefined
           ? undefined
@@ -443,6 +435,13 @@ export async function updateEventSyncState(
           : input.googleEventId,
     },
   })
+  if (input.expectedLocalEditedAtUtc) {
+    // The network request may finish after the user saves another edit.
+    await prisma.event.updateMany({
+      where: { localId, localEditedAtUtc: normalizeDate(input.expectedLocalEditedAtUtc) },
+      data: { syncState: input.syncState },
+    })
+  }
 }
 
 export async function markEventDeletedByGoogle(googleEventId: string, googleUpdatedAtUtc?: string): Promise<void> {
@@ -457,69 +456,7 @@ export async function markEventDeletedByGoogle(googleEventId: string, googleUpda
 }
 
 export async function upsertRemoteEvent(snapshot: RemoteEventSnapshot): Promise<void> {
-  if (snapshot.isDeleted) {
-    await markEventDeletedByGoogle(snapshot.googleEventId, snapshot.googleUpdatedAtUtc)
-    return
-  }
-
-  await tryRelinkByLocalIdHint(prisma, snapshot)
-
-  const googleUpdatedAt = normalizeDate(snapshot.googleUpdatedAtUtc)
-
-  const existing = await prisma.event.findUnique({
-    where: { googleEventId: snapshot.googleEventId },
-    select: { eventType: true, syncState: true, isDeleted: true, localEditedAtUtc: true },
-  })
-
-  // Skip if local event has pending changes (e.g. pending deletion) that haven't synced yet
-  if (existing?.syncState === SyncState.PENDING) {
-    const remoteMs = googleUpdatedAt.getTime()
-    const localMs = existing.localEditedAtUtc.getTime()
-    if (localMs >= remoteMs) {
-      return  // Skip remote update, local is newer or equal
-    }
-  }
-
-  const snapshotType = normalizeEventType(snapshot.eventType)
-  const preservedEventType = (snapshotType !== '일반')
-    ? snapshotType
-    : (existing?.eventType && existing.eventType !== '일반')
-      ? existing.eventType
-      : snapshotType
-
-  const baseData = {
-    summary: snapshot.summary,
-    description: snapshot.description || null,
-    location: snapshot.location || null,
-    startAtUtc: normalizeDate(snapshot.startAtUtc),
-    endAtUtc: normalizeDate(snapshot.endAtUtc),
-    timeZone: snapshot.timeZone,
-    recurrenceJson: toRecurrenceJson(snapshot.recurrenceRule, snapshot.skipWeekendsAndHolidays),
-    recurringEventId: snapshot.recurringEventId,
-    originalStartTimeUtc: snapshot.originalStartTimeUtc
-      ? normalizeDate(snapshot.originalStartTimeUtc)
-      : null,
-    attendeesJson: toAttendeesJson(snapshot.attendees),
-    organizerEmail: snapshot.organizerEmail,
-    hangoutLink: snapshot.hangoutLink,
-    googleUpdatedAtUtc: googleUpdatedAt,
-    localEditedAtUtc: googleUpdatedAt,
-    syncState: SyncState.CLEAN,
-    isDeleted: false,
-  }
-
-  await prisma.event.upsert({
-    where: { googleEventId: snapshot.googleEventId },
-    create: {
-      googleEventId: snapshot.googleEventId,
-      eventType: snapshotType,
-      ...baseData,
-    },
-    update: {
-      eventType: preservedEventType,
-      ...baseData,
-    },
-  })
+  await prisma.$transaction(async (tx) => upsertRemoteEventInTx(tx, snapshot))
 }
 
 const UPSERT_BATCH_SIZE = 50
@@ -569,7 +506,45 @@ async function tryRelinkByLocalIdHint(
 }
 
 async function upsertRemoteEventInTx(tx: TxClient, snapshot: RemoteEventSnapshot): Promise<void> {
+  await tryRelinkByLocalIdHint(tx, snapshot)
+  const googleUpdatedAt = normalizeDate(snapshot.googleUpdatedAtUtc)
+  const existing = await tx.event.findUnique({
+    where: { googleEventId: snapshot.googleEventId },
+    select: { eventType: true, syncState: true, localEditedAtUtc: true, googleUpdatedAtUtc: true },
+  })
+
+  // Failed pushes still contain unsent edits. Deletions follow the same conflict rule.
+  if (existing && (
+    (existing.syncState !== SyncState.CLEAN && (
+      existing.localEditedAtUtc >= googleUpdatedAt
+      || (existing.googleUpdatedAtUtc && existing.googleUpdatedAtUtc >= googleUpdatedAt)
+    ))
+    || (existing.googleUpdatedAtUtc && existing.googleUpdatedAtUtc > googleUpdatedAt)
+  )) return
+
   if (snapshot.isDeleted) {
+    if (!existing && snapshot.recurringEventId && snapshot.originalStartTimeUtc) {
+      // Google can send a cancellation before this device has cached that occurrence.
+      await tx.event.upsert({
+        where: { googleEventId: snapshot.googleEventId },
+        create: {
+          googleEventId: snapshot.googleEventId,
+          eventType: normalizeEventType(snapshot.eventType),
+          summary: '(Cancelled)',
+          startAtUtc: normalizeDate(snapshot.originalStartTimeUtc),
+          endAtUtc: normalizeDate(snapshot.originalStartTimeUtc),
+          timeZone: snapshot.timeZone,
+          recurringEventId: snapshot.recurringEventId,
+          originalStartTimeUtc: normalizeDate(snapshot.originalStartTimeUtc),
+          googleUpdatedAtUtc: googleUpdatedAt,
+          localEditedAtUtc: googleUpdatedAt,
+          syncState: SyncState.CLEAN,
+          isDeleted: true,
+        },
+        update: { isDeleted: true, syncState: SyncState.CLEAN, googleUpdatedAtUtc: googleUpdatedAt },
+      })
+      return
+    }
     await tx.event.updateMany({
       where: { googleEventId: snapshot.googleEventId },
       data: {
@@ -581,25 +556,8 @@ async function upsertRemoteEventInTx(tx: TxClient, snapshot: RemoteEventSnapshot
     return
   }
 
-  await tryRelinkByLocalIdHint(tx, snapshot)
-
-  const googleUpdatedAt = normalizeDate(snapshot.googleUpdatedAtUtc)
-
-  const existing = await tx.event.findUnique({
-    where: { googleEventId: snapshot.googleEventId },
-    select: { eventType: true, syncState: true, isDeleted: true, localEditedAtUtc: true },
-  })
-
-  if (existing?.syncState === SyncState.PENDING) {
-    const remoteMs = googleUpdatedAt.getTime()
-    const localMs = existing.localEditedAtUtc.getTime()
-    if (localMs >= remoteMs) {
-      return  // Skip remote update, local is newer or equal
-    }
-  }
-
   const snapshotType = normalizeEventType(snapshot.eventType)
-  const preservedEventType = (snapshotType !== '일반')
+  const preservedEventType = (snapshotType !== '일반' || snapshot.eventTypeIsExplicit)
     ? snapshotType
     : (existing?.eventType && existing.eventType !== '일반')
       ? existing.eventType

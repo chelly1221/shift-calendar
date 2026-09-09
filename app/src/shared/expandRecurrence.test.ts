@@ -43,6 +43,47 @@ describe('expandRecurringEvents – skipWeekendsAndHolidays', () => {
   const rangeStartUtc = kstStartUtc('2026-03-16') // Monday
   const rangeEndUtc = kstEndUtc('2026-03-29')
 
+  it.each(['remote-master', 'local::test-1'])('keeps the rest of the series after one instance is cancelled (%s)', (recurringEventId) => {
+    const master = makeEvent({
+      googleEventId: recurringEventId === 'remote-master' ? recurringEventId : null,
+      startAtUtc: kstStartUtc('2026-03-16'), endAtUtc: kstEndUtc('2026-03-16'), recurrenceRule: 'FREQ=DAILY;COUNT=3',
+    })
+    const cancelled = makeEvent({ localId: 'cancelled', recurringEventId, originalStartTimeUtc: kstStartUtc('2026-03-17'), startAtUtc: kstStartUtc('2026-03-17'), endAtUtc: kstEndUtc('2026-03-17'), isDeleted: true })
+    expect(toDates(expandRecurringEvents([master, cancelled], rangeStartUtc, rangeEndUtc))).toEqual(['2026-03-16', '2026-03-18'])
+  })
+
+  it('preserves a moved override while expanding the remaining occurrences', () => {
+    const master = makeEvent({ googleEventId: 'remote-master', startAtUtc: kstStartUtc('2026-03-16'), endAtUtc: kstEndUtc('2026-03-16'), recurrenceRule: 'FREQ=DAILY;COUNT=3' })
+    const moved = makeEvent({ localId: 'moved', recurringEventId: 'remote-master', originalStartTimeUtc: kstStartUtc('2026-03-17'), startAtUtc: kstStartUtc('2026-03-20'), endAtUtc: kstEndUtc('2026-03-20') })
+    expect(toDates(expandRecurringEvents([master, moved], rangeStartUtc, rangeEndUtc)).sort()).toEqual(['2026-03-16', '2026-03-18', '2026-03-20'])
+  })
+
+  it.each([
+    ['FREQ=MONTHLY;BYDAY=MO,TU,WE,TH,FR;BYSETPOS=-1;COUNT=2', ['2026-03-31', '2026-04-30']],
+    ['FREQ=MONTHLY;BYDAY=2TU;COUNT=2', ['2026-03-10', '2026-04-14']],
+    ['FREQ=MONTHLY;BYMONTHDAY=-1;COUNT=2', ['2026-03-31', '2026-04-30']],
+  ])('expands monthly rule %s', (recurrenceRule, expected) => {
+    const master = makeEvent({ startAtUtc: kstStartUtc('2026-03-01'), endAtUtc: kstEndUtc('2026-03-01'), recurrenceRule })
+    expect(toDates(expandRecurringEvents([master], kstStartUtc('2026-03-01'), kstEndUtc('2026-04-30')))).toEqual(expected)
+  })
+
+  it('does not restart COUNT when the displayed range moves past the series end', () => {
+    const master = makeEvent({
+      startAtUtc: kstStartUtc('2026-03-19'), endAtUtc: kstEndUtc('2026-03-19'),
+      recurrenceRule: 'FREQ=DAILY;COUNT=5', skipWeekendsAndHolidays: true,
+    })
+    expect(expandRecurringEvents([master], kstStartUtc('2026-04-01'), kstEndUtc('2026-04-30'), new Set())).toEqual([])
+  })
+
+  it('counts earlier occurrences when only the tail of a finite series is visible', () => {
+    const master = makeEvent({
+      startAtUtc: kstStartUtc('2026-03-19'), endAtUtc: kstEndUtc('2026-03-19'),
+      recurrenceRule: 'FREQ=DAILY;COUNT=5', skipWeekendsAndHolidays: true,
+    })
+    expect(toDates(expandRecurringEvents([master], kstStartUtc('2026-03-24T12:00'), kstEndUtc('2026-04-30'), new Set())))
+      .toEqual(['2026-03-24', '2026-03-25'])
+  })
+
   it('DAILY skip: weekday instances preserved, weekend shifted instances dropped when colliding with natural weekday', () => {
     const master = makeEvent({
       localId: 'daily-1',

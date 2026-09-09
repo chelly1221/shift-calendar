@@ -70,6 +70,7 @@ export const calendarEventSchema = z.object({
   googleUpdatedAtUtc: z.string().datetime().nullable(),
   localEditedAtUtc: z.string().datetime(),
   syncState: syncStateSchema,
+  isDeleted: z.boolean().optional(),
 })
 export type CalendarEvent = z.infer<typeof calendarEventSchema>
 
@@ -103,6 +104,7 @@ export const deleteCalendarEventSchema = z.object({
   localId: z.string().min(1),
   sendUpdates: sendUpdatesSchema.default('none'),
   recurrenceScope: recurrenceEditScopeSchema.default('ALL'),
+  originalStartTimeUtc: z.string().datetime().optional(),
 })
 export type DeleteCalendarEventInput = z.infer<typeof deleteCalendarEventSchema>
 

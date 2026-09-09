@@ -3,6 +3,7 @@ import type { DayWorkerCount, ShiftTeamMode, ShiftType } from '../../shared/cale
 import type { WeatherOverlayMode } from './WeatherOverlay'
 import { describeCaptureMode, describeGestureState, type HandGestureState } from '../gesture/gestureState'
 import { gestureToMode } from '../gesture/handPoseMode'
+import { VoiceConnectionSettings } from './VoiceConnectionSettings'
 
 interface SettingsModalProps {
   open: boolean
@@ -222,6 +223,7 @@ export function SettingsModal({
           </div>
 
           <div className="settings-column">
+          <VoiceConnectionSettings />
           <section className="settings-section">
             <div className="settings-row">
               <p className="settings-label">손동작 인식 (웹캠)</p>

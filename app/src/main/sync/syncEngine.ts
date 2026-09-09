@@ -1,7 +1,7 @@
 import { DateTime } from 'luxon'
 import { OutboxStatus, SyncState } from '@prisma/client'
 import type { ForcePushResult, SyncResult } from '../../shared/calendar'
-import { ensureSetting, getShiftSettings, markSyncWindowUnbounded, setSyncToken } from '../db/settingRepository'
+import { ensureSetting, getShiftSettings, isCalendarSwitching, markSyncWindowUnbounded, setSyncToken } from '../db/settingRepository'
 import { upsertRemoteEvents } from '../db/eventRepository'
 import { prisma } from '../db/prisma'
 import { createGoogleCalendarService } from '../google/calendarService'
@@ -28,6 +28,10 @@ let isForcePushRunning = false
 let isReEnqueueRunning = false
 let isVacationConversionRunning = false
 
+export function isCalendarSyncBusy(): boolean {
+  return isSyncRunning || isForcePushRunning || isReEnqueueRunning || isVacationConversionRunning
+}
+
 function hasRecurrenceRuleJson(recurrenceJson: unknown): boolean {
   return Boolean(
     recurrenceJson
@@ -44,7 +48,7 @@ function hasRecurrenceRuleJson(recurrenceJson: unknown): boolean {
  * 팀원/약어 설정 변경 시 실행. 반복 일정(마스터/인스턴스)은 시리즈 처리 복잡성 때문에 건너뛴다.
  */
 export async function convertBasicVacationEvents(): Promise<number> {
-  if (isVacationConversionRunning) {
+  if (isVacationConversionRunning || isCalendarSwitching()) {
     return 0
   }
   isVacationConversionRunning = true
@@ -155,7 +159,7 @@ async function pullHolidays(): Promise<number> {
 }
 
 export async function forcePushAllToGoogle(): Promise<ForcePushResult> {
-  if (isForcePushRunning) {
+  if (isForcePushRunning || isCalendarSwitching()) {
     return { enqueuedJobs: 0, processedJobs: 0, skippedEvents: 0 }
   }
   isForcePushRunning = true
@@ -285,7 +289,7 @@ export async function forcePushAllToGoogle(): Promise<ForcePushResult> {
 }
 
 export async function reEnqueueShiftAbbreviationSync(): Promise<number> {
-  if (isReEnqueueRunning) {
+  if (isReEnqueueRunning || isCalendarSwitching()) {
     return 0
   }
   isReEnqueueRunning = true
@@ -406,7 +410,7 @@ async function reconcileLocalToRemote(): Promise<number> {
 }
 
 export async function runSyncNow(options?: { reconcile?: boolean }): Promise<SyncResult> {
-  if (isSyncRunning) {
+  if (isSyncRunning || isCalendarSwitching()) {
     return { mode: 'SKIPPED' as const, pulledEvents: 0, pushedOutboxJobs: 0, outboxRemaining: await getOutboxCount() }
   }
   isSyncRunning = true

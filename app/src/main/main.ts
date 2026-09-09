@@ -13,6 +13,7 @@ import { fileURLToPath } from 'node:url'
 import { ensureSetting } from './db/settingRepository'
 import { IPC_CHANNELS } from './ipc/channels'
 import { registerCalendarIpc } from './ipc/registerCalendarIpc'
+import { registerVoiceIpc, voiceServer } from './ipc/registerVoiceIpc'
 import { prisma } from './db/prisma'
 import { startOutboxWorker, stopOutboxWorker } from './sync/outboxWorker'
 import { runSyncNow } from './sync/syncEngine'
@@ -21,6 +22,7 @@ import { onReauthRequired } from './google/oauthClient'
 const __dirname = path.dirname(fileURLToPath(import.meta.url))
 
 app.disableHardwareAcceleration()
+if (process.platform === 'win32') app.setAppUserModelId('com.radar.shift-schedule-manager')
 app.commandLine.appendSwitch('disable-gpu')
 app.commandLine.appendSwitch('disable-gpu-compositing')
 app.commandLine.appendSwitch('force-color-profile', 'srgb')
@@ -60,6 +62,7 @@ function toggleWindowMaximize(window: BrowserWindow): void {
 function createMainWindow(): BrowserWindow {
   const window = new BrowserWindow({
     title: '교대근무 일정관리',
+    icon: app.isPackaged ? path.join(process.resourcesPath, 'icon.ico') : path.join(appRoot, 'build', 'icon.ico'),
     width: 1440,
     height: 920,
     minWidth: 1080,
@@ -164,6 +167,8 @@ if (!gotTheLock) {
     }
 
     registerCalendarIpc()
+    registerVoiceIpc()
+    void voiceServer.start().catch((error) => console.error('휴대폰 자동 연결을 시작하지 못했습니다:', error))
 
     // 손동작 인식(웹캠)용 카메라 권한만 허용하고 마이크는 거부. 그 외 권한은 기존(기본 허용) 동작 유지.
     session.defaultSession.setPermissionRequestHandler((_webContents, permission, callback, details) => {
@@ -213,6 +218,7 @@ if (!gotTheLock) {
   })
 
   app.on('before-quit', () => {
+    void voiceServer.stop()
     void prisma.$disconnect().catch(() => {
       // Non-fatal: best-effort cleanup
     })

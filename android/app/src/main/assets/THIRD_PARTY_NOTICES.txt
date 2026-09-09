@@ -1,0 +1,22 @@
+This application includes the following unmodified speech components:
+
+Vosk API 0.3.75
+Copyright Alpha Cephei Inc. and Vosk contributors.
+https://github.com/alphacep/vosk-api
+License: Apache License 2.0
+
+Vosk Korean model: vosk-model-small-ko-0.22
+https://alphacephei.com/vosk/models
+License: Apache License 2.0 (as published in the official model catalog)
+SHA-256: eea36124087fed26c59996a4761519458e3bd185e8ea9d9865ad8760c4a1d989
+
+The model archive is unmodified. wake-grammar.json is an application-specific
+adaptation derived from the model vocabulary: Korean single-syllable words,
+the wake phrase "까치 야", and the competing phrase "까지 야".
+
+Java Native Access (JNA) 5.18.1
+Copyright JNA contributors.
+https://github.com/java-native-access/jna
+JNA offers LGPL 2.1 or Apache 2.0; this distribution uses Apache License 2.0.
+
+A copy of the Apache License 2.0 is included as LICENSE-APACHE-2.0.txt.

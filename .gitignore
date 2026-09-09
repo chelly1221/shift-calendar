@@ -10,3 +10,10 @@ release
 !.env.example
 .DS_Store
 .claude/settings.local.json
+.local-tools/
+android/.gradle/
+android/.kotlin/
+android/**/build/
+android/local.properties
+android/*.jks
+android/*.keystore

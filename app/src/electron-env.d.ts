@@ -9,6 +9,7 @@ declare namespace NodeJS {
 }
 
 interface Window {
+  voiceApi: import('./shared/voice').VoiceApi
   calendarApi: import('./shared/calendar').CalendarApi
   windowApi: {
     minimize: () => void

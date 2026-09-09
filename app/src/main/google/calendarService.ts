@@ -50,9 +50,10 @@ async function getCalendarId(): Promise<string> {
 }
 
 function isGoogleResourceMissingError(error: unknown): boolean {
+  if (!error || typeof error !== 'object') return false
   const candidate = error as GoogleApiErrorShape
   const status = candidate.code ?? candidate.status ?? candidate.response?.status
-  if (status === 404) {
+  if (status === 404 || status === 410) {
     return true
   }
   const message = candidate.message ?? candidate.response?.data?.error?.message
@@ -170,6 +171,7 @@ export function toRemoteSnapshot(
     : new Date().toISOString()
 
   if (isDeleted) {
+    const originalStart = fromGoogleEventDateTime(event.originalStartTime)
     return {
       googleEventId,
       eventType: extractEventType(event),
@@ -181,8 +183,8 @@ export function toRemoteSnapshot(
       timeZone: 'UTC',
       recurrenceRule: null,
       skipWeekendsAndHolidays: false,
-      recurringEventId: null,
-      originalStartTimeUtc: null,
+      recurringEventId: event.recurringEventId ?? null,
+      originalStartTimeUtc: originalStart?.utcIso ?? null,
       attendees: [],
       organizerEmail: null,
       hangoutLink: null,
@@ -208,6 +210,7 @@ export function toRemoteSnapshot(
   return {
     googleEventId,
     eventType: inferred.eventType,
+    eventTypeIsExplicit: Boolean(event.extendedProperties?.private?.[EVENT_TYPE_PRIVATE_KEY]?.trim()),
     summary: inferred.summary,
     description: inferred.description,
     location: event.location ?? '',
@@ -263,11 +266,11 @@ export function toGoogleEventRequest(
           timeZone: zone,
         },
     attendees: event.attendees.map((email) => ({ email })),
-    recurrence: event.recurrenceRule ? [normalizeRRule(event.recurrenceRule)] : undefined,
+    recurrence: event.recurrenceRule ? [normalizeRRule(event.recurrenceRule)] : [],
     extendedProperties: {
       private: {
         [EVENT_TYPE_PRIVATE_KEY]: event.eventType,
-        ...(event.skipWeekendsAndHolidays ? { [SKIP_WEEKENDS_HOLIDAYS_KEY]: 'true' } : {}),
+        [SKIP_WEEKENDS_HOLIDAYS_KEY]: String(event.skipWeekendsAndHolidays),
         ...(event.localId ? { [LOCAL_ID_PRIVATE_KEY]: event.localId } : {}),
       },
     },
@@ -361,26 +364,22 @@ async function findRemoteEventByLocalId(
   calendarId: string,
   localId: string,
 ): Promise<string | null> {
-  try {
-    const response = await calendar.events.list({
-      calendarId,
-      privateExtendedProperty: [`${LOCAL_ID_PRIVATE_KEY}=${localId}`],
-      singleEvents: false,
-      showDeleted: false,
-      maxResults: 5,
-      fields: 'items(id,recurringEventId,status)',
-    })
-    for (const item of response.data.items ?? []) {
-      if (!item.id || item.status === 'cancelled') continue
-      // Skip override instances; only the master/standalone is a CREATE dedup target.
-      if (item.recurringEventId) continue
-      return item.id
-    }
-    return null
-  } catch (error) {
-    console.warn('[CalendarService] findRemoteEventByLocalId failed:', error)
-    return null
+  // An unavailable lookup is not proof that the event does not exist. Retry the job.
+  const response = await calendar.events.list({
+    calendarId,
+    privateExtendedProperty: [`${LOCAL_ID_PRIVATE_KEY}=${localId}`],
+    singleEvents: false,
+    showDeleted: false,
+    maxResults: 5,
+    fields: 'items(id,recurringEventId,status)',
+  })
+  for (const item of response.data.items ?? []) {
+    if (!item.id || item.status === 'cancelled') continue
+    // Skip override instances; only the master/standalone is a CREATE dedup target.
+    if (item.recurringEventId) continue
+    return item.id
   }
+  return null
 }
 
 async function resolveOccurrenceEventId(
@@ -398,8 +397,7 @@ async function resolveOccurrenceEventId(
     calendarId,
     eventId: recurringEventId,
     showDeleted: false,
-    timeMin: pivot.minus({ days: 1 }).toISO() ?? undefined,
-    timeMax: pivot.plus({ days: 1 }).toISO() ?? undefined,
+    originalStart: originalStartTimeUtc,
     maxResults: 250,
   })
 
@@ -560,6 +558,8 @@ export function createGoogleCalendarService(): GoogleCalendarService {
               event.recurringEventId,
               extractRecurrenceRule(master.data.recurrence),
             )
+            const masterSnapshot = toRemoteSnapshot(master.data, nameContext)
+            if (masterSnapshot) events.push(masterSnapshot)
           } catch {
             masterRuleCache.set(event.recurringEventId, null)
           }
@@ -621,10 +621,7 @@ export function createGoogleCalendarService(): GoogleCalendarService {
         })
         return toRemoteSnapshot(response.data, await loadShiftNameContext())
       } catch (error) {
-        const status = (error as { code?: number; status?: number; response?: { status?: number } }).code
-          ?? (error as any).status
-          ?? (error as any).response?.status
-        if (status === 404 || status === 410) {
+        if (isGoogleResourceMissingError(error)) {
           return null
         }
         throw error
@@ -639,8 +636,8 @@ export function createGoogleCalendarService(): GoogleCalendarService {
       let googleEventId = payload.googleEventId ?? event?.googleEventId ?? null
 
       if (
-        operation === 'RECUR_THIS'
-        && !googleEventId
+        (operation === 'RECUR_THIS' || operation === 'DELETE')
+        && (!googleEventId || googleEventId === payload.recurringEventId)
         && payload.recurringEventId
         && payload.originalStartTimeUtc
       ) {
@@ -705,16 +702,8 @@ export function createGoogleCalendarService(): GoogleCalendarService {
       }
 
       const requestBody = toGoogleEventRequest(event, shiftContext)
-      if (operation === 'RECUR_ALL' && !event.recurrenceRule && googleEventId) {
-        const masterResponse = await calendar.events.get({
-          calendarId,
-          eventId: googleEventId,
-          alwaysIncludeEmail: true,
-        })
-        const masterRule = extractRecurrenceRule(masterResponse.data.recurrence)
-        if (masterRule) {
-          requestBody.recurrence = [normalizeRRule(masterRule)]
-        }
+      if (operation === 'RECUR_THIS' || (event.recurringEventId && operation !== 'RECUR_ALL')) {
+        delete requestBody.recurrence
       }
 
       if (operation === 'CREATE' || !googleEventId) {
@@ -725,17 +714,12 @@ export function createGoogleCalendarService(): GoogleCalendarService {
           const adoptedId = await findRemoteEventByLocalId(calendar, calendarId, event.localId)
           if (adoptedId) {
             console.log(`[CalendarService] CREATE deduplicated: adopting existing Google event ${adoptedId} for localId=${event.localId}`)
-            let remoteEvent: calendar_v3.Schema$Event | null = null
-            try {
-              const remoteResponse = await calendar.events.get({
-                calendarId,
-                eventId: adoptedId,
-                alwaysIncludeEmail: true,
-              })
-              remoteEvent = remoteResponse.data
-            } catch {
-              // If remote prefetch fails, fall through with no snapshot.
-            }
+            const remoteResponse = await calendar.events.get({
+              calendarId,
+              eventId: adoptedId,
+              alwaysIncludeEmail: true,
+            })
+            const remoteEvent = remoteResponse.data
 
             if (remoteEvent?.updated) {
               const remoteDt = DateTime.fromISO(remoteEvent.updated, { setZone: true })

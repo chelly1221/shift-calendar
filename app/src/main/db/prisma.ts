@@ -1,8 +1,9 @@
 import { PrismaClient } from '@prisma/client'
 import { PrismaBetterSqlite3 } from '@prisma/adapter-better-sqlite3'
 import Database from 'better-sqlite3'
-import { copyFileSync, existsSync, mkdirSync, unlinkSync } from 'node:fs'
+import { copyFileSync, existsSync, mkdirSync, renameSync, unlinkSync } from 'node:fs'
 import { dirname } from 'node:path'
+import { validateDatabaseBackup } from './databaseBackup'
 
 declare global {
   // eslint-disable-next-line no-var
@@ -128,12 +129,32 @@ export const dbImportStagingPath = resolvedPath + '.import'
 function applyPendingImport(dbPath: string): void {
   const stagingPath = dbPath + '.import'
   if (!existsSync(stagingPath)) return
-  console.debug('[prisma] Found pending import, applying...')
-  // Remove existing DB and WAL/SHM files
-  for (const suffix of ['', '-wal', '-shm']) {
-    try { unlinkSync(dbPath + suffix) } catch { /* not found */ }
+  const stagedDb = new Database(stagingPath, { readonly: true, fileMustExist: true })
+  try {
+    validateDatabaseBackup(stagedDb)
+  } finally {
+    stagedDb.close()
   }
-  copyFileSync(stagingPath, dbPath)
+  console.debug('[prisma] Found pending import, applying...')
+  // Prepare the replacement before touching the current database.
+  const replacementPath = dbPath + '.replacement'
+  copyFileSync(stagingPath, replacementPath)
+  // Keep the previous database and journals recoverable if replacement fails.
+  const previousSuffixes = ['', '-wal', '-shm'].filter((suffix) => existsSync(dbPath + suffix))
+  for (const suffix of previousSuffixes) {
+    copyFileSync(dbPath + suffix, dbPath + '.before-import' + suffix)
+  }
+  try {
+    for (const suffix of previousSuffixes.filter((suffix) => suffix !== '')) {
+      unlinkSync(dbPath + suffix)
+    }
+    renameSync(replacementPath, dbPath)
+  } catch (error) {
+    for (const suffix of previousSuffixes) {
+      copyFileSync(dbPath + '.before-import' + suffix, dbPath + suffix)
+    }
+    throw error
+  }
   unlinkSync(stagingPath)
   console.debug('[prisma] Applied pending database import to:', dbPath)
 }
@@ -143,6 +164,7 @@ try {
   applyPendingImport(resolvedPath)
 } catch (err) {
   console.error('[prisma] Failed to apply pending database import:', err)
+  throw err
 }
 
 // Ensure schema on first launch.

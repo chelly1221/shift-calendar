@@ -1,7 +1,17 @@
-import { describe, it, expect } from 'vitest'
+import { describe, it, expect, vi, beforeEach } from 'vitest'
 import type { calendar_v3 } from 'googleapis'
 import type { CalendarEvent } from '../../shared/calendar'
-import { extractEventType, toRemoteSnapshot, toGoogleEventRequest } from './calendarService'
+import { createGoogleCalendarService, extractEventType, toRemoteSnapshot, toGoogleEventRequest } from './calendarService'
+
+const mocks = vi.hoisted(() => ({
+  list: vi.fn(), get: vi.fn(), patch: vi.fn(), insert: vi.fn(), delete: vi.fn(), instances: vi.fn(),
+}))
+vi.mock('googleapis', () => ({ google: { calendar: () => ({ events: mocks }) } }))
+vi.mock('./oauthClient', () => ({ getAuthorizedGoogleClient: vi.fn().mockResolvedValue({}) }))
+vi.mock('../db/settingRepository', () => ({
+  getSelectedCalendar: vi.fn().mockResolvedValue({ selectedCalendarId: 'calendar-1' }),
+  getShiftSettings: vi.fn().mockRejectedValue(new Error('No settings in mapping tests')),
+}))
 
 function makeCalendarEvent(overrides?: Partial<CalendarEvent>): CalendarEvent {
   return {
@@ -74,7 +84,7 @@ describe('eventType 동기화 - Push (로컬 → Google)', () => {
   })
 
   it('빈 문자열 eventType도 그대로 전송된다', () => {
-    const event = makeCalendarEvent({ eventType: '' as any })
+    const event = makeCalendarEvent({ eventType: '' })
     const request = toGoogleEventRequest(event)
 
     expect(request.extendedProperties?.private?.shiftCalendarEventType).toBe('')
@@ -380,8 +390,7 @@ describe('교육 Push→Pull 라운드트립 (통합)', () => {
 })
 
 describe('eventType Push→Pull 라운드트립', () => {
-  it.each(['일반', '근무', '반복업무', '커스텀타입'])
-  ('eventType "%s"가 push 후 pull에서 동일하게 복원된다', (eventType) => {
+  it.each(['일반', '근무', '반복업무', '커스텀타입'])('eventType "%s"가 push 후 pull에서 동일하게 복원된다', (eventType) => {
     // Push: 로컬 이벤트 → Google 요청 body
     const localEvent = makeCalendarEvent({ eventType })
     const requestBody = toGoogleEventRequest(localEvent)
@@ -394,5 +403,65 @@ describe('eventType Push→Pull 라운드트립', () => {
 
     expect(snapshot).not.toBeNull()
     expect(snapshot?.eventType).toBe(eventType)
+  })
+})
+
+describe('Google changes and retries', () => {
+  it('retains the identity of a cancelled recurrence occurrence', () => {
+    const snapshot = toRemoteSnapshot(makeGoogleEvent({ status: 'cancelled', recurringEventId: 'master', originalStartTime: { dateTime: '2026-03-01T09:00:00Z' } }))
+    expect(snapshot).toMatchObject({ isDeleted: true, recurringEventId: 'master', originalStartTimeUtc: '2026-03-01T09:00:00.000Z' })
+  })
+  beforeEach(() => {
+    vi.clearAllMocks()
+    mocks.list.mockResolvedValue({ data: { items: [] } })
+    mocks.get.mockResolvedValue({ data: makeGoogleEvent() })
+    mocks.patch.mockResolvedValue({ data: makeGoogleEvent() })
+    mocks.insert.mockResolvedValue({ data: makeGoogleEvent() })
+    mocks.delete.mockResolvedValue({ data: {} })
+    mocks.instances.mockResolvedValue({ data: { items: [] } })
+  })
+
+  it('explicitly clears recurrence and the business-day flag', () => {
+    const body = toGoogleEventRequest(makeCalendarEvent())
+    expect(body.recurrence).toEqual([])
+    expect(body.extendedProperties?.private?.skipWeekendsAndHolidays).toBe('false')
+  })
+
+  it('does not restore the remote RRULE when ALL removes recurrence', async () => {
+    mocks.get.mockResolvedValue({ data: makeGoogleEvent({ recurrence: ['RRULE:FREQ=DAILY'] }) })
+    await createGoogleCalendarService().pushLocalChange('RECUR_ALL', makeCalendarEvent(), {})
+    expect(mocks.patch.mock.calls[0][0].requestBody.recurrence).toEqual([])
+  })
+
+  it('does not send a master RRULE when editing an instance', async () => {
+    await createGoogleCalendarService().pushLocalChange('RECUR_THIS', makeCalendarEvent({ recurrenceRule: 'FREQ=DAILY', recurringEventId: 'master' }), { sendUpdates: 'all' })
+    expect(mocks.patch.mock.calls[0][0].requestBody).not.toHaveProperty('recurrence')
+    expect(mocks.patch.mock.calls[0][0].sendUpdates).toBe('all')
+  })
+
+  it('does not create a duplicate if the deduplication lookup fails', async () => {
+    mocks.list.mockRejectedValueOnce(new Error('Network unavailable'))
+    await expect(createGoogleCalendarService().pushLocalChange('CREATE', makeCalendarEvent(), {})).rejects.toThrow('Network unavailable')
+    expect(mocks.insert).not.toHaveBeenCalled()
+  })
+
+  it('does not overwrite an adopted event if its conflict lookup fails', async () => {
+    mocks.list.mockResolvedValueOnce({ data: { items: [{ id: 'existing' }] } })
+    mocks.get.mockRejectedValueOnce(new Error('Network unavailable'))
+    await expect(createGoogleCalendarService().pushLocalChange('CREATE', makeCalendarEvent(), {})).rejects.toThrow('Network unavailable')
+    expect(mocks.patch).not.toHaveBeenCalled()
+  })
+
+  it('deletes the requested occurrence instead of its master', async () => {
+    mocks.instances.mockResolvedValueOnce({ data: { items: [makeGoogleEvent({ id: 'instance-1', originalStartTime: { dateTime: '2026-03-01T09:00:00Z' } })] } })
+    await createGoogleCalendarService().pushLocalChange('DELETE', makeCalendarEvent({ googleEventId: 'master' }), {
+      googleEventId: 'master', recurringEventId: 'master', originalStartTimeUtc: '2026-03-01T09:00:00.000Z', sendUpdates: 'externalOnly',
+    })
+    expect(mocks.delete.mock.calls[0][0]).toMatchObject({ eventId: 'instance-1', sendUpdates: 'externalOnly' })
+  })
+
+  it('treats an HTTP 410 deletion response as already deleted', async () => {
+    mocks.delete.mockRejectedValueOnce({ code: 410 })
+    await expect(createGoogleCalendarService().pushLocalChange('DELETE', makeCalendarEvent(), {})).resolves.toMatchObject({ googleEventId: 'google-1' })
   })
 })

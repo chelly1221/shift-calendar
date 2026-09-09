@@ -94,6 +94,8 @@ export default defineConfig(({ command }) => ({
             cjsInteropPlugin(['@prisma/client']),
           ],
           build: {
+            // Remove old hashed main bundles before packaging; preload is built afterwards.
+            emptyOutDir: true,
             rollupOptions: {
               external: [
                 'keytar',
@@ -113,6 +115,7 @@ export default defineConfig(({ command }) => ({
         input: {
           preload: path.join(__dirname, 'src/preload/index.ts'),
         },
+        vite: { build: { emptyOutDir: false } },
       },
       renderer: process.env.NODE_ENV === 'test'
         ? undefined

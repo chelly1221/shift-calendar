@@ -73,6 +73,7 @@ export type GoogleErrorKind = 'TRANSIENT' | 'PERMANENT' | 'RATE_LIMITED' | 'AUTH
  * worker until the account is reconnected (AUTH_REQUIRED).
  */
 export function classifyGoogleError(error: unknown): GoogleErrorKind {
+  if (!error || typeof error !== 'object') return 'TRANSIENT'
   // Account-level auth failure (invalid_grant etc.). Every queued job will fail identically, so
   // this must NOT be treated as a transient per-job error that retries for the full retry window.
   if (error instanceof GoogleAuthError) {
@@ -81,11 +82,14 @@ export function classifyGoogleError(error: unknown): GoogleErrorKind {
   const candidate = error as {
     code?: number
     status?: number
-    response?: { status?: number }
+    response?: { status?: number; data?: { error?: { errors?: { reason?: string }[] } } }
     message?: string
   }
   const code = candidate.code ?? candidate.status ?? candidate.response?.status
-  if (code === 429) return 'RATE_LIMITED'
+  const reasons = candidate.response?.data?.error?.errors?.map((item) => item.reason) ?? []
+  if (code === 429 || (code === 403 && reasons.some((reason) =>
+    reason === 'rateLimitExceeded' || reason === 'userRateLimitExceeded' || reason === 'quotaExceeded',
+  ))) return 'RATE_LIMITED'
   if (code === 401 || code === 403 || code === 404) return 'PERMANENT'
   if (code === 410 || code === 408 || code === 503 || code === 500) return 'TRANSIENT'
   // Defensive: an auth failure whose structured shape was lost (e.g. re-wrapped as a plain Error)

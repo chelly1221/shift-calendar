@@ -295,10 +295,19 @@ export async function setGoogleOAuthConfig(
   })
 }
 
+let calendarSwitching = false
+
+export function isCalendarSwitching(): boolean {
+  return calendarSwitching
+}
+
 export async function setSelectedCalendar(input: {
   calendarId: string
   calendarSummary?: string | null
 }): Promise<void> {
+  if (calendarSwitching) throw new Error('캘린더 전환이 진행 중입니다.')
+  calendarSwitching = true
+  try {
   const setting = await ensureSetting()
   const nextSummary = input.calendarSummary ?? null
   if (setting.selectedCalendarId === input.calendarId) {
@@ -311,32 +320,34 @@ export async function setSelectedCalendar(input: {
     return
   }
 
-  const runningCount = await prisma.outboxJob.count({ where: { status: 'RUNNING' } })
-  if (runningCount > 0) {
-    console.warn(`[Settings] ${runningCount} RUNNING outbox jobs exist during calendar switch - waiting briefly`)
-    await new Promise(resolve => setTimeout(resolve, 2000))
-  }
-
-  const pendingCount = await prisma.outboxJob.count({
-    where: {
-      status: { in: ['QUEUED', 'FAILED', 'RUNNING'] },
-    },
-  })
-
-  if (pendingCount > 0) {
-    console.warn(`[Settings] Switching calendar with ${pendingCount} pending outbox jobs - these will be discarded`)
-  }
-
-  await prisma.$transaction([
-    prisma.setting.update({
+  await prisma.$transaction(async (tx) => {
+    // The first connection must keep schedules entered while the app was offline.
+    if (setting.selectedCalendarId) {
+      const pendingCount = await tx.outboxJob.count({
+        where: { status: { in: ['QUEUED', 'FAILED', 'RUNNING'] } },
+      })
+      const unsyncedCount = await tx.event.count({
+        where: {
+          eventType: { not: '공휴일' },
+          OR: [{ syncState: { in: ['PENDING', 'ERROR'] } }, { googleEventId: null, isDeleted: false }],
+        },
+      })
+      if (pendingCount > 0 || unsyncedCount > 0) {
+        throw new Error('동기화되지 않은 일정이 있어 캘린더를 전환할 수 없습니다. 먼저 현재 캘린더와 동기화해 주세요.')
+      }
+      await tx.outboxJob.deleteMany()
+      await tx.event.deleteMany()
+    }
+    await tx.setting.update({
       where: { id: 1 },
       data: {
         selectedCalendarId: input.calendarId,
         selectedCalendarSummary: nextSummary,
         syncToken: null,
       },
-    }),
-    prisma.outboxJob.deleteMany(),
-    prisma.event.deleteMany(),
-  ])
+    })
+  })
+  } finally {
+    calendarSwitching = false
+  }
 }

@@ -52,7 +52,7 @@ interface CalendarState {
   refreshOutboxJobs: () => Promise<void>
   cancelOutboxJob: (jobId: string) => Promise<boolean>
   saveEvent: (payload: UpsertCalendarEventInput) => Promise<CalendarEvent>
-  deleteEvent: (localId: string, sendUpdates?: SendUpdates, recurrenceScope?: RecurrenceEditScope) => Promise<void>
+  deleteEvent: (localId: string, sendUpdates?: SendUpdates, recurrenceScope?: RecurrenceEditScope, originalStartTimeUtc?: string) => Promise<void>
   syncNow: () => Promise<void>
   manualSyncNow: () => Promise<void>
   resumeAfterReconnect: () => Promise<void>
@@ -247,6 +247,7 @@ function eventOverlapsRange(event: CalendarEvent, rangeStartUtc: string, rangeEn
 
 function expandForRenderRange(events: CalendarEvent[], rangeStartUtc: string, rangeEndUtc: string, holidayDates?: Set<string>): CalendarEvent[] {
   const candidates = events.filter((event) => {
+    if (event.recurringEventId) return true
     if (event.recurrenceRule && !event.recurringEventId) {
       return true
     }
@@ -427,19 +428,20 @@ export const useCalendarStore = create<CalendarState>((set, get) => ({
     return saved
   },
 
-  deleteEvent: async (localId, sendUpdates = 'none', recurrenceScope) => {
+  deleteEvent: async (localId, sendUpdates = 'none', recurrenceScope, originalStartTimeUtc) => {
     const api = getCalendarApi()
     const effectiveScope = recurrenceScope ?? 'ALL'
     const deleted = await api.deleteEvent({
       localId,
       sendUpdates,
       recurrenceScope: effectiveScope,
+      originalStartTimeUtc,
     })
     if (!deleted) {
       return
     }
     // For FUTURE/ALL scopes, multiple events may be affected — re-fetch the full list
-    if (effectiveScope === 'FUTURE' || effectiveScope === 'ALL') {
+    if (effectiveScope === 'FUTURE' || effectiveScope === 'ALL' || effectiveScope === 'THIS') {
       await get().hydrate()
     } else {
       const state = get()
