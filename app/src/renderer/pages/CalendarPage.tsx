@@ -1,4 +1,4 @@
-import { buildShiftDaySummary, parseShiftTeamsFromSummary, parseShiftDescriptionState, serializeShiftDescriptionState } from '../../shared/shiftSummary'
+import { buildShiftDaySummary, formatShiftWorkers, parseShiftTeamsFromSummary, parseShiftDescriptionState, serializeShiftDescriptionState } from '../../shared/shiftSummary'
 import FullCalendar from '@fullcalendar/react'
 import dayGridPlugin from '@fullcalendar/daygrid'
 import interactionPlugin from '@fullcalendar/interaction'
@@ -1091,18 +1091,14 @@ export function CalendarPage() {
 
   const todayShiftSummary = useMemo(() => {
     const summary = buildShiftDaySummary(today, todayContextEvents, shiftTeamDrafts, dayWorkerDrafts, publicHolidayMap)
-    const { dayTeams, nightTeams, dayMembers, nightMembers, dayWorkerNames, hideDayWorkers, hasShiftTeams } = summary
+    const { dayTeams, nightTeams, dayRoster, nightRoster, dayWorkerNames, hideDayWorkers, hasShiftTeams } = summary
 
     if (!hasShiftTeams && (hideDayWorkers || dayWorkerNames.length === 0)) {
       return null
     }
 
-    const dayText = hasShiftTeams
-      ? (dayMembers.length > 0 ? dayMembers.join(' · ') : `${dayTeams.join('·')}조 미지정`)
-      : null
-    const nightText = hasShiftTeams
-      ? (nightMembers.length > 0 ? nightMembers.join(' · ') : `${nightTeams.join('·')}조 미지정`)
-      : null
+    const dayText = formatShiftWorkers(dayTeams, dayRoster)
+    const nightText = formatShiftWorkers(nightTeams, nightRoster)
     const dayWorkerText = !hideDayWorkers && dayWorkerNames.length > 0 ? dayWorkerNames.join(' · ') : null
 
     const computedDayWorkerText = todayShiftOverrides?.dayWorkerText !== undefined ? todayShiftOverrides.dayWorkerText : dayWorkerText

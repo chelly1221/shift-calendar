@@ -29,7 +29,7 @@ class SpeechPlaybackTest {
             playing = false
             val id = sent.last().second
             speech.completed(id); speech.completed(id)
-            advance(350)
+            advance(0)
         }
     }
 
@@ -72,7 +72,7 @@ class SpeechPlaybackTest {
         assertTrue(clock.jobs.isEmpty())
     }
 
-    @Test fun newAnswerReplacesTheOldPlaylistEvenDuringTheDrainDelay() {
+    @Test fun newAnswerReplacesTheOldPlaylistBeforeTheQueuedContinuation() {
         val clock = Clock()
         clock.play("기존 답변 ".repeat(200))
         val oldId = clock.sent.last().second
@@ -144,5 +144,28 @@ class SpeechPlaybackTest {
         assertEquals(2, clock.sent.size)
         while (clock.results.isEmpty()) clock.finishChunk()
         assertEquals(listOf(true), clock.results)
+    }
+
+    @Test fun lastChunkReturnsToListeningImmediatelyAndOnlyOnce() {
+        val clock = Clock()
+        val dialogue = WakeDialogue().apply { enter(WakeDialogue.Phase.SPEAKING) }
+        var listeningStarts = 0
+        clock.speech.play("주간 A조 김민수 이지원") { success ->
+            assertTrue(success)
+            listeningStarts++
+            dialogue.enter(WakeDialogue.Phase.WAITING)
+        }
+        clock.advance(4000)
+        assertEquals(0, listeningStarts)
+        assertEquals(WakeDialogue.Action.Ignore, dialogue.accept("까치야 질문"))
+        val endedAt = clock.time
+        val id = clock.sent.last().second
+        clock.finishChunk()
+        assertEquals(endedAt, clock.time)
+        assertEquals(1, listeningStarts)
+        assertEquals(WakeDialogue.Action.Question("내일 근무자 누구야"), dialogue.accept("까치야 내일 근무자 누구야"))
+        clock.speech.completed(id)
+        clock.advance(5000)
+        assertEquals(1, listeningStarts)
     }
 }

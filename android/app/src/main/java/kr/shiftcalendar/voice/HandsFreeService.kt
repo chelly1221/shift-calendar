@@ -22,7 +22,7 @@ class HandsFreeService : Service() {
         fun listen() = beginQuestion(hasPending())
         fun confirm(value: Boolean) = confirmPending(value)
         fun replay() = replayAnswer()
-        fun stopSpeech() = awaitWake()
+        fun stopSpeech() { spokenQuestions.clear(); awaitWake() }
         fun discover() = discoverPc()
         fun choose(value: Connection) { connection = value; publish(state.status, choices = emptyList()) }
         fun stop() = stopAssistant()
@@ -30,6 +30,9 @@ class HandsFreeService : Service() {
     private val handler = Handler(Looper.getMainLooper())
     private val network = Executors.newSingleThreadExecutor()
     private val dialogue = WakeDialogue()
+    private val spokenQuestions = SpokenQuestionQueue(SystemClock::elapsedRealtime)
+    private var afterSpeechCapture: (() -> Unit)? = null
+    private var speechCaptureFinishTimeout: Runnable? = null
     private val prefs by lazy { getSharedPreferences("voice", MODE_PRIVATE) }
     private lateinit var liveQuestionRecognizer: LiveQuestionRecognizer
     private var observer: ((State) -> Unit)? = null
@@ -50,7 +53,7 @@ class HandsFreeService : Service() {
         { task, delay -> handler.postDelayed(task, delay); Unit }, { handler.removeCallbacks(it) },
         { runCatching { tts?.isSpeaking == true }.getOrDefault(false) }, { tts?.stop() },
         { text, id -> ttsReady && tts?.speak(text, TextToSpeech.QUEUE_FLUSH, null, id) == TextToSpeech.SUCCESS },
-        TextToSpeech::getMaxSpeechInputLength) }
+        TextToSpeech::getMaxSpeechInputLength, spokenQuestions::chunk) }
     private var captureId = 0
     private var requestId = 0
     private var networkBusy = false
@@ -65,6 +68,8 @@ class HandsFreeService : Service() {
             WakeDialogue.Phase.WAITING -> recoverRecognition(captureId,
                 SpeechRecognitionFailure(RecognitionIssue.TEMPORARY, "음성인식을 다시 연결하는 중…"))
             WakeDialogue.Phase.QUESTION, WakeDialogue.Phase.CONFIRMATION -> awaitWake()
+            WakeDialogue.Phase.SPEAKING -> recoverSpeechCapture(captureId,
+                SpeechRecognitionFailure(RecognitionIssue.TEMPORARY, "답변 중 질문 듣기를 다시 준비합니다."))
             else -> Unit
         }
     }
@@ -140,7 +145,12 @@ class HandsFreeService : Service() {
         retryWake?.let(handler::removeCallbacks); retryWake = null
         liveQuestionRecognizer.cancel()
     }
-    private fun cancelSpeech() { speechPlayback.cancel() }
+    private fun cancelSpeech() {
+        afterSpeechCapture = null
+        speechCaptureFinishTimeout?.let(handler::removeCallbacks); speechCaptureFinishTimeout = null
+        spokenQuestions.finish(); spokenQuestions.abandonPartial()
+        speechPlayback.cancel()
+    }
     private fun awaitWake() {
         if (stopped) return
         cancelSpeech()
@@ -217,6 +227,8 @@ class HandsFreeService : Service() {
     }
     private fun handleSpeech(text: String) {
         if (networkBusy) { awaitWake(); return }
+        if (dialogue.phase == WakeDialogue.Phase.WAITING &&
+            (spokenQuestions.isEcho(text) || WakePhrase.question(text)?.let(spokenQuestions::isEcho) == true)) { queueWake(250); return }
         when (val action = dialogue.accept(text, confirmingWake = hasPending())) {
             WakeDialogue.Action.Ignore -> queueWake(250)
             is WakeDialogue.Action.Question -> submit(action.text)
@@ -230,16 +242,90 @@ class HandsFreeService : Service() {
     private fun speak(text: String, next: () -> Unit) {
         if (stopped) return
         stopCapture()
+        cancelSpeech()
+        spokenQuestions.begin(text)
         dialogue.enter(WakeDialogue.Phase.SPEAKING)
-        publish("음성으로 답변하고 있습니다.")
+        publishSpeechQueue()
         speechPlayback.play(text) { success ->
             if (!stopped) {
-                if (success) next() else {
-                    publish("음성 읽기가 중단되었습니다. 다시 읽기를 눌러 주세요.")
-                    queueWake(1500, normal = false)
+                spokenQuestions.finish()
+                val finish = {
+                    stopCapture()
+                    if (!success) publish("음성 읽기가 중단되었습니다. 다시 읽기를 눌러 주세요.")
+                    val queued = spokenQuestions.take(confirmationPending = hasPending())
+                    if (queued != null) { dialogue.enter(WakeDialogue.Phase.BUSY); submit(queued) }
+                    else next()
                 }
+                if (spokenQuestions.awaitingFinal) {
+                    // Preserve a question that began just before TTS ended. Partial text is never submitted.
+                    afterSpeechCapture = finish
+                    publish("다음 질문을 인식하는 중…")
+                    speechCaptureFinishTimeout = Runnable {
+                        if (!stopped && afterSpeechCapture != null) {
+                            spokenQuestions.abandonPartial()
+                            publish("다음 질문을 끝까지 듣지 못했습니다. 다시 말씀해 주세요.")
+                            finishSpeechCapture()
+                        }
+                    }.also { handler.postDelayed(it, 10_000) }
+                } else finish()
             }
         }
+        if (!stopped && spokenQuestions.speaking) listenDuringSpeech()
+    }
+    private fun publishSpeechQueue() {
+        publish(if (spokenQuestions.size == 0) "답변 중 · ‘까치야’로 다음 질문을 말씀하세요."
+            else "답변 중 · 다음 질문 ${spokenQuestions.size}개 대기")
+    }
+    private fun listenDuringSpeech() {
+        if (stopped || !spokenQuestions.speaking) return
+        stopCapture()
+        spokenQuestions.abandonPartial()
+        val token = captureId
+        recognitionReadiness.begin(
+            slow = { if (!stopped && token == captureId) publish("답변 중 · 다음 질문 마이크를 준비하고 있습니다.") },
+            failed = { recoverSpeechCapture(token, SpeechRecognitionFailure(RecognitionIssue.TEMPORARY, "답변 중 질문 듣기를 다시 준비합니다.")) })
+        handler.postDelayed(captureTimeout, 45_000)
+        liveQuestionRecognizer.listen(
+            ready = { recognitionReadiness.cancel(); readyOnce = true; if (spokenQuestions.speaking) publishSpeechQueue() },
+            partial = { spokenQuestions.partial(it) },
+            done = { result ->
+                if (!stopped && token == captureId) {
+                    handler.removeCallbacks(captureTimeout)
+                    recognitionReadiness.cancel()
+                    result.onSuccess {
+                        recognitionRetry.reset()
+                        spokenQuestions.accept(it)
+                        if (afterSpeechCapture != null) finishSpeechCapture()
+                        else if (spokenQuestions.speaking) { publishSpeechQueue(); retrySpeechCapture(250) }
+                    }.onFailure { recoverSpeechCapture(token, it) }
+                }
+            }
+        )
+    }
+    private fun finishSpeechCapture() {
+        val next = afterSpeechCapture ?: return
+        afterSpeechCapture = null
+        speechCaptureFinishTimeout?.let(handler::removeCallbacks); speechCaptureFinishTimeout = null
+        next()
+    }
+    private fun retrySpeechCapture(delay: Long) {
+        stopCapture()
+        val token = captureId
+        retryWake = Runnable {
+            retryWake = null
+            if (!stopped && token == captureId && spokenQuestions.speaking) listenDuringSpeech()
+        }.also { handler.postDelayed(it, delay) }
+    }
+    private fun recoverSpeechCapture(token: Int, failure: Throwable) {
+        if (stopped || token != captureId) return
+        spokenQuestions.abandonPartial()
+        if (afterSpeechCapture != null) { finishSpeechCapture(); return }
+        val issue = (failure as? SpeechRecognitionFailure)?.issue ?: RecognitionIssue.TEMPORARY
+        val delay = recognitionRetry.delay(issue)
+        if (issue != RecognitionIssue.NO_SPEECH) liveQuestionRecognizer.close()
+        if (delay == null) { stopCapture(); publish("답변 중 질문 듣기를 사용할 수 없습니다. 마이크와 음성 서비스를 확인해 주세요."); return }
+        if (issue != RecognitionIssue.NO_SPEECH) publish("답변 중 · 다음 질문 듣기를 다시 준비합니다.")
+        retrySpeechCapture(delay)
     }
     private fun resumeAfterAnswer() {
         if (hasPending()) beginQuestion(true)
@@ -250,12 +336,17 @@ class HandsFreeService : Service() {
 
     private fun submit(raw: String) {
         if (stopped || networkBusy || raw.isBlank()) return
+        if (dialogue.phase == WakeDialogue.Phase.SPEAKING) {
+            spokenQuestions.enqueue(raw)
+            publishSpeechQueue()
+            return
+        }
         val text = raw.trim().take(300)
         val compact = WakeDialogue.compact(text)
         if (compact in WakeDialogue.repeated) { replayAnswer(); return }
         if (hasPending() && compact in WakeDialogue.confirmed) { confirmPending(true); return }
         if (compact in WakeDialogue.cancelled) { if (hasPending()) confirmPending(false) else speak("취소했습니다.") { awaitWake() }; return }
-        clearPending(); stopCapture(); dialogue.enter(WakeDialogue.Phase.BUSY)
+        clearPending(); cancelSpeech(); stopCapture(); dialogue.enter(WakeDialogue.Phase.BUSY)
         networkBusy = true
         publish("PC 일정을 확인하는 중…", question = text)
         val token = ++requestId
@@ -301,7 +392,7 @@ class HandsFreeService : Service() {
         if (!hasPending()) { speak("확인할 작업이 없거나 확인 시간이 지났습니다.") { awaitWake() }; return }
         val id = pendingId!!
         val target = pendingConnection!!
-        stopCapture(); dialogue.enter(WakeDialogue.Phase.BUSY); networkBusy = true
+        cancelSpeech(); stopCapture(); dialogue.enter(WakeDialogue.Phase.BUSY); networkBusy = true
         publish(if (confirm) "PC에 적용하는 중…" else "취소하는 중…")
         val token = ++requestId
         network.execute {
@@ -338,6 +429,7 @@ class HandsFreeService : Service() {
     private fun stopAssistant(message: String = "까치야 음성 대기를 껐습니다.") {
         if (stopped) return
         stopped = true; prefs.edit().putBoolean("wakeEnabled", false).apply()
+        spokenQuestions.clear()
         stopCapture(); liveQuestionRecognizer.close(); cancelSpeech()
         state = state.copy(status = message, enabled = false, busy = false, pending = false)
         observer?.invoke(state)
@@ -345,6 +437,7 @@ class HandsFreeService : Service() {
     }
     override fun onDestroy() {
         stopped = true; requestId++; dialogue.enter(WakeDialogue.Phase.STOPPED)
+        spokenQuestions.clear()
         handler.removeCallbacksAndMessages(null)
         stopCapture(); liveQuestionRecognizer.close(); cancelSpeech(); tts?.shutdown()
         wakeLock?.let { if (it.isHeld) it.release() }

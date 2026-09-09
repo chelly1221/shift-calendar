@@ -31,8 +31,10 @@ class SpeechCompletionTest {
             val id = clock.speech.begin(20) { resumed++; dialogue.enter(WakeDialogue.Phase.WAITING) }
             clock.speech.finish(id)
             clock.speech.finish(id) // An engine may repeat a completion/error notification.
-            clock.advance(350)
+            val finishedAt = clock.time
+            clock.advance(0)
             assertEquals(1, resumed)
+            assertEquals(finishedAt, clock.time)
             assertEquals(WakeDialogue.Phase.WAITING, dialogue.phase)
         }
         assertTrue(clock.jobs.isEmpty())
@@ -57,7 +59,7 @@ class SpeechCompletionTest {
         clock.speech.begin(8) { resumed = true }
         clock.advance(7999)
         assertFalse(resumed)
-        clock.advance(351)
+        clock.advance(1)
         assertTrue(resumed)
         assertEquals(1, clock.stops)
     }
@@ -69,10 +71,10 @@ class SpeechCompletionTest {
         clock.speech.finish(oldId)
         val newId = clock.speech.begin(20) { current++ }
         clock.speech.finish(oldId)
-        clock.advance(350)
+        clock.advance(0)
         assertEquals(0, old); assertEquals(0, current)
         clock.speech.finish(newId)
-        clock.speech.cancel() // User turns hands-free off during the speaker drain delay.
+        clock.speech.cancel() // User turns hands-free off before the queued continuation runs.
         clock.advance(10000)
         assertEquals(0, current)
         assertTrue(clock.jobs.isEmpty())

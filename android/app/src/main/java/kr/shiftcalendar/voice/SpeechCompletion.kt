@@ -51,7 +51,8 @@ class SpeechCompletion(
         val next = continuationOverride ?: pending
         continuation = null
         poll?.let(remove); poll = null
-        resume = Runnable { if (token == generation) { resume = null; next() } }.also { schedule(it, 350) }
+        // onDone already marks playback completion. Queue the next main-thread turn without a fixed delay.
+        resume = Runnable { if (token == generation) { resume = null; next() } }.also { schedule(it, 0) }
     }
 
     fun cancel() {

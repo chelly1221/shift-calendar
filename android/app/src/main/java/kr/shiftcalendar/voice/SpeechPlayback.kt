@@ -19,7 +19,7 @@ object SpeechChunks {
     }
 }
 
-/** Plays one bounded utterance at a time and resumes listening only after the entire answer. */
+/** Plays one bounded utterance at a time and completes only after the entire answer. */
 class SpeechPlayback(
     now: () -> Long,
     schedule: (Runnable, Long) -> Unit,
@@ -28,6 +28,7 @@ class SpeechPlayback(
     private val stop: () -> Unit,
     private val send: (String, String) -> Boolean,
     private val maxLength: () -> Int,
+    private val onChunk: (String) -> Unit = {},
 ) {
     private val completion = SpeechCompletion(now, schedule, remove, playing, stop)
     private var generation = 0
@@ -52,6 +53,7 @@ class SpeechPlayback(
             if (token == generation && done != null) { activeId = null; index++; next(token) }
         }, { if (token == generation) finish(false) })
         activeId = id
+        onChunk(chunk)
         if (!runCatching { send(chunk, id.toString()) }.getOrDefault(false)) finish(false)
     }
 

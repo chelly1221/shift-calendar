@@ -16,4 +16,12 @@ object WakePhrase {
         }
         return null
     }
+
+    /** Separate repeated invocations in one final result for the playback question queue. */
+    fun questions(raw: String): List<String> {
+        val matches = wake.findAll(raw).toList()
+        return matches.mapIndexedNotNull { index, match ->
+            question(raw.substring(match.range.first, matches.getOrNull(index + 1)?.range?.first ?: raw.length))
+        }
+    }
 }

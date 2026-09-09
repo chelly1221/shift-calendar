@@ -6,7 +6,10 @@ import android.os.Build
 import android.os.Bundle
 import android.speech.RecognitionListener
 import android.speech.RecognizerIntent
+import android.speech.RecognitionSupport
+import android.speech.RecognitionSupportCallback
 import android.speech.SpeechRecognizer
+import java.util.concurrent.Executor
 
 /** The normal Android microphone path, also available before Android 13. Main-thread only. */
 class LiveQuestionRecognizer internal constructor(private val createEngine: () -> RecognitionEngine) {
@@ -15,6 +18,17 @@ class LiveQuestionRecognizer internal constructor(private val createEngine: () -
     private var generation = 0
     private var recognizer: RecognitionEngine? = null
     private var transcript: QuestionTranscript? = null
+
+    /** Prepare recognition resources without starting microphone capture. */
+    fun prepare() {
+        if (transcript != null || recognizer != null) return
+        try {
+            val speech = createEngine().also { recognizer = it }
+            speech.prepare()
+        } catch (_: RuntimeException) {
+            close() // Normal listen will report an actionable error or create a fresh connection.
+        }
+    }
 
     fun listen(ready: () -> Unit, partial: (String) -> Unit, done: (Result<String>) -> Unit, processing: () -> Unit = {}) {
         cancel()
@@ -72,6 +86,25 @@ private class AndroidRecognitionEngine(context: Context) : RecognitionEngine {
     private val speech = if (SpeechRecognizer.isRecognitionAvailable(context)) SpeechRecognizer.createSpeechRecognizer(context)
         else throw SpeechRecognitionFailure(RecognitionIssue.UNAVAILABLE, "기본 음성인식 서비스를 확인해 주세요.")
 
+    override fun prepare() {
+        if (Build.VERSION.SDK_INT >= 33) {
+            speech.checkRecognitionSupport(recognitionIntent(), Executor { it.run() }, object : RecognitionSupportCallback {
+                override fun onSupportResult(support: RecognitionSupport) = Unit
+                override fun onError(error: Int) = Unit // Unsupported checks must not disable normal recognition.
+            })
+        }
+    }
+
+    private fun recognitionIntent() = Intent(RecognizerIntent.ACTION_RECOGNIZE_SPEECH)
+        .putExtra(RecognizerIntent.EXTRA_LANGUAGE_MODEL, RecognizerIntent.LANGUAGE_MODEL_FREE_FORM)
+        .putExtra(RecognizerIntent.EXTRA_LANGUAGE, "ko-KR")
+        .putExtra(RecognizerIntent.EXTRA_PARTIAL_RESULTS, true)
+        .putExtra(RecognizerIntent.EXTRA_MAX_RESULTS, 1)
+        .apply {
+            if (Build.VERSION.SDK_INT >= 33) putStringArrayListExtra(RecognizerIntent.EXTRA_BIASING_STRINGS,
+                arrayListOf("까치야", "일근", "주간", "야간", "반복업무", "중요", "출장", "교육", "일정", "휴가"))
+        }
+
     override fun listen(callbacks: RecognitionCallbacks) {
         speech.setRecognitionListener(object : RecognitionListener {
                 override fun onReadyForSpeech(params: Bundle?) = callbacks.ready()
@@ -102,15 +135,7 @@ private class AndroidRecognitionEngine(context: Context) : RecognitionEngine {
                     callbacks.failure(SpeechRecognitionFailure(issue, errorMessage))
                 }
             })
-            speech.startListening(Intent(RecognizerIntent.ACTION_RECOGNIZE_SPEECH)
-                .putExtra(RecognizerIntent.EXTRA_LANGUAGE_MODEL, RecognizerIntent.LANGUAGE_MODEL_FREE_FORM)
-                .putExtra(RecognizerIntent.EXTRA_LANGUAGE, "ko-KR")
-                .putExtra(RecognizerIntent.EXTRA_PARTIAL_RESULTS, true)
-                .putExtra(RecognizerIntent.EXTRA_MAX_RESULTS, 1)
-                .apply {
-                    if (Build.VERSION.SDK_INT >= 33) putStringArrayListExtra(
-                        RecognizerIntent.EXTRA_BIASING_STRINGS, arrayListOf("까치야", "일근", "주간", "야간"))
-                })
+            speech.startListening(recognitionIntent())
     }
     override fun cancel() = speech.cancel()
     override fun destroy() = speech.destroy()

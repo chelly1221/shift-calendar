@@ -5,7 +5,8 @@
   "asar": true,
   "productName": "교대근무 일정관리",
   "directories": {
-    "output": "release/${version}"
+    // Keep the user's active installation in this directory, including future versions.
+    "output": "release/0.0.0"
   },
   "files": [
     "dist",
@@ -26,28 +27,12 @@
   "win": {
     "target": [
       {
-        "target": "nsis",
-        "arch": [
-          "x64"
-        ]
-      },
-      {
-        "target": "portable",
+        "target": "dir",
         "arch": [
           "x64"
         ]
       }
-    ],
-    "artifactName": "${productName}-Windows-${version}-${arch}.${ext}"
-  },
-  "portable": {
-    "artifactName": "${productName}-Windows-${version}-Portable.${ext}"
-  },
-  "nsis": {
-    "oneClick": false,
-    "perMachine": false,
-    "allowToChangeInstallationDirectory": true,
-    "deleteAppDataOnUninstall": false
+    ]
   },
   "extraMetadata": {
     "name": "sitecalendar"

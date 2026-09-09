@@ -143,7 +143,7 @@ class MainActivity : Activity() {
         status = text("음성 대기를 준비하는 중…", 21f).apply { accessibilityLiveRegion = View.ACCESSIBILITY_LIVE_REGION_POLITE }
         voiceCard.add(status, 12)
         voiceCard.add(text("“까치야, 내일 야간 누구야?”", 16f, green), 16)
-        voiceCard.add(text("호출어와 질문을 이어서 말하세요.", 13f, muted), 4)
+        voiceCard.add(text("호출어와 질문을 이어서 말하세요. 답변 중 질문도 순서대로 답합니다.", 13f, muted), 4)
         wakeButton = button(if (handsFreeEnabled) "음성 대기 끄기" else "음성 대기 켜기") {
             if (handsFreeEnabled) disableHandsFree() else enableHandsFree()
         }
@@ -466,6 +466,7 @@ class MainActivity : Activity() {
         if (handsFreeEnabled) { handsFree?.replay(); return }
         if (lastSpeech.isEmpty()) return
         stopListening()
+        recognizer.prepare()
         if (!ttsReady) { status.text = "한국어 음성 읽기를 사용할 수 없습니다. 화면에서 답변을 확인해 주세요."; return }
         speechPlayback.play(lastSpeech) { success ->
             if (!success && active) status.text = "음성 읽기가 중단되었습니다. 다시 읽기를 눌러 주세요."

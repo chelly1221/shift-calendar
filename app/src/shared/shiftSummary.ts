@@ -146,6 +146,18 @@ export interface RosterMember {
   absence: { kind: '휴가' | '교육'; label: string; /** 시간차 등 부분 휴가는 근무에서 빠지지 않음 */ partial: boolean } | null
 }
 
+export function getWorkingRosterMembers(roster: readonly RosterMember[]): RosterMember[] {
+  return roster.filter((member) => !member.absence || member.absence.partial)
+}
+
+/** A configured team with nobody attending is different from missing member settings. */
+export function formatShiftWorkers(teams: readonly string[], roster: readonly RosterMember[]): string | null {
+  if (!teams.length) return null
+  const working = getWorkingRosterMembers(roster)
+  return working.length ? working.map((member) => member.name).join(' · ')
+    : `${teams.join('·')}조 ${roster.length ? '근무자 없음' : '미지정'}`
+}
+
 export interface ShiftDaySummary {
   dateIso: string
   dayTeams: ShiftTeamKey[]

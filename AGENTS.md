@@ -37,6 +37,12 @@ eventType은 Google extendedProperties.private.shiftCalendarEventType으로 양�
 
 스키마 변경 시 `npx prisma generate`를 함께 실행하고 PR 설명에 반영합니다.
 
+### PC 배포 위치 (사용자 지정)
+- PC 프로그램은 `C:\code\calendar\app\release\0.0.0\win-unpacked\교대근무 일정관리.exe`를 사용합니다. 버전이 바뀌어도 이 실행 폴더에 직접 갱신합니다.
+- `app`에서 `npm run build`를 실행하면 앱을 먼저 종료한 뒤 위 폴더를 갱신합니다. 실행 중인 앱의 파일을 덮어쓰지 않습니다. 정상 종료가 되지 않으면 기존 종료 스크립트의 강제 종료 절차를 사용합니다.
+- 다른 폴더에 별도 PC 배포본, Portable EXE, 설치 EXE를 생성하거나 복사하지 않습니다. 별도 출력 경로로 빌드하지 않습니다.
+- 갱신 후 같은 경로의 프로그램을 다시 실행하고 실제 실행 경로와 최신 응답을 확인합니다. 이전 중복 배포본은 정리하되 소스, SDK, 도구, 사용자 데이터는 보존합니다.
+
 ## Coding Style & Naming Conventions
 - TypeScript `strict` 유지, `any` 사용 최소화
 - 시간 규칙: DB에는 UTC 저장, UI/요청에는 `timeZone` 명시

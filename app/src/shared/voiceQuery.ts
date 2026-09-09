@@ -5,7 +5,7 @@ import { FIXED_PUBLIC_HOLIDAY_MMDD, isPublicHolidayName } from './koreanHolidays
 import { parseEducationTargets } from './parseEducationTargets'
 import { parseVacationInfo } from './parseVacationInfo'
 import { parseRoutineCompletions } from './parseRoutineCompletions'
-import { buildShiftDaySummary, type RosterMember } from './shiftSummary'
+import { buildShiftDaySummary, getWorkingRosterMembers } from './shiftSummary'
 import { normalizeVoiceText, parseVoiceDates, stripVoiceDates } from './voiceDates'
 import { formatVoiceSpeech, speakLeaveBadges, voiceTimeLabel } from './voiceSpeech'
 import { voiceAnswerSchema, type VoiceAnswer, type VoiceContext, type VoiceQuery } from './voice'
@@ -20,6 +20,8 @@ const categoryWords: [VoiceContext['category'], RegExp][] = [
   ['근무', /근무|출근|주간|야간|일근|밤근무|낮근무|오늘밤|내일밤|몇조|조원|조누구/],
 ]
 const shiftWords: [VoiceContext['shifts'][number], RegExp][] = [['주간', /주간|낮근무/], ['야간', /야간|밤근무|오늘밤|내일밤/], ['일근', /일근(?!무)/]]
+const scheduleTypes = ['반복업무', '중요', '출장', '교육', '일반']
+const personTitle = /^(?:본부장|센터장|소장|부장|차장|과장|대리|주임|계장|팀장|실장|국장|사원|씨|님)(?:님)?/
 
 function targets(event: CalendarEvent): string[] {
   if (event.eventType === '휴가') return parseVacationInfo(event.description).targets
@@ -27,12 +29,64 @@ function targets(event: CalendarEvent): string[] {
   return []
 }
 
-function memberLabel(member: RosterMember): string {
-  return member.name + (member.absence?.partial ? `(${member.absence.label})` : '')
+function removePersonMention(text: string, name: string, replacement = ''): string {
+  const [first, ...rest] = text.split(normalizeVoiceText(name))
+  return first + rest.map((part) => replacement + part.replace(personTitle, '')).join('')
+}
+
+/** Match unique given names only at a person boundary, never inside a different full name or title. */
+function queryPeople(text: string, names: string[], titles: string[], director: string | undefined) {
+  const people = names.filter((name) => text.includes(normalizeVoiceText(name)))
+    .filter((name, _, all) => !all.some((other) => other.length > name.length && other.includes(name)))
+  let remaining = text
+  for (const name of [...people].sort((a, b) => b.length - a.length)) remaining = removePersonMention(remaining, name, ' ')
+  for (const title of [...titles].sort((a, b) => b.length - a.length)) remaining = remaining.split(normalizeVoiceText(title)).join(' ')
+  const aliases = new Map<string, string[]>()
+  for (const name of names) {
+    const full = normalizeVoiceText(name)
+    if (!/^[가-힣]{3}$/.test(full)) continue
+    const given = full.slice(1)
+    aliases.set(given, [...(aliases.get(given) ?? []), name])
+  }
+  // The first day worker is labelled 소장 in the roster settings UI.
+  aliases.set('소장', director ? [director] : [])
+  const mentions: string[] = []
+  for (const [alias, candidates] of aliases) {
+    const positions = [...remaining.matchAll(new RegExp(alias, 'g'))]
+    const found = positions.some((match) => {
+      const before = remaining.slice(0, match.index)
+      const after = remaining.slice(match.index! + alias.length)
+      return /(?:^|\s|(?:그럼|그러면|그날|오늘|내일|모레|글피|어제|그제|이번주|다음주|지난주|이번달|다음달|지난달|[월화수목금토일]요일|\d{1,2}(?:월|일))(?:은|는|에|의)?|랑|하고|와|과)$/.test(before)
+        && (personTitle.test(after) || /^(?:$|\s|은|는|이|가|을|를|의|랑|하고|와|과|언제|오늘|내일|모레|다음|이번|근무|출근|휴가|연차|반차|시간차|대휴|병가|공가|교육|몇|무슨)/.test(after))
+    })
+    if (!found) continue
+    if (!candidates.length) return { people, mentions, clarification: '소장 이름이 등록되지 않았습니다.' }
+    if (candidates.length > 1) return { people, mentions, clarification: `${candidates.join(', ')} 중 성을 포함해 질문해 주세요.` }
+    if (!people.includes(candidates[0])) people.push(candidates[0])
+    mentions.push(alias)
+    remaining = removePersonMention(remaining, alias, ' ')
+  }
+  return { people, mentions, clarification: null }
 }
 
 /** Deterministic query engine. No network, database, speech recognition or generated text. */
 export function answerVoiceQuery(query: VoiceQuery, inputEvents: CalendarEvent[], settings: ShiftSettings, clock: DateTime = DateTime.utc()): VoiceAnswer {
+  const director = settings.dayWorkers[0]
+  if (director && !/^소장(?:님)?$/.test(director)) {
+    // Older events may store the role as a target. Resolve it for this query without changing saved data.
+    inputEvents = inputEvents.map((event) => {
+      if (event.eventType !== '휴가' && event.eventType !== '교육') return event
+      const description = event.description.replace(/^(휴가대상: |교육대상: )([^\r\n]*)/gm, (line, prefix: string, value: string) => {
+        const names = value.split(',').map((name) => name.trim())
+        if (!names.some((name) => /^소장(?:님)?$/.test(name))) return line
+        return prefix + [...new Set(names.map((name) => /^소장(?:님)?$/.test(name) ? director : name))].join(', ')
+      })
+      return description === event.description ? event : {
+        ...event, description,
+        summary: event.summary.replace(/(?<![가-힣])소장(?:님)?(?=$|[\s,]|휴가|연차|시간차|대휴|반차|병가|공가|교육)/g, () => director),
+      }
+    })
+  }
   const now = clock.setZone(query.timeZone)
   const answeredAtUtc = now.toUTC().toISO()!
   const reply = (status: VoiceAnswer['status'], text: string, context: VoiceContext | null = null, eventIds: string[] = [], speech = formatVoiceSpeech(text)): VoiceAnswer =>
@@ -97,9 +151,10 @@ export function answerVoiceQuery(query: VoiceQuery, inputEvents: CalendarEvent[]
     if (end <= start || end.diff(start, 'days').days > 93) return reply('CLARIFY', '조회할 날짜를 다시 말씀해 주세요.')
   }
   if (wantsNext) end = start.plus({ days: 90 })
-  const names = [...new Set([...Object.values(settings.teams).flat(), ...settings.dayWorkers, ...inputEvents.flatMap(targets)])].filter(Boolean)
-  let people = names.filter((name) => text.includes(normalizeVoiceText(name)))
-    .filter((name, _, all) => !all.some((other) => other.length > name.length && other.includes(name)))
+  const names = [...new Set([...Object.values(settings.teams).flat(), ...settings.dayWorkers, ...inputEvents.filter((event) => !event.isDeleted).flatMap(targets)])].filter(Boolean)
+  const matchedPeople = queryPeople(text, names, namedEvents.map((event) => event.summary), director)
+  if (matchedPeople.clarification) return reply('CLARIFY', matchedPeople.clarification)
+  let people = matchedPeople.people
   if (/(^|그럼)(나|나는|내근무|내일정|내휴가|내교육)/.test(text) && !/^내일/.test(text)) {
     if (!query.selfName || !names.includes(query.selfName)) return reply('CLARIFY', '휴대폰 연결 설정에서 캘린더에 등록된 본인 이름을 입력해 주세요.')
     people = [query.selfName]
@@ -119,7 +174,8 @@ export function answerVoiceQuery(query: VoiceQuery, inputEvents: CalendarEvent[]
 
   // Do not turn an unknown person/title or an unhandled qualifier into an all-person answer.
   let residue = text.replace(/뭐있(?:나요|어|니)?/g, '')
-  for (const value of [...people, ...namedEvents.map((event) => event.summary)]) residue = residue.split(normalizeVoiceText(value)).join('')
+  for (const name of [...people, ...matchedPeople.mentions]) residue = removePersonMention(residue, name)
+  for (const event of namedEvents) residue = residue.split(normalizeVoiceText(event.summary)).join('')
   residue = residue.replace(/(?:\d{4}년)?\d{1,2}월(?:\d{1,2}일)?|\d{4}-\d{2}-\d{2}|\d{1,2}일|올해|금년|내년|작년/g, '')
     .replace(/(?:에이|비|씨|시|디|[abcd])(?:조|팀)/g, '')
     .replace(/이번주|다음주|지난주|저번주|담주|이번달|다음달|지난달|저번달|이달|[월화수목금토일]요일|오늘|내일|모레|글피|어제|그저께|그제|주말/g, '')
@@ -164,26 +220,25 @@ export function answerVoiceQuery(query: VoiceQuery, inputEvents: CalendarEvent[]
           continue
         }
         const chosen = people.length ? roster.filter((member) => people.includes(member.name)) : roster
-        const active = chosen.filter((member) => !member.absence || member.absence.partial)
+        const active = getWorkingRosterMembers(chosen)
         if (wantsNext && !active.length) continue
         const label = teams.length ? `${shift} ${teams.join('·')}조` : shift
         if (people.length === 1 && !wantsCount) {
-          const absence = chosen[0]?.absence
-          const state = absence && !absence.partial ? absence.label : `${label}${absence ? `, ${absence.label}` : ''}`
-          if (!pieces.includes(`${state}입니다.`)) pieces.push(`${state}입니다.`)
+          const state = active.length ? `${label}입니다.` : '근무 없음'
+          if (!pieces.includes(state)) pieces.push(state)
           continue
         }
         const detail = !chosen.length
           ? shift === '일근' && summary.hideDayWorkers ? '없음(주말·공휴일)' : '구성원 미등록'
-          : wantsCount ? `${active.length}명${active.some((member) => member.absence?.partial) ? '(반차·시간차 포함)' : ''}` : active.map(memberLabel).join(' ') || '없음'
+          : wantsCount ? `${active.length}명` : active.map((member) => member.name).join(' ') || '없음'
         pieces.push(`${label} ${detail}`)
       }
       if (!pieces.length && people.length === 1 && !wantsCount && !wantsNext) {
-        // A named leave/education status remains useful even without a shift assignment that day.
+        // Report known non-attendance without including leave names or reasons in a work query.
         const absences = events.filter((event) => ['휴가', '교육'].includes(event.eventType) && targets(event).includes(people[0])
           && DateTime.fromISO(event.startAtUtc) < date.plus({ days: 1 }) && DateTime.fromISO(event.endAtUtc) > date)
-        const states = [...new Set(absences.map((event) => event.eventType === '휴가' ? parseVacationInfo(event.description).vacationType || '휴가' : '교육'))]
-        pieces.push(states.length ? `${states.join(', ')}입니다.` : '배정 기록 없음')
+        const fullAbsence = absences.some((event) => event.eventType === '교육' || !/시간차|반차/.test(parseVacationInfo(event.description).vacationType || ''))
+        pieces.push(fullAbsence ? '근무 없음' : '배정 기록 없음')
       }
       if (pieces.length) rows.push(withDate(date, pieces.join(showDates ? ' / ' : '\n')))
       if (wantsNext && pieces.length) break
@@ -195,9 +250,9 @@ export function answerVoiceQuery(query: VoiceQuery, inputEvents: CalendarEvent[]
     if (wantsNext) days = days.slice(0, 1)
     return reply('ANSWER', wantsCount ? `등록된 공휴일 ${days.length}일` : days.map(([date, name]) => withDate(DateTime.fromISO(date, { zone: query.timeZone }), name)).join('\n') || '등록된 공휴일 없음', context)
   }
-  // Broad schedule questions cover activities. Rosters, leave and holidays have their own queries.
+  // Broad schedule questions include only the five activity types requested by the user.
   let selected = events.filter((event) => category === '일정'
-    ? !['근무', '휴가', '공휴일'].includes(event.eventType)
+    ? scheduleTypes.includes(event.eventType)
     : event.eventType === category)
   if (people.length) selected = selected.filter((event) => targets(event).some((name) => people.includes(name)))
   if (namedEvents.length) {
@@ -231,7 +286,8 @@ export function answerVoiceQuery(query: VoiceQuery, inputEvents: CalendarEvent[]
     const prompt = selected.length <= 3
       ? `${selected.map((event) => {
         const date = DateTime.fromISO(event.startAtUtc).setZone(query.timeZone)
-        return withDate(date, `${timeLabel(date)} ${event.summary}`)
+        const dateOnlyLeave = event.eventType === '휴가' && !parseVacationInfo(event.description).vacationType?.includes('시간차')
+        return withDate(date, `${dateOnlyLeave ? '' : `${timeLabel(date)} `}${event.summary}`)
       }).join(', ')} 중 어느 일정인가요?`
       : '어느 일정인가요? 제목을 말씀해 주세요.'
     return reply('CLARIFY', prompt, { ...context, clarification: { kind: 'event', question: text, eventIds: selected.length <= 3 ? selected.map((event) => event.localId) : [] } })
@@ -243,6 +299,13 @@ export function answerVoiceQuery(query: VoiceQuery, inputEvents: CalendarEvent[]
     countLabel = `${incomplete ? '확인된 ' : ''}${new Set(selected.flatMap(targets)).size}명${incomplete ? '(일부 대상자 미등록)' : ''}`
   }
   if (wantsCount) return reply('ANSWER', countLabel, context, selected.map((event) => event.localId))
+  if (category === '일정' && !/몇시|시작|종료|끝나|언제|어디|장소/.test(text)) {
+    const rows = scheduleTypes.flatMap((type) => {
+      const titles = selected.filter((event) => event.eventType === type).map((event) => event.summary)
+      return titles.length ? [`${type}: ${titles.join(', ')}`] : []
+    })
+    return reply('ANSWER', rows.join('\n') || '일정 없음', context, selected.map((event) => event.localId))
+  }
   if (category === '휴가' && !/몇시|시작|종료|끝나|언제|어디|장소/.test(text)) {
     const badgesByName = new Map<string, Set<string>>()
     for (const event of selected) {
@@ -265,16 +328,21 @@ export function answerVoiceQuery(query: VoiceQuery, inputEvents: CalendarEvent[]
     const allDay = date.hour === 0 && date.minute === 0 && endAt.hour === 0 && endAt.minute === 0
     const lastDay = allDay ? endAt.minus({ days: 1 }) : endAt
     const spansDays = !date.hasSame(lastDay, 'day')
+    const vacation = category === '휴가' ? parseVacationInfo(event.description) : null
+    const dateOnlyLeave = vacation !== null && !vacation.vacationType?.includes('시간차') && !/어디|장소/.test(text)
     let detail: string
     if (/어디|장소/.test(text)) detail = event.location || '장소 미등록'
-    else if (/몇시|시작|종료|끝나|언제/.test(text)) {
+    else if (dateOnlyLeave) {
+      const leaveNames = [...new Set(people.length ? names.filter((name) => people.includes(name)) : names)]
+      detail = `${leaveNames.join(' ') || '대상자 미등록'} ${vacation!.vacationType || '종류 미등록'}`
+    } else if (/몇시|시작|종료|끝나|언제/.test(text)) {
       const finish = `${date.hasSame(endAt, 'day') ? '' : `${dateLabel(endAt)} `}${timeLabel(endAt)}`
       detail = allDay ? '종일(시각 미등록)' : /종료|끝나/.test(text) && !/시작/.test(text) ? finish : /시작/.test(text) && !/종료|끝나/.test(text) ? timeLabel(date) : `${timeLabel(date)}~${finish}`
     } else if (category === '휴가') detail = `${names.join(' ') || event.summary} ${parseVacationInfo(event.description).vacationType ?? '종류 미등록'}`
     else detail = `${allDay ? '' : `${timeLabel(date)} `}${event.summary}${category !== '일정' && names.length ? ` ${names.join(' ')}` : ''}`
     // A named question needs only its requested field; broad questions keep the event title.
-    if (/어디|장소|몇시|시작|종료|끝나|언제/.test(text) && !namedEvents.length) detail = `${detail} ${event.summary}`
-    return spansDays ? `${dateLabel(date)}~${dateLabel(lastDay)} ${detail}` : withDate(date, detail)
+    if (/어디|장소|몇시|시작|종료|끝나|언제/.test(text) && !namedEvents.length && !dateOnlyLeave) detail = `${detail} ${event.summary}`
+    return spansDays ? `${dateLabel(date)}~${dateLabel(lastDay)} ${detail}` : dateOnlyLeave ? `${dateLabel(date)} ${detail}` : withDate(date, detail)
   })
   return reply('ANSWER', lines.join('\n') || `해당 ${category} 기록 없음`, context, selected.map((event) => event.localId))
 }
