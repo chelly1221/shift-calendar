@@ -1,6 +1,4 @@
 import { app, BrowserWindow, ipcMain } from 'electron'
-import path from 'node:path'
-import { fileURLToPath } from 'node:url'
 import { randomUUID } from 'node:crypto'
 import { z } from 'zod'
 import { VOICE_CHANNELS, voiceConnectionSchema, voiceControlSchema, type VoiceControl } from '../../shared/voice'
@@ -9,7 +7,7 @@ import { getShiftSettings } from '../db/settingRepository'
 import { VoiceServer } from '../voice/voiceServer'
 import { VoiceCommandService } from '../voice/voiceCommandService'
 import { PcSpeechPlayback } from '../voice/pcSpeechPlayback'
-import { NeuralSpeechClient } from '../voice/neuralSpeechClient'
+import { MicrosoftSpeech } from '../voice/microsoftSpeech'
 import { executeCalendarDelete, executeCalendarUpsert } from './registerCalendarIpc'
 import { runSyncNow } from '../sync/syncEngine'
 
@@ -42,18 +40,11 @@ const commands = new VoiceCommandService({
     return '동기화를 요청했습니다. PC의 동기화 화면에서 결과를 확인해 주세요.'
   },
 })
-let neuralSpeech: NeuralSpeechClient | null = null
-function getNeuralSpeech(): NeuralSpeechClient {
-  return neuralSpeech ??= new NeuralSpeechClient(path.join(path.dirname(fileURLToPath(import.meta.url)), 'neuralSpeechWorker.js'), app.isPackaged
-    ? path.join(process.resourcesPath, 'voice-model') : path.join(app.getAppPath(), 'voice-model'))
-}
-const pcSpeech = new PcSpeechPlayback({ synthesize: (text, signal) => getNeuralSpeech().synthesize(text, signal) })
+const pcSpeech = new PcSpeechPlayback(new MicrosoftSpeech())
 export const voiceServer = new VoiceServer((query) => commands.query(query), 43827, (id, confirm) => commands.confirm(id, confirm), pcSpeech)
-app.once('before-quit', () => { pcSpeech.close(); neuralSpeech?.close() })
+app.once('before-quit', () => pcSpeech.close())
 
 export function registerVoiceIpc(): void {
-  // Load local sessions early so the first spoken answer need not wait for model loading.
-  void getNeuralSpeech().warmup().catch((error) => console.warn('PC AI 음성 준비 실패:', error))
   ipcMain.removeAllListeners(VOICE_CHANNELS.controlResult)
   ipcMain.on(VOICE_CHANNELS.controlResult, (event, payload: unknown) => {
     const parsed = z.object({ id: z.string().uuid(), text: z.string().max(1000), failed: z.boolean() }).strict().safeParse(payload)

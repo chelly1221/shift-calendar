@@ -1,9 +1,66 @@
-# Local AI speech synthesis
+# PC speech and third-party notices
 
-This application's PC voice is AI-generated audio synthesized locally using
-Supertonic 3, with the supplied F1 voice style. Calendar answers and names are
-not transmitted to Supertone or Hugging Face. The build downloads public model
-assets; the installed application runs them without an inference API.
+The current PC voice is Microsoft's online Korean female voice
+`ko-KR-SunHiNeural`, through the Edge Read Aloud service. The text to be read
+aloud, including names in the answer, is sent to Microsoft over an encrypted
+WebSocket to obtain audio. Calendar database files, account tokens, and the
+original question are not sent by this speech component. No Azure Speech
+subscription or account credentials are configured. This is an unofficial
+client of the Edge service, not a supported Azure Speech API integration.
+Playback requires an Internet connection. Service errors are reported without
+automatically switching to Google, Windows speech, or the local model.
+
+SunHi uses its native `+0%` speaking-rate setting (normal speed) with unchanged pitch. The
+application does not stretch or resample the returned speech, add pauses
+between every word, or add a fixed delay between answer items. Pronunciation
+normalization for Korean clock times, noon, and midnight is retained.
+
+WebSocket transport uses `ws` 8.21.3 (MIT). Its original license and protocol
+references are included under `resources/licenses/microsoft-speech/`.
+
+The earlier Supertonic 3 implementation and model assets remain in the source
+and PC distribution but are not used by the current speech path. No local model
+warmup or inference is performed for the default PC voice. The notices below
+remain applicable to those bundled assets and their runtime.
+
+## MP3 decoding on the PC
+
+Audio returned by Microsoft is decoded locally with `mpg123-decoder` 1.0.3 and
+`@wasm-audio-decoders/common` 9.0.7. These JavaScript wrappers use the MIT
+license; the embedded mpg123 library uses the GNU LGPL 2.1. The wrappers' MIT
+declaration does not replace the embedded library's license.
+
+Copyright (c) 1995-2020 by Michael Hipp and others,
+free software under the terms of the LGPL v2.1.
+
+The following notices are distributed under
+`resources/licenses/mpg123-decoder/`:
+
+| Component | License / notice |
+| --- | --- |
+| WASM Audio Decoders, Ethan Halsall | `WASM-AUDIO-DECODERS-MIT.txt` (upstream copyright notice and MIT terms) |
+| mpg123, pinned source `08247b317163175e62035893af3ff9e71a5dfefd` | Complete `mpg123-COPYING.txt` and `mpg123-AUTHORS.txt` |
+| puff 2.3, Mark Adler, included by common | `puff-LICENSE.h`, retaining the complete original zlib-style notice |
+| `@eshaz/web-worker` 1.2.2 | Apache 2.0, `web-worker-LICENSE.txt` and upstream `web-worker-README.md` |
+| `simple-yenc` 1.0.4, Ethan Halsall | MIT, `simple-yenc-LICENSE.txt` |
+| Emscripten 4.0.7 generated runtime | `emscripten-LICENSE.txt`, `emscripten-AUTHORS.txt`, and `musl-COPYRIGHT.txt` |
+
+The same directory includes complete mpg123 source, the decoder and common
+source and build files, exact npm package archives, provenance and checksums,
+and `REBUILD.md` instructions for rebuilding and replacing the library. These
+files accompany the distribution; a separate source request is not needed.
+The LGPL-covered library may be modified or replaced, including reverse
+engineering needed to debug modifications to it. The runtime decoder package
+and its dependencies are kept outside `app.asar`, under
+`resources/app.asar.unpacked/node_modules/`, to allow compatible replacements.
+No modifications have been made to the distributed third-party decoder code.
+
+## Preserved local model: Supertonic 3
+
+The previous local implementation uses Supertonic 3 with the supplied F1
+voice style. When explicitly used by that implementation, synthesis is local
+and does not send text to Supertone or Hugging Face. The build downloads public
+model assets. This is not the current Microsoft speech path described above.
 
 ## Model and voice assets: BigScience Open RAIL-M
 

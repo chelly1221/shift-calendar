@@ -108,6 +108,8 @@ export default defineConfig(({ command }) => ({
                 '@prisma/driver-adapter-utils',
                 'better-sqlite3',
                 'onnxruntime-node',
+                'mpg123-decoder',
+                'ws',
               ],
             },
           },

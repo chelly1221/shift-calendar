@@ -1,0 +1,13 @@
+/audio
+/tmp
+.DS_Store
+node_modules
+.vscode
+
+*.tmp.js
+*.sizes.json
+Puff.wasm
+
+coverage
+test/actual/*
+test/expected/*.wav

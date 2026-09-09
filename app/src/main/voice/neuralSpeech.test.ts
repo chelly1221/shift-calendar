@@ -71,6 +71,21 @@ describe('NeuralSpeechSynthesizer', () => {
     expect(splitNeuralSpeech('일근 김수헌\n\n주간 A조 윤태연 이명섭\n야간 B조 이상승\n')).toEqual(['일근 김수헌', '주간 A조 윤태연 이명섭', '야간 B조 이상승'])
   })
 
+  it.each([
+    ['일근 박혜지 윤형집', '일근 박혜지 윤형집.'],
+    ['일반 장비 상태 확인', '일반 장비 상태 확인.'],
+    ['박혜지, 윤형집. 교육: 안전 교육', '박혜지, 윤형집. 교육: 안전 교육.'],
+    ['9월 16일 오전 9시 30분 시간차', '9월 16일 오전 9시 30분 시간차.'],
+    ['2026-09-16 회의 14:30~15:00', '2026-09-16 회의 14:30~15:00.'],
+    ['  일근\t 박혜지   윤형집  ', '일근 박혜지 윤형집.'],
+  ])('preserves natural word spacing and explicit punctuation in model input: %s', async (text, expected) => {
+    await new NeuralSpeechSynthesizer('models').synthesize(text)
+    const inputs = mock.runs.get('duration_predictor.onnx')!.mock.calls[0][0] as { text_ids: Tensor }
+    const tokens = inputs.text_ids.data as BigInt64Array
+    const modelText = Array.from(tokens, (token) => String.fromCharCode(Number(token))).join('').normalize('NFC')
+    expect(modelText).toBe(`<ko>${expected}</ko>`)
+  })
+
   it('shares warmup and reuses loaded sessions for later requests', async () => {
     const speech = new NeuralSpeechSynthesizer('models')
     await Promise.all([speech.warmup(), speech.warmup()])
@@ -79,7 +94,7 @@ describe('NeuralSpeechSynthesizer', () => {
     expect(mock.create).toHaveBeenCalledTimes(4)
     expect(wav.toString('ascii', 0, 4)).toBe('RIFF')
     expect(wav.length).toBeGreaterThan(800)
-    expect(mock.runs.get('vector_estimator.onnx')).toHaveBeenCalledTimes(10)
+    expect(mock.runs.get('vector_estimator.onnx')).toHaveBeenCalledTimes(16)
   })
 
   it('releases partial initialization and can retry a failed warmup', async () => {

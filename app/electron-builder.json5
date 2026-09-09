@@ -24,7 +24,11 @@
     "node_modules/.prisma/**",
     "node_modules/better-sqlite3/**",
     "node_modules/keytar/**",
-    "node_modules/onnxruntime-node/**"
+    "node_modules/onnxruntime-node/**",
+    "node_modules/mpg123-decoder/**",
+    "node_modules/@wasm-audio-decoders/common/**",
+    "node_modules/@eshaz/web-worker/**",
+    "node_modules/simple-yenc/**"
   ],
   "icon": "build/icon.ico",
   "extraResources": [

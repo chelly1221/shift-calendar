@@ -22,8 +22,9 @@ interface Components {
   vocoder: ort.InferenceSession
 }
 
-const STEPS = 5
-const SPEED = 1.05
+// Give Korean names and short list entries more synthesis detail and speaking time.
+const STEPS = 8
+const SPEED = 0.90
 
 function checkAbort(signal?: AbortSignal): void {
   if (signal?.aborted) {
