@@ -1,0 +1,4 @@
+# Keep upstream license/notice bytes unchanged on Windows checkouts.
+LICENSE -text
+*.txt -text
+*.TXT -text

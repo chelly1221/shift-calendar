@@ -85,7 +85,7 @@ export default defineConfig(({ command }) => ({
     electron({
       main: {
         // Shortcut of `build.lib.entry`.
-        entry: 'src/main/main.ts',
+        entry: { main: 'src/main/main.ts', neuralSpeechWorker: 'src/main/voice/neuralSpeechWorker.ts' },
         vite: {
           define: command === 'serve'
             ? { 'process.env.VITE_DEV_SERVER_URL': JSON.stringify('http://localhost:5173') }
@@ -97,6 +97,7 @@ export default defineConfig(({ command }) => ({
             // Remove old hashed main bundles before packaging; preload is built afterwards.
             emptyOutDir: true,
             rollupOptions: {
+              output: { entryFileNames: '[name].js' },
               external: [
                 'keytar',
                 '@prisma/client',
@@ -106,6 +107,7 @@ export default defineConfig(({ command }) => ({
                 '@prisma/adapter-better-sqlite3',
                 '@prisma/driver-adapter-utils',
                 'better-sqlite3',
+                'onnxruntime-node',
               ],
             },
           },

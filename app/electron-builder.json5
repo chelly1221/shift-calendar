@@ -11,6 +11,9 @@
   "files": [
     "dist",
     "dist-electron",
+    "!node_modules/onnxruntime-node/bin/napi-v6/darwin/**",
+    "!node_modules/onnxruntime-node/bin/napi-v6/linux/**",
+    "!node_modules/onnxruntime-node/bin/napi-v6/win32/arm64/**",
     {
       "from": "node_modules/.prisma",
       "to": "node_modules/.prisma",
@@ -20,10 +23,16 @@
   "asarUnpack": [
     "node_modules/.prisma/**",
     "node_modules/better-sqlite3/**",
-    "node_modules/keytar/**"
+    "node_modules/keytar/**",
+    "node_modules/onnxruntime-node/**"
   ],
   "icon": "build/icon.ico",
-  "extraResources": [{ "from": "build/icon.ico", "to": "icon.ico" }],
+  "extraResources": [
+    { "from": "build/icon.ico", "to": "icon.ico" },
+    { "from": "voice-model", "to": "voice-model", "filter": ["**/*", "!**/*.download"] },
+    { "from": "licenses", "to": "licenses" },
+    { "from": "THIRD_PARTY_VOICE.md", "to": "THIRD_PARTY_VOICE.md" }
+  ],
   "win": {
     "target": [
       {

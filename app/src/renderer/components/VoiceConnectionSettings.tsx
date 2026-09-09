@@ -20,6 +20,7 @@ export function VoiceConnectionSettings() {
   return <section className="settings-section">
     <p className="settings-label">안드로이드 음성 도우미</p>
     <p className="settings-hint">같은 와이파이에서 음성으로 일정을 조회하고 PC 캘린더를 조작합니다. PC 앱이 실행되어 있어야 합니다.</p>
+    <p className="settings-hint">답변은 이 PC의 AI 합성 음성으로 읽습니다. 음성 생성은 PC 안에서 처리합니다.</p>
     <button type="button" className="ghost-button" disabled={busy} onClick={() => { void toggle() }}>
       {busy ? '변경 중…' : connection.enabled ? '휴대폰 연결 끄기' : '휴대폰 연결 켜기'}
     </button>

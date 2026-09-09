@@ -6,6 +6,9 @@ export function voiceTimeLabel(hour: number, minute = 0): string {
 export function formatVoiceSpeech(text: string): string {
   return text.replace(/(?<!\d)([01]?\d|2[0-3]):([0-5]\d)(?!\d)/g,
     (_match, hour: string, minute: string) => voiceTimeLabel(Number(hour), Number(minute)))
+    // List separators are pauses; keep numeric dates/fractions, links, and file paths intact.
+    .replace(/https?:\/\/\S+|[A-Za-z]:[\\/]\S+|\d+(?:[ \t]*[/／][ \t]*\d+)+|[ \t]*[/／][ \t]*/g,
+      (part) => /^(?:https?:\/\/|[A-Za-z]:[\\/]|\d)/.test(part) ? part : ', ')
 }
 
 export function speakLeaveBadges(entries: [string, Set<string>][]): string {

@@ -31,6 +31,7 @@ class HandsFreeService : Service() {
     private var speechCaptureFinishTimeout: Runnable? = null
     private val prefs by lazy { getSharedPreferences("voice", MODE_PRIVATE) }
     private lateinit var liveQuestionRecognizer: LiveQuestionRecognizer
+    private lateinit var mediaPlayback: MediaPlaybackMonitor
     private var observer: ((State) -> Unit)? = null
     private var state = State("까치야 음성 대기 준비 중…", busy = true)
     private var notificationStatus = ""
@@ -72,6 +73,7 @@ class HandsFreeService : Service() {
         val channel = NotificationChannel(CHANNEL, "까치야 음성 대기", NotificationManager.IMPORTANCE_LOW).apply { setSound(null, null); lockscreenVisibility = Notification.VISIBILITY_PRIVATE }
         getSystemService(NotificationManager::class.java).createNotificationChannel(channel)
         liveQuestionRecognizer = LiveQuestionRecognizer(applicationContext)
+        mediaPlayback = MediaPlaybackMonitor(applicationContext, handler, ::mediaPlaybackChanged)
     }
     override fun onBind(intent: Intent): IBinder = LocalBinder()
     override fun onStartCommand(intent: Intent?, flags: Int, startId: Int): Int {
@@ -88,6 +90,7 @@ class HandsFreeService : Service() {
         VoiceListeningTileService.setListening(this, true)
         wakeLock = getSystemService(PowerManager::class.java).newWakeLock(PowerManager.PARTIAL_WAKE_LOCK, "shiftcalendar:voice").apply { setReferenceCounted(false) }
         renewLock.run()
+        mediaPlayback.start()
         awaitWake()
         discoverPc()
         // A stopped or killed microphone service is restarted only while the activity is visible.
@@ -129,12 +132,41 @@ class HandsFreeService : Service() {
         spokenQuestions.finish(); spokenQuestions.abandonPartial()
         speechPlayback.cancel()
     }
+    private fun mediaPlaybackChanged(playing: Boolean) {
+        if (stopped) return
+        if (playing) {
+            stopCapture()
+            spokenQuestions.abandonPartial()
+            if (afterSpeechCapture != null) finishSpeechCapture()
+            if (!networkBusy) publishMediaPause()
+            return
+        }
+        recognitionRetry.reset()
+        if (networkBusy) return
+        if (spokenQuestions.speaking) { listenDuringSpeech(); return }
+        when (dialogue.phase) {
+            WakeDialogue.Phase.QUESTION -> beginQuestion()
+            WakeDialogue.Phase.CONFIRMATION -> if (hasPending()) beginQuestion(true) else awaitWake()
+            WakeDialogue.Phase.WAITING -> awaitWake()
+            else -> Unit
+        }
+    }
+    private fun publishMediaPause() {
+        publish(if (spokenQuestions.speaking) "PC 답변 중 · 휴대폰 미디어 재생 중에는 듣기를 쉽니다."
+            else "미디어 재생 중 · 듣기 잠시 쉼 · 재생이 끝나면 자동으로 다시 듣습니다.")
+    }
+    private fun canCapture(): Boolean {
+        if (mediaPlayback.allowsListening()) return true
+        publishMediaPause()
+        return false
+    }
     private fun awaitWake() {
         if (stopped) return
         cancelSpeech()
         stopCapture()
         val continuing = dialogue.phase == WakeDialogue.Phase.WAITING
         dialogue.enter(WakeDialogue.Phase.WAITING)
+        if (!canCapture()) return
         if (!readyOnce) publish("음성 대기 준비 중…")
         else if (!continuing) publish("다음 질문을 기다립니다.")
         val token = captureId
@@ -147,7 +179,7 @@ class HandsFreeService : Service() {
                 WakePhrase.question(text)?.let { publish("질문을 듣고 있습니다.", question = it) }
             },
             done = { result ->
-                if (!stopped && token == captureId) {
+                if (!stopped && token == captureId && mediaPlayback.allowsResult()) {
                     handler.removeCallbacks(captureTimeout)
                     recognitionReadiness.cancel()
                     result.onSuccess { recognitionRetry.reset(); handleSpeech(it) }
@@ -187,6 +219,7 @@ class HandsFreeService : Service() {
         cancelSpeech()
         stopCapture()
         dialogue.enter(if (confirming) WakeDialogue.Phase.CONFIRMATION else WakeDialogue.Phase.QUESTION)
+        if (!canCapture()) return
         publish("마이크를 준비하는 중…", question = "")
         val token = captureId
         watchReadiness(token)
@@ -196,7 +229,7 @@ class HandsFreeService : Service() {
             partial = { publish(state.status, question = it) },
             processing = { publish("질문을 인식하는 중…") },
             done = { result ->
-                if (!stopped && token == captureId) {
+                if (!stopped && token == captureId && mediaPlayback.allowsResult()) {
                     handler.removeCallbacks(captureTimeout)
                     recognitionReadiness.cancel()
                     result.onSuccess(::handleSpeech).onFailure { failure -> recoverRecognition(token, failure) }
@@ -254,11 +287,13 @@ class HandsFreeService : Service() {
         if (!stopped && spokenQuestions.speaking) listenDuringSpeech()
     }
     private fun publishSpeechQueue() {
+        if (mediaPlayback.paused) { publishMediaPause(); return }
         publish(if (spokenQuestions.size == 0) "PC 답변 중 · ‘까치야’로 다음 질문을 말씀하세요."
             else "PC 답변 중 · 다음 질문 ${spokenQuestions.size}개 대기")
     }
     private fun listenDuringSpeech() {
         if (stopped || !spokenQuestions.speaking) return
+        if (!canCapture()) return
         stopCapture()
         spokenQuestions.abandonPartial()
         val token = captureId
@@ -270,7 +305,7 @@ class HandsFreeService : Service() {
             ready = { recognitionReadiness.cancel(); readyOnce = true; if (spokenQuestions.speaking) publishSpeechQueue() },
             partial = { spokenQuestions.partial(it) },
             done = { result ->
-                if (!stopped && token == captureId) {
+                if (!stopped && token == captureId && mediaPlayback.allowsResult()) {
                     handler.removeCallbacks(captureTimeout)
                     recognitionReadiness.cancel()
                     result.onSuccess {
@@ -423,6 +458,7 @@ class HandsFreeService : Service() {
     private fun stopAssistant(message: String = "까치야 음성 대기를 껐습니다.") {
         if (stopped) return
         stopped = true; prefs.edit().putBoolean("wakeEnabled", false).apply()
+        mediaPlayback.close()
         VoiceListeningTileService.setListening(this, false)
         spokenQuestions.clear()
         stopCapture(); liveQuestionRecognizer.close(); cancelSpeech()
@@ -435,6 +471,7 @@ class HandsFreeService : Service() {
         VoiceListeningTileService.setListening(this, false)
         spokenQuestions.clear()
         handler.removeCallbacks(renewLock)
+        mediaPlayback.close()
         stopCapture(); liveQuestionRecognizer.close(); cancelSpeech(); speechPlayback.close()
         wakeLock?.let { if (it.isHeld) it.release() }
         // Process in-flight response callbacks first so their PC speech IDs can be stopped as well.

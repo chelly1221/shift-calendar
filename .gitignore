@@ -11,6 +11,7 @@ release
 .DS_Store
 .claude/settings.local.json
 .local-tools/
+app/voice-model/
 android/.gradle/
 android/.kotlin/
 android/**/build/

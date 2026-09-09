@@ -18,22 +18,42 @@ class SpeechChild extends EventEmitter {
     this.stdin.on('data', (buffer: Buffer) => { this.input += buffer.toString('utf8') })
   }
   progress(index: number) { this.stdout.write(`${JSON.stringify({ type: 'chunk', index })}\n`) }
+  endChunk(index: number) { this.stdout.write(`${JSON.stringify({ type: 'chunkEnd', index })}\n`) }
   complete(code = 0) { this.emit('close', code, null) }
+  payloads(): { index: number; audio: string }[] {
+    return this.input.trim() ? this.input.trim().split('\n').map((line) => JSON.parse(line) as { index: number; audio: string }) : []
+  }
 }
 
 const children: SpeechChild[] = []
 const players: PcSpeechPlayback[] = []
+const synthesize = vi.fn<(text: string, signal?: AbortSignal) => Promise<Buffer>>()
+const fakeAudio = (text: string) => Buffer.from(`WAV:${text}`, 'utf8')
 const flush = async () => { await Promise.resolve(); await Promise.resolve() }
+const deferred = <T>() => {
+  let resolve!: (value: T) => void
+  let reject!: (reason: Error) => void
+  const promise = new Promise<T>((done, fail) => { resolve = done; reject = fail })
+  return { promise, resolve, reject }
+}
 const player = (platform: NodeJS.Platform = 'win32') => {
-  const instance = new PcSpeechPlayback(spawn, platform)
+  const instance = new PcSpeechPlayback({ synthesize }, spawn, platform)
   players.push(instance)
   return instance
+}
+const playAll = async (child: SpeechChild) => {
+  for (let index = 0; index < child.payloads().length; index++) {
+    child.progress(index)
+    await flush()
+    child.endChunk(index)
+  }
 }
 
 beforeEach(() => {
   vi.resetAllMocks()
   children.length = 0
   players.length = 0
+  synthesize.mockImplementation(async (text) => fakeAudio(text))
   vi.mocked(spawn).mockImplementation(() => {
     const child = new SpeechChild()
     children.push(child)
@@ -50,22 +70,31 @@ describe('PcSpeechPlayback', () => {
     expect(player().getState()).toEqual({ id: null, status: 'idle', text: '', chunk: '' })
   })
 
-  it('queues synchronously and waits for a real chunk signal before marking speech active', async () => {
+  it('waits for audio playback to start and for its final process exit before reporting completion', async () => {
+    const audio = deferred<Buffer>()
+    synthesize.mockReturnValueOnce(audio.promise)
     const speech = player()
     const state = speech.speak('이상승 연차')
     expect(state.id).toMatch(/^[0-9a-f-]{36}$/u)
     expect(state.status).toBe('queued')
     expect(spawn).not.toHaveBeenCalled()
     await flush()
+    expect(children[0].input).toBe('')
+    children[0].progress(0)
+    expect(speech.getState(state.id!).status).toBe('queued')
+    audio.resolve(fakeAudio('이상승 연차'))
+    await flush()
     expect(speech.getState(state.id!)).toMatchObject({ status: 'queued', text: '이상승 연차', chunk: '' })
     children[0].progress(0)
     expect(speech.getState(state.id!)).toMatchObject({ status: 'speaking', chunk: '이상승 연차' })
+    children[0].endChunk(0)
+    expect(speech.getState(state.id!).status).toBe('speaking')
     expect(state.status).toBe('queued')
     children[0].complete()
     expect(speech.getState(state.id!)).toMatchObject({ status: 'done', chunk: '' })
   })
 
-  it('uses a fixed hidden command and sends potentially executable text only as UTF-8 JSON stdin', async () => {
+  it('uses a fixed hidden audio helper and transfers only generated WAV data as JSON lines', async () => {
     const text = '김수헌 연차; $(Write-Output "injected") ` $env:PATH'
     player().speak(text)
     await flush()
@@ -75,61 +104,132 @@ describe('PcSpeechPlayback', () => {
     expect(args).toContain('-EncodedCommand')
     const script = Buffer.from(args![args!.length - 1], 'base64').toString('utf16le')
     expect(script).not.toContain(text)
-    expect(script).toContain('[Console]::In.ReadToEnd() | ConvertFrom-Json')
-    expect(script).toContain("Culture.Name -like 'ko-*'")
-    expect(script).toContain('$speaker.Volume = 100')
-    expect(script).toContain('$speaker.SetOutputToDefaultAudioDevice()')
-    expect(JSON.parse(children[0].input)).toEqual({ chunks: [text] })
+    expect(script).toContain('[System.Media.SoundPlayer]')
+    expect(script).not.toContain('System.Speech')
+    expect(synthesize).toHaveBeenCalledWith(text, expect.any(AbortSignal))
+    expect(children[0].payloads()).toEqual([{ index: 0, audio: fakeAudio(text).toString('base64') }])
+    expect(children[0].input.endsWith('\n')).toBe(true)
+    expect(children[0].stdin.writableEnded).toBe(true)
   })
 
-  it('reads all lines of a long answer in one job and finishes only when the process closes', async () => {
-    const text = Array.from({ length: 60 }, (_, index) => `9월 ${index + 1}일 김수헌 연차`).join('\n')
+  it('normalizes slash separators and times even when replay is requested directly', async () => {
+    const speech = player()
+    const state = speech.speak('일근 김수헌 / 주간 A조 ／ 회의 14:30')
+    await flush()
+    expect(state.text).toBe('일근 김수헌, 주간 A조, 회의 오후 2시 30분')
+    expect(synthesize).toHaveBeenCalledWith(state.text, expect.any(AbortSignal))
+    children[0].progress(0)
+    expect(speech.getState(state.id!).chunk).toBe(state.text)
+  })
+
+  it('generates at most one upcoming chunk while the current audio plays', async () => {
+    const secondAudio = deferred<Buffer>()
+    synthesize.mockResolvedValueOnce(fakeAudio('첫 줄')).mockReturnValueOnce(secondAudio.promise)
+    const speech = player()
+    speech.speak('첫 줄\n둘째 줄\n셋째 줄')
+    await flush()
+    expect(synthesize).toHaveBeenCalledTimes(1)
+    expect(children[0].payloads()).toHaveLength(1)
+    expect(children[0].stdin.writableEnded).toBe(false)
+    children[0].progress(0)
+    await flush()
+    expect(synthesize).toHaveBeenCalledTimes(2)
+    children[0].progress(0)
+    children[0].endChunk(0)
+    children[0].progress(1)
+    expect(speech.getState().chunk).toBe('첫 줄')
+    expect(synthesize).toHaveBeenCalledTimes(2)
+    secondAudio.resolve(fakeAudio('둘째 줄'))
+    await flush()
+    expect(children[0].payloads()).toHaveLength(2)
+    expect(synthesize).toHaveBeenCalledTimes(2)
+    children[0].progress(1)
+    await flush()
+    expect(synthesize).toHaveBeenCalledTimes(3)
+    expect(children[0].payloads()).toHaveLength(3)
+    expect(children[0].stdin.writableEnded).toBe(true)
+  })
+
+  it('reads every entry of a long answer in order without starting another job', async () => {
+    const lines = Array.from({ length: 60 }, (_, index) => `9월 ${index + 1}일 김수헌 연차`)
+    const text = lines.join('\n')
     const speech = player()
     const state = speech.speak(text)
     await flush()
-    const payload = JSON.parse(children[0].input) as { chunks: string[] }
-    expect(payload.chunks).toHaveLength(60)
-    children[0].progress(59)
-    expect(speech.getState(state.id!)).toMatchObject({ status: 'speaking', text, chunk: payload.chunks[59] })
+    await playAll(children[0])
+    expect(synthesize.mock.calls.map(([line]) => line)).toEqual(lines)
+    expect(children[0].payloads().map(({ index, audio }) => ({ index, text: Buffer.from(audio, 'base64').toString('utf8') })))
+      .toEqual(lines.map((line, index) => ({ index, text: `WAV:${line}` })))
+    expect(speech.getState(state.id!)).toMatchObject({ status: 'speaking', text, chunk: lines[59] })
+    expect(spawn).toHaveBeenCalledTimes(1)
     children[0].complete()
     expect(speech.getState(state.id!).status).toBe('done')
   })
 
-  it('splits very long lines without dropping words or splitting Unicode characters', async () => {
+  it('splits very long lines into short speech without dropping or splitting Unicode characters', async () => {
     const text = '가나다🙂'.repeat(250)
     player().speak(text)
     await flush()
-    const payload = JSON.parse(children[0].input) as { chunks: string[] }
-    expect(payload.chunks.length).toBeGreaterThan(1)
-    expect(payload.chunks.join('')).toBe(text)
-    expect(payload.chunks.every((chunk) => Array.from(chunk).length <= 300)).toBe(true)
+    await playAll(children[0])
+    const chunks = synthesize.mock.calls.map(([chunk]) => chunk)
+    expect(chunks.length).toBeGreaterThan(1)
+    expect(chunks.join('')).toBe(text)
+    expect(chunks.every((chunk) => Array.from(chunk).length <= 120)).toBe(true)
+    expect(chunks.every((chunk) => !chunk.includes('\ufffd'))).toBe(true)
   })
 
-  it('preserves FIFO and does not start a second answer while the first process is playing', async () => {
+  it('preserves FIFO and does not generate or play another answer while the first process is alive', async () => {
     const speech = player()
     const first = speech.speak('첫 답변')
     const second = speech.speak('다음 답변')
     await flush()
-    children[0].progress(0)
+    await playAll(children[0])
     expect(spawn).toHaveBeenCalledTimes(1)
+    expect(synthesize).toHaveBeenCalledTimes(1)
     expect(speech.getState(second.id!).status).toBe('queued')
     expect(speech.getState().id).toBe(first.id)
     children[0].complete()
     await flush()
     expect(spawn).toHaveBeenCalledTimes(2)
-    expect(JSON.parse(children[1].input)).toEqual({ chunks: ['다음 답변'] })
+    expect(synthesize.mock.calls.map(([text]) => text)).toEqual(['첫 답변', '다음 답변'])
     expect(speech.getState().id).toBe(second.id)
   })
 
-  it('handles fragmented progress and ignores malformed or out-of-range output', async () => {
+  it('handles fragmented progress and ignores malformed, unsent, duplicate, and out-of-order updates', async () => {
     const speech = player()
     speech.speak('첫 줄\n둘째 줄')
     await flush()
-    children[0].stdout.write('host banner\n{"type":"chunk","index":20}\n')
+    children[0].stdout.write('host banner\n{"type":"chunk","index":20}\n{"type":"chunkEnd","index":0}\n')
+    children[0].progress(1)
     expect(speech.getState().status).toBe('queued')
     children[0].stdout.write('{"type":"chunk",')
-    children[0].stdout.write('"index":1}\r\n')
-    expect(speech.getState()).toMatchObject({ status: 'speaking', chunk: '둘째 줄' })
+    children[0].stdout.write('"index":0}\r\n')
+    await flush()
+    expect(speech.getState()).toMatchObject({ status: 'speaking', chunk: '첫 줄' })
+    children[0].progress(1)
+    expect(speech.getState().chunk).toBe('첫 줄')
+    children[0].endChunk(1)
+    children[0].endChunk(0)
+    children[0].progress(0)
+    children[0].progress(1)
+    children[0].endChunk(1)
+    children[0].complete()
+    expect(speech.getState().status).toBe('done')
+    expect(synthesize).toHaveBeenCalledTimes(2)
+  })
+
+  it.each(['before playback', 'before audio ends', 'before final chunk ends'])('does not report success when the process exits %s', async (stage) => {
+    const speech = player()
+    speech.speak('첫 줄\n둘째 줄')
+    await flush()
+    if (stage !== 'before playback') children[0].progress(0)
+    if (stage === 'before final chunk ends') {
+      await flush()
+      children[0].endChunk(0)
+      children[0].progress(1)
+    }
+    children[0].complete()
+    expect(speech.getState().status).toBe('error')
   })
 
   it('cancels a queued job without interrupting the active answer', async () => {
@@ -139,28 +239,53 @@ describe('PcSpeechPlayback', () => {
     await flush()
     expect(speech.stop(second.id!).status).toBe('stopped')
     expect(children[0].kill).not.toHaveBeenCalled()
+    await playAll(children[0])
     children[0].complete()
     await flush()
     expect(spawn).toHaveBeenCalledTimes(1)
     expect(speech.getState(first.id!).status).toBe('done')
   })
 
-  it('waits for a stopped active process to close before starting the next queued answer', async () => {
+  it('aborts synthesis and ignores audio that arrives after cancellation', async () => {
+    const lateAudio = deferred<Buffer>()
+    synthesize.mockReturnValueOnce(lateAudio.promise)
     const speech = player()
     const first = speech.speak('첫 답변')
     const second = speech.speak('다음 답변')
     await flush()
-    children[0].progress(0)
+    const signal = synthesize.mock.calls[0][1]!
+    expect(signal.aborted).toBe(false)
     expect(speech.stop(first.id!).status).toBe('stopped')
+    expect(signal.aborted).toBe(true)
     expect(children[0].kill).toHaveBeenCalledTimes(1)
+    lateAudio.resolve(fakeAudio('취소된 음성'))
     await flush()
+    expect(children[0].input).toBe('')
     expect(spawn).toHaveBeenCalledTimes(1)
     children[0].progress(0)
+    children[0].endChunk(0)
     expect(speech.getState(first.id!).status).toBe('stopped')
     children[0].complete(1)
     await flush()
     expect(spawn).toHaveBeenCalledTimes(2)
     expect(speech.getState(second.id!).status).toBe('queued')
+  })
+
+  it('ignores a synthesis rejection after a cancelled process has already closed', async () => {
+    const lateAudio = deferred<Buffer>()
+    synthesize.mockReturnValueOnce(lateAudio.promise)
+    const speech = player()
+    const first = speech.speak('첫 답변')
+    speech.speak('다음 답변')
+    await flush()
+    speech.stop(first.id!)
+    children[0].complete(1)
+    await flush()
+    lateAudio.reject(new Error('cancelled inference'))
+    await flush()
+    expect(speech.getState(first.id!).status).toBe('stopped')
+    expect(children[1].kill).not.toHaveBeenCalled()
+    expect(spawn).toHaveBeenCalledTimes(2)
   })
 
   it('stops all jobs and allows a new answer afterward', async () => {
@@ -175,7 +300,7 @@ describe('PcSpeechPlayback', () => {
     speech.speak('새 답변')
     await flush()
     expect(spawn).toHaveBeenCalledTimes(2)
-    expect(JSON.parse(children[1].input)).toEqual({ chunks: ['새 답변'] })
+    expect(synthesize.mock.calls.map(([text]) => text)).toEqual(['첫 답변', '새 답변'])
   })
 
   it('cancels a job before the spawn microtask runs', async () => {
@@ -184,9 +309,24 @@ describe('PcSpeechPlayback', () => {
     speech.stop(state.id!)
     await flush()
     expect(spawn).not.toHaveBeenCalled()
+    expect(synthesize).not.toHaveBeenCalled()
   })
 
-  it('reports a nonzero process exit with the actual synthesizer error', async () => {
+  it('reports synthesis failures without overlapping the next queued answer', async () => {
+    synthesize.mockRejectedValueOnce(new Error('model unavailable'))
+    const speech = player()
+    const first = speech.speak('첫 답변')
+    speech.speak('다음 답변')
+    await flush()
+    expect(speech.getState(first.id!)).toMatchObject({ status: 'error', error: 'PC AI 음성 생성 실패: model unavailable' })
+    expect(children[0].kill).toHaveBeenCalledTimes(1)
+    expect(spawn).toHaveBeenCalledTimes(1)
+    children[0].complete(1)
+    await flush()
+    expect(spawn).toHaveBeenCalledTimes(2)
+  })
+
+  it('reports a nonzero process exit with the actual audio device error', async () => {
     const speech = player()
     speech.speak('답변')
     await flush()
@@ -195,7 +335,7 @@ describe('PcSpeechPlayback', () => {
     expect(speech.getState()).toMatchObject({ status: 'error', error: '사용 가능한 오디오 장치가 없습니다.' })
   })
 
-  it('reports process startup errors and starts the next job only once despite a later close event', async () => {
+  it('handles startup errors and starts the next job only once despite later duplicate events', async () => {
     const speech = player()
     const first = speech.speak('첫 답변')
     speech.speak('다음 답변')
@@ -259,7 +399,7 @@ describe('PcSpeechPlayback', () => {
     expect(spawn).toHaveBeenCalledTimes(2)
   })
 
-  it('handles stdout stream errors without uncaught error events', async () => {
+  it('handles stdout stream errors without uncaught or duplicate failures', async () => {
     const speech = player()
     speech.speak('답변')
     await flush()
@@ -276,15 +416,17 @@ describe('PcSpeechPlayback', () => {
     speech.speak('다음 답변')
     speech.speak('마지막 답변')
     await flush()
+    await playAll(children[0])
     children[0].complete()
     await flush()
     children[0].progress(0)
+    children[0].endChunk(0)
     children[0].complete(1)
     expect(speech.getState(first.id!).status).toBe('done')
     expect(spawn).toHaveBeenCalledTimes(2)
   })
 
-  it('returns a useful error for an unknown job and cannot mutate internal state through snapshots', async () => {
+  it('returns a useful unknown-job error and protects internal state from snapshot changes', async () => {
     const speech = player()
     const state = speech.speak('답변')
     const snapshot = speech.getState(state.id!)
@@ -305,23 +447,27 @@ describe('PcSpeechPlayback', () => {
     expect(spawn).not.toHaveBeenCalled()
   })
 
-  it('rejects empty text and unsupported platforms without launching a child', async () => {
+  it('rejects empty text and unsupported platforms without launching or synthesizing', async () => {
     expect(player().speak(' \n ')).toMatchObject({ status: 'error', error: '읽을 내용이 없습니다.' })
     expect(player('linux').speak('답변')).toMatchObject({ status: 'error', error: 'Windows에서만 PC 음성을 재생할 수 있습니다.' })
     await flush()
     expect(spawn).not.toHaveBeenCalled()
+    expect(synthesize).not.toHaveBeenCalled()
   })
 
-  it('times out preparation after 15 seconds and continues the queue after killing the stalled process', async () => {
+  it('times out stalled preparation after 45 seconds and advances only after the child closes', async () => {
     vi.useFakeTimers({ toFake: ['setTimeout', 'clearTimeout'] })
+    const neverReady = deferred<Buffer>()
+    synthesize.mockReturnValueOnce(neverReady.promise)
     const speech = player()
     const first = speech.speak('첫 답변')
     speech.speak('다음 답변')
     await flush()
-    vi.advanceTimersByTime(14_999)
+    vi.advanceTimersByTime(44_999)
     expect(speech.getState(first.id!).status).toBe('queued')
     vi.advanceTimersByTime(1)
     expect(speech.getState(first.id!)).toMatchObject({ status: 'error', error: 'PC 음성 응답 시간이 초과되었습니다. 다시 질문해 주세요.' })
+    expect(synthesize.mock.calls[0][1]!.aborted).toBe(true)
     expect(children[0].kill).toHaveBeenCalledTimes(1)
     children[0].progress(0)
     expect(speech.getState(first.id!).status).toBe('error')
@@ -331,41 +477,57 @@ describe('PcSpeechPlayback', () => {
     expect(spawn).toHaveBeenCalledTimes(2)
   })
 
-  it('allows at least 180 seconds for a 300-character chunk', async () => {
+  it('allows 72 seconds of playback for a 120-character chunk', async () => {
     vi.useFakeTimers({ toFake: ['setTimeout', 'clearTimeout'] })
     const speech = player()
-    speech.speak('가'.repeat(300))
+    speech.speak('가'.repeat(120))
     await flush()
     children[0].progress(0)
-    vi.advanceTimersByTime(179_999)
+    vi.advanceTimersByTime(71_999)
     expect(speech.getState().status).toBe('speaking')
     vi.advanceTimersByTime(1)
     expect(speech.getState().status).toBe('error')
     expect(children[0].kill).toHaveBeenCalledTimes(1)
   })
 
-  it('starts a fresh minimum 15-second allowance after the first short chunk begins', async () => {
+  it('starts a fresh minimum 30-second allowance when short audio begins', async () => {
     vi.useFakeTimers({ toFake: ['setTimeout', 'clearTimeout'] })
     const speech = player()
     speech.speak('짧은 답변')
     await flush()
-    vi.advanceTimersByTime(14_000)
+    vi.advanceTimersByTime(44_000)
     children[0].progress(0)
-    vi.advanceTimersByTime(14_999)
+    vi.advanceTimersByTime(29_999)
     expect(speech.getState().status).toBe('speaking')
     vi.advanceTimersByTime(1)
     expect(speech.getState().status).toBe('error')
   })
 
-  it('resets the watchdog per chunk without applying a total answer deadline', async () => {
+  it('times out a stalled next audio chunk after the prior chunk ends', async () => {
     vi.useFakeTimers({ toFake: ['setTimeout', 'clearTimeout'] })
     const speech = player()
-    speech.speak(Array.from({ length: 20 }, () => '가'.repeat(200)).join('\n'))
+    speech.speak('첫 줄\n둘째 줄')
+    await flush()
+    children[0].progress(0)
+    vi.advanceTimersByTime(20_000)
+    children[0].endChunk(0)
+    vi.advanceTimersByTime(29_999)
+    expect(speech.getState().status).toBe('speaking')
+    vi.advanceTimersByTime(1)
+    expect(speech.getState().status).toBe('error')
+  })
+
+  it('resets the watchdog per chunk without imposing a total answer deadline', async () => {
+    vi.useFakeTimers({ toFake: ['setTimeout', 'clearTimeout'] })
+    const speech = player()
+    speech.speak(Array.from({ length: 20 }, () => '가'.repeat(120)).join('\n'))
     await flush()
     for (let index = 0; index < 20; index++) {
       children[0].progress(index)
-      vi.advanceTimersByTime(100_000)
+      await flush()
+      vi.advanceTimersByTime(60_000)
       expect(speech.getState().status).toBe('speaking')
+      children[0].endChunk(index)
     }
     children[0].complete()
     expect(speech.getState().status).toBe('done')
@@ -379,7 +541,7 @@ describe('PcSpeechPlayback', () => {
     speech.speak('첫 답변')
     const second = speech.speak('가'.repeat(100))
     await flush()
-    children[0].progress(0)
+    await playAll(children[0])
     children[0].complete()
     await flush()
     children[1].progress(0)
