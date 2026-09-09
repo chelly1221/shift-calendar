@@ -42,6 +42,7 @@ eventType은 Google extendedProperties.private.shiftCalendarEventType으로 양�
 - `app`에서 `npm run build`를 실행하면 앱을 먼저 종료한 뒤 위 폴더를 갱신합니다. 실행 중인 앱의 파일을 덮어쓰지 않습니다. 정상 종료가 되지 않으면 기존 종료 스크립트의 강제 종료 절차를 사용합니다.
 - 다른 폴더에 별도 PC 배포본, Portable EXE, 설치 EXE를 생성하거나 복사하지 않습니다. 별도 출력 경로로 빌드하지 않습니다.
 - 갱신 후 같은 경로의 프로그램을 다시 실행하고 실제 실행 경로와 최신 응답을 확인합니다. 이전 중복 배포본은 정리하되 소스, SDK, 도구, 사용자 데이터는 보존합니다.
+- 사용자가 사용하는 캘린더 본체는 창이 보이도록 정상 실행합니다. 본체 재실행에 `-WindowStyle Hidden`을 적용하지 않습니다. 백그라운드 빌드 도구와 본체를 구분하고, 갱신 후 프로세스뿐 아니라 실제 메인 창의 표시도 확인합니다.
 
 ## Coding Style & Naming Conventions
 - TypeScript `strict` 유지, `any` 사용 최소화

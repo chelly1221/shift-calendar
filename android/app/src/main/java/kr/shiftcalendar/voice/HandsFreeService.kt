@@ -5,15 +5,11 @@ import android.app.*
 import android.content.Intent
 import android.content.pm.PackageManager
 import android.content.pm.ServiceInfo
-import android.media.AudioAttributes
 import android.os.*
-import android.speech.tts.TextToSpeech
-import android.speech.tts.UtteranceProgressListener
 import org.json.JSONObject
-import java.util.Locale
 import java.util.concurrent.Executors
 
-/** Owns audio, network and TTS independently of the activity or the screen state. */
+/** Owns microphone capture, PC speech observation and requests independently of the screen state. */
 class HandsFreeService : Service() {
     data class State(val status: String, val enabled: Boolean = true, val busy: Boolean = false, val question: String = "", val answer: String = "", val pending: Boolean = false, val connection: Connection? = null, val choices: List<Connection> = emptyList())
     inner class LocalBinder : Binder() {
@@ -47,13 +43,7 @@ class HandsFreeService : Service() {
     private var pendingConnection: Connection? = null
     private var pendingUntil = 0L
     private var lastSpeech = ""
-    private var tts: TextToSpeech? = null
-    private var ttsReady = false
-    private val speechPlayback by lazy { SpeechPlayback(SystemClock::elapsedRealtime,
-        { task, delay -> handler.postDelayed(task, delay); Unit }, { handler.removeCallbacks(it) },
-        { runCatching { tts?.isSpeaking == true }.getOrDefault(false) }, { tts?.stop() },
-        { text, id -> ttsReady && tts?.speak(text, TextToSpeech.QUEUE_FLUSH, null, id) == TextToSpeech.SUCCESS },
-        TextToSpeech::getMaxSpeechInputLength, spokenQuestions::chunk) }
+    private val speechPlayback by lazy { PcSpeechPlayback(network, handler, { connection }, spokenQuestions::chunk) }
     private var captureId = 0
     private var requestId = 0
     private var networkBusy = false
@@ -95,21 +85,9 @@ class HandsFreeService : Service() {
         } catch (_: RuntimeException) { fail("앱을 화면에 연 뒤 음성 대기를 다시 켜 주세요."); return START_NOT_STICKY }
         started = true
         prefs.edit().putBoolean("wakeEnabled", true).apply()
+        VoiceListeningTileService.setListening(this, true)
         wakeLock = getSystemService(PowerManager::class.java).newWakeLock(PowerManager.PARTIAL_WAKE_LOCK, "shiftcalendar:voice").apply { setReferenceCounted(false) }
         renewLock.run()
-        tts = TextToSpeech(this) { code ->
-            if (stopped) return@TextToSpeech
-            ttsReady = code == TextToSpeech.SUCCESS && (tts?.setLanguage(Locale.KOREAN) ?: -1) >= TextToSpeech.LANG_AVAILABLE
-            tts?.voices?.firstOrNull { it.locale.language == "ko" && !it.isNetworkConnectionRequired }?.let { tts?.voice = it }
-        }
-        tts?.setAudioAttributes(AudioAttributes.Builder().setUsage(AudioAttributes.USAGE_ASSISTANT).setContentType(AudioAttributes.CONTENT_TYPE_SPEECH).build())
-        tts?.setOnUtteranceProgressListener(object : UtteranceProgressListener() {
-            override fun onStart(id: String?) { handler.post { speechPlayback.started(id) } }
-            override fun onDone(id: String?) { handler.post { speechPlayback.completed(id) } }
-            override fun onStop(id: String?, interrupted: Boolean) { handler.post { speechPlayback.failed(id) } }
-            override fun onError(id: String?, code: Int) { handler.post { speechPlayback.failed(id) } }
-            @Deprecated("Android callback") override fun onError(id: String?) { handler.post { speechPlayback.failed(id) } }
-        })
         awaitWake()
         discoverPc()
         // A stopped or killed microphone service is restarted only while the activity is visible.
@@ -239,25 +217,27 @@ class HandsFreeService : Service() {
             WakeDialogue.Action.Wake -> beginQuestion(hasPending())
         }
     }
-    private fun speak(text: String, next: () -> Unit) {
+    private fun speak(text: String, next: () -> Unit) = speak(text, null, next)
+    private fun speak(text: String, playback: JSONObject?, next: () -> Unit) {
         if (stopped) return
         stopCapture()
         cancelSpeech()
         spokenQuestions.begin(text)
         dialogue.enter(WakeDialogue.Phase.SPEAKING)
         publishSpeechQueue()
-        speechPlayback.play(text) { success ->
+        val completed: (Boolean) -> Unit = { success ->
             if (!stopped) {
                 spokenQuestions.finish()
                 val finish = {
                     stopCapture()
-                    if (!success) publish("음성 읽기가 중단되었습니다. 다시 읽기를 눌러 주세요.")
+                    val failure = if (!success) speechPlayback.error ?: "PC 음성 읽기가 중단되었습니다. 다시 읽기를 눌러 주세요." else null
+                    if (failure != null) publish(failure, answer = state.answer + "\n\n" + failure)
                     val queued = spokenQuestions.take(confirmationPending = hasPending())
                     if (queued != null) { dialogue.enter(WakeDialogue.Phase.BUSY); submit(queued) }
                     else next()
                 }
                 if (spokenQuestions.awaitingFinal) {
-                    // Preserve a question that began just before TTS ended. Partial text is never submitted.
+                    // Preserve a question that began just before PC speech ended. Partial text is never submitted.
                     afterSpeechCapture = finish
                     publish("다음 질문을 인식하는 중…")
                     speechCaptureFinishTimeout = Runnable {
@@ -270,11 +250,12 @@ class HandsFreeService : Service() {
                 } else finish()
             }
         }
+        if (playback == null) speechPlayback.play(text, completed) else speechPlayback.watch(playback, completed)
         if (!stopped && spokenQuestions.speaking) listenDuringSpeech()
     }
     private fun publishSpeechQueue() {
-        publish(if (spokenQuestions.size == 0) "답변 중 · ‘까치야’로 다음 질문을 말씀하세요."
-            else "답변 중 · 다음 질문 ${spokenQuestions.size}개 대기")
+        publish(if (spokenQuestions.size == 0) "PC 답변 중 · ‘까치야’로 다음 질문을 말씀하세요."
+            else "PC 답변 중 · 다음 질문 ${spokenQuestions.size}개 대기")
     }
     private fun listenDuringSpeech() {
         if (stopped || !spokenQuestions.speaking) return
@@ -364,13 +345,13 @@ class HandsFreeService : Service() {
                 CalendarClient.request(target!!, body)
             }
             handler.post {
-                if (stopped || token != requestId) return@post
+                if (stopped || token != requestId) { discardAnswer(result.getOrNull(), target); return@post }
                 networkBusy = false
                 result.onSuccess { connection = target; receiveAnswer(it) }.onFailure {
                     connection = null; context = null
                     lastSpeech = "PC 응답을 받지 못했습니다. 연결을 확인해 주세요."
+                    awaitWake()
                     publish(lastSpeech, answer = lastSpeech)
-                    speak(lastSpeech) { awaitWake() }
                     // Never replay an uncertain command, especially relative month navigation.
                 }
             }
@@ -378,14 +359,27 @@ class HandsFreeService : Service() {
     }
     private fun receiveAnswer(value: JSONObject) {
         context = value.optJSONObject("context")
-        lastSpeech = ConciseSpeech.format(value.getString("speech"), value.optString("status"))
+        val playback = value.optJSONObject("playback")
+        lastSpeech = playback?.optString("text")?.takeIf { it.isNotBlank() }
+            ?: ConciseSpeech.format(value.getString("speech").ifBlank { value.getString("text") }, value.optString("status"))
         clearPending()
         if (value.optString("status") == "PREVIEW") {
             pendingId = value.getString("confirmationId"); pendingConnection = connection
             pendingUntil = SystemClock.elapsedRealtime() + 110_000
         }
         publish("답변을 받았습니다.", answer = ConciseSpeech.forDisplay(value.getString("text"), value.optString("status")))
-        speak(lastSpeech, ::resumeAfterAnswer)
+        if (playback != null) speak(lastSpeech, playback, ::resumeAfterAnswer)
+        else {
+            resumeAfterAnswer()
+            publish("PC 프로그램을 최신 버전으로 갱신해 주세요.", answer = state.answer + "\n\n답변을 PC에서 읽으려면 PC 프로그램을 최신 버전으로 갱신해 주세요.")
+        }
+    }
+    private fun discardAnswer(value: JSONObject?, target: Connection?) {
+        val id = value?.optJSONObject("playback")?.optString("id")?.takeIf { it.isNotBlank() } ?: return
+        if (target == null) return
+        runCatching {
+            network.execute { runCatching { CalendarClient.speech(target, JSONObject().put("action", "stop").put("id", id)) } }
+        }
     }
     private fun confirmPending(confirm: Boolean) {
         if (stopped || networkBusy) return
@@ -398,12 +392,12 @@ class HandsFreeService : Service() {
         network.execute {
             val result = runCatching { CalendarClient.request(target, JSONObject().put("confirmationId", id).put("confirm", confirm), true) }
             handler.post {
-                if (stopped || token != requestId) return@post
+                if (stopped || token != requestId) { discardAnswer(result.getOrNull(), target); return@post }
                 networkBusy = false
-                result.onSuccess(::receiveAnswer).onFailure {
+                result.onSuccess { connection = target; receiveAnswer(it) }.onFailure {
                     lastSpeech = "처리 결과를 확인하지 못했습니다. 다시 확인이라고 말해 주세요."
+                    awaitWake()
                     publish(lastSpeech, answer = lastSpeech)
-                    speak(lastSpeech) { awaitWake() }
                 }
             }
         }
@@ -429,6 +423,7 @@ class HandsFreeService : Service() {
     private fun stopAssistant(message: String = "까치야 음성 대기를 껐습니다.") {
         if (stopped) return
         stopped = true; prefs.edit().putBoolean("wakeEnabled", false).apply()
+        VoiceListeningTileService.setListening(this, false)
         spokenQuestions.clear()
         stopCapture(); liveQuestionRecognizer.close(); cancelSpeech()
         state = state.copy(status = message, enabled = false, busy = false, pending = false)
@@ -437,11 +432,14 @@ class HandsFreeService : Service() {
     }
     override fun onDestroy() {
         stopped = true; requestId++; dialogue.enter(WakeDialogue.Phase.STOPPED)
+        VoiceListeningTileService.setListening(this, false)
         spokenQuestions.clear()
-        handler.removeCallbacksAndMessages(null)
-        stopCapture(); liveQuestionRecognizer.close(); cancelSpeech(); tts?.shutdown()
+        handler.removeCallbacks(renewLock)
+        stopCapture(); liveQuestionRecognizer.close(); cancelSpeech(); speechPlayback.close()
         wakeLock?.let { if (it.isHeld) it.release() }
-        network.shutdownNow(); observer = null
+        // Process in-flight response callbacks first so their PC speech IDs can be stopped as well.
+        network.execute { handler.post { network.shutdown() } }
+        observer = null
         stopForeground(STOP_FOREGROUND_REMOVE)
         super.onDestroy()
     }

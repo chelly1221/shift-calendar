@@ -79,6 +79,11 @@ function createMainWindow(): BrowserWindow {
     },
   })
 
+  // A Windows launcher can start the process hidden; explicitly show the loaded app.
+  window.once('ready-to-show', () => {
+    if (!window.isDestroyed()) window.show()
+  })
+
   window.on('maximize', () => {
     sendWindowUiState(window)
   })
@@ -139,10 +144,11 @@ if (!gotTheLock) {
   app.quit()
 } else {
   app.on('second-instance', () => {
-    // Focus the existing window
+    // Focusing alone does not reveal a window hidden by the Windows launcher.
     const wins = BrowserWindow.getAllWindows()
     if (wins.length > 0) {
       if (wins[0].isMinimized()) wins[0].restore()
+      wins[0].show()
       wins[0].focus()
     }
   })

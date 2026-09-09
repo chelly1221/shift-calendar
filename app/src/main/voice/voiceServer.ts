@@ -1,7 +1,13 @@
 import { createServer, type Server } from 'node:http'
 import { createSocket, type Socket } from 'node:dgram'
 import { networkInterfaces, hostname } from 'node:os'
-import { voiceQuerySchema, voiceAnswerSchema, voiceConfirmSchema, type VoiceAnswer, type VoiceConnection, type VoiceQuery } from '../../shared/voice'
+import { voiceQuerySchema, voiceAnswerSchema, voiceConfirmSchema, voiceSpeechRequestSchema, voiceSpeechStateSchema, type VoiceAnswer, type VoiceConnection, type VoiceQuery, type VoiceSpeechState } from '../../shared/voice'
+
+interface VoiceSpeechOutput {
+  speak(text: string): VoiceSpeechState
+  getState(id?: string): VoiceSpeechState
+  stop(id?: string): VoiceSpeechState
+}
 
 export function isPrivateIpv4(address: string): boolean {
   const raw = address.replace(/^::ffff:/, '')
@@ -17,7 +23,16 @@ export class VoiceServer {
   private port = 0
   private starting: Promise<VoiceConnection> | null = null
 
-  constructor(private readonly query: (query: VoiceQuery) => Promise<VoiceAnswer>, private readonly discoveryPort = 43827, private readonly confirm?: (id: string, confirm: boolean) => Promise<VoiceAnswer>) {}
+  constructor(private readonly query: (query: VoiceQuery) => Promise<VoiceAnswer>, private readonly discoveryPort = 43827,
+    private readonly confirm?: (id: string, confirm: boolean) => Promise<VoiceAnswer>, private readonly speech?: VoiceSpeechOutput) {}
+
+  private prepareAnswer(answer: VoiceAnswer): VoiceAnswer {
+    const parsed = voiceAnswerSchema.parse(answer)
+    if (!this.speech) return parsed
+    const playback = this.speech.speak(parsed.speech)
+    // Older Android clients ignore playback; blank speech prevents duplicate phone audio.
+    return voiceAnswerSchema.parse({ ...parsed, speech: '', playback })
+  }
 
   getConnection(): VoiceConnection {
     if (!this.server?.listening) return { enabled: false, connections: [] }
@@ -38,6 +53,8 @@ export class VoiceServer {
   private async listen(): Promise<VoiceConnection> {
     let requests = 0
     let windowStart = Date.now()
+    let speechPolls = 0
+    let speechWindowStart = Date.now()
     let busy = false
     const server = createServer(async (request, response) => {
       response.setHeader('Cache-Control', 'no-store')
@@ -45,22 +62,41 @@ export class VoiceServer {
       response.setHeader('X-Content-Type-Options', 'nosniff')
       const send = (status: number, value: unknown) => { if (!response.destroyed) { response.writeHead(status); response.end(JSON.stringify(value)) } }
       if (!isPrivateIpv4(request.socket.remoteAddress ?? '') || request.headers.origin) { send(403, { error: '같은 와이파이의 앱에서 연결해 주세요.' }); return }
+      const [pathname, search = ''] = (request.url ?? '/').split('?')
+      if (request.method === 'GET' && pathname === '/v1/speech') {
+        if (!this.speech) { send(404, { error: 'PC 음성 출력을 지원하지 않습니다. PC 앱을 업데이트해 주세요.' }); return }
+        if (Date.now() - speechWindowStart >= 60_000) { speechPolls = 0; speechWindowStart = Date.now() }
+        if (++speechPolls > 600) { send(429, { error: '음성 상태 조회가 너무 많습니다.' }); return }
+        const id = new URLSearchParams(search).get('id') ?? undefined
+        if (id && !voiceSpeechStateSchema.shape.id.safeParse(id).success) { send(400, { error: '음성 재생 번호가 올바르지 않습니다.' }); return }
+        send(200, voiceSpeechStateSchema.parse(this.speech.getState(id)))
+        return
+      }
       if (Date.now() - windowStart >= 60_000) { requests = 0; windowStart = Date.now() }
       if (++requests > 60) { send(429, { error: '질문이 너무 많습니다. 잠시 후 다시 시도해 주세요.' }); return }
       if (request.method === 'GET' && request.url === '/v1/health') { send(200, { service: 'shiftcalendar-voice', version: 1, name: hostname() }); return }
-      if (request.method !== 'POST' || !['/v1/query', '/v1/confirm'].includes(request.url ?? '')) { send(404, { error: '지원하지 않는 요청입니다.' }); return }
+      if (request.method !== 'POST' || !['/v1/query', '/v1/confirm', '/v1/speech'].includes(request.url ?? '')) { send(404, { error: '지원하지 않는 요청입니다.' }); return }
       if (!/^application\/json(?:;|$)/i.test(request.headers['content-type'] ?? '')) { send(415, { error: 'JSON 형식이 필요합니다.' }); return }
-      if (busy) { send(429, { error: '다른 질문을 처리 중입니다. 잠시 후 다시 시도해 주세요.' }); return }
+      const isSpeech = request.url === '/v1/speech'
+      if (isSpeech && !this.speech) { send(404, { error: 'PC 음성 출력을 지원하지 않습니다. PC 앱을 업데이트해 주세요.' }); return }
+      if (busy && !isSpeech) { send(429, { error: '다른 질문을 처리 중입니다. 잠시 후 다시 시도해 주세요.' }); return }
       try {
         const chunks: Buffer[] = []
         let size = 0
         for await (const chunk of request) {
           const buffer = Buffer.isBuffer(chunk) ? chunk : Buffer.from(chunk)
           size += buffer.length
-          if (size > 8192) { send(413, { error: '질문이 너무 깁니다.' }); return }
+          if (size > (isSpeech ? 1_048_576 : 8192)) { send(413, { error: '질문이 너무 깁니다.' }); return }
           chunks.push(buffer)
         }
         const payload: unknown = JSON.parse(Buffer.concat(chunks).toString('utf8'))
+        if (isSpeech) {
+          const parsed = voiceSpeechRequestSchema.safeParse(payload)
+          if (!parsed.success) { send(400, { error: '음성 재생 요청이 올바르지 않습니다.' }); return }
+          const state = parsed.data.action === 'speak' ? this.speech!.speak(parsed.data.text) : this.speech!.stop(parsed.data.id)
+          send(200, voiceSpeechStateSchema.parse(state))
+          return
+        }
         const parsed = request.url === '/v1/confirm' ? voiceConfirmSchema.safeParse(payload) : voiceQuerySchema.safeParse(payload)
         if (!parsed.success) { send(400, { error: '질문 형식을 확인해 주세요.' }); return }
         // Recheck after reading the body; requests can arrive concurrently.
@@ -69,8 +105,8 @@ export class VoiceServer {
         try {
           if ('confirmationId' in parsed.data) {
             if (!this.confirm) { send(404, { error: '일정 조작을 지원하지 않는 PC 버전입니다.' }); return }
-            send(200, voiceAnswerSchema.parse(await this.confirm(parsed.data.confirmationId, parsed.data.confirm)))
-          } else send(200, voiceAnswerSchema.parse(await this.query(parsed.data)))
+            send(200, this.prepareAnswer(await this.confirm(parsed.data.confirmationId, parsed.data.confirm)))
+          } else send(200, this.prepareAnswer(await this.query(parsed.data)))
         }
         finally { busy = false }
       } catch (error) {
@@ -123,6 +159,7 @@ export class VoiceServer {
     this.discovery?.close()
     this.discovery = null
     this.port = 0
+    this.speech?.stop()
     if (server) await new Promise<void>((resolve) => { server.close(() => resolve()); server.closeAllConnections() })
     return this.getConnection()
   }

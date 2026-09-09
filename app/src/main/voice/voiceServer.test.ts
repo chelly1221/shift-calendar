@@ -1,6 +1,7 @@
 import { createSocket } from 'node:dgram'
 import { afterEach, describe, expect, it, vi } from 'vitest'
 import { VoiceServer, isPrivateIpv4 } from './voiceServer'
+import type { VoiceSpeechState } from '../../shared/voice'
 
 vi.mock('node:os', () => ({ hostname: () => 'Test PC', networkInterfaces: () => ({ test: [{ family: 'IPv4', internal: false, address: '127.0.0.1' }] }) }))
 const answer = { status: 'ANSWER' as const, text: '테스트', speech: '테스트', source: 'PC에 저장된 일정 기준' as const, answeredAtUtc: '2026-09-08T01:00:00.000Z', context: null, eventIds: [] }
@@ -53,5 +54,64 @@ describe('automatic LAN connection', () => {
       await server!.start()
       expect(server!.getConnection().enabled).toBe(true)
     } finally { receiver.close() }
+  })
+})
+
+describe('PC speech output', () => {
+  const id = '02b223ec-b8c8-4a62-a01d-91a635d232fd'
+  const state: VoiceSpeechState = { id, status: 'queued', text: '테스트', chunk: '' }
+  const speech = () => ({ speak: vi.fn((text: string) => ({ ...state, text })), getState: vi.fn(() => state), stop: vi.fn(() => ({ ...state, status: 'stopped' as const })) })
+  async function setupSpeech() {
+    const output = speech()
+    const confirm = vi.fn(async () => answer)
+    server = new VoiceServer(query, 0, confirm, output)
+    const connection = await server.start()
+    const url = `http://${connection.connections[0].address}`
+    const post = (path: string, body: unknown) => fetch(`${url}${path}`, { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify(body) })
+    return { output, confirm, url, post }
+  }
+  it('plays answers on the PC and keeps older Android clients silent', async () => {
+    const { output, post } = await setupSpeech()
+    const response = await post('/v1/query', { text: '오늘 휴가 누구야?' })
+    expect(response.status).toBe(200)
+    expect(await response.json()).toEqual({ ...answer, speech: '', playback: state })
+    expect(output.speak).toHaveBeenCalledExactlyOnceWith('테스트')
+  })
+  it('plays confirmation results through the same speaker', async () => {
+    const { output, confirm, post } = await setupSpeech()
+    const response = await post('/v1/confirm', { confirmationId: id, confirm: true })
+    expect(response.status).toBe(200)
+    expect(confirm).toHaveBeenCalledExactlyOnceWith(id, true)
+    expect(output.speak).toHaveBeenCalledExactlyOnceWith('테스트')
+  })
+  it('polls playback independently without exhausting the question rate limit', async () => {
+    const { output, url, post } = await setupSpeech()
+    for (let index = 0; index < 65; index++) expect((await fetch(`${url}/v1/speech?id=${id}`)).status).toBe(200)
+    expect(output.getState).toHaveBeenCalledWith(id)
+    expect((await post('/v1/query', { text: '내일 근무 누구야?' })).status).toBe(200)
+    expect((await fetch(`${url}/v1/speech?id=invalid`)).status).toBe(400)
+  })
+  it('supports replaying a long answer and stopping it', async () => {
+    const { output, post } = await setupSpeech()
+    const longAnswer = '9월 16일 김수헌 연차\n'.repeat(2000)
+    expect((await post('/v1/speech', { action: 'speak', text: longAnswer })).status).toBe(200)
+    expect(output.speak).toHaveBeenCalledExactlyOnceWith(longAnswer.trim())
+    const stopped = await post('/v1/speech', { action: 'stop', id })
+    expect((await stopped.json()).status).toBe('stopped')
+    expect(output.stop).toHaveBeenCalledWith(id)
+    expect(query).not.toHaveBeenCalled()
+  })
+  it('validates speech commands and blocks browser origins', async () => {
+    const { output, url, post } = await setupSpeech()
+    expect((await post('/v1/speech', { action: 'speak', text: '' })).status).toBe(400)
+    expect((await post('/v1/speech', { action: 'stop', id: 'other' })).status).toBe(400)
+    expect((await post('/v1/speech', { action: 'speak', text: '말해줘', shell: 'command' })).status).toBe(400)
+    expect((await fetch(`${url}/v1/speech?id=${id}`, { headers: { origin: 'https://example.com' } })).status).toBe(403)
+    expect(output.speak).not.toHaveBeenCalled()
+  })
+  it('stops pending audio when the voice server closes', async () => {
+    const { output } = await setupSpeech()
+    await server!.stop()
+    expect(output.stop).toHaveBeenCalledWith()
   })
 })

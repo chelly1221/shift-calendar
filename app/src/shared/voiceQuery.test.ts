@@ -433,13 +433,14 @@ describe('vacation dates without all-day time placeholders', () => {
     const answer = answerVoiceQuery(voiceQuerySchema.parse({ text: '민수씨 시간차 언제야?' }), [
       event('leave', '휴가', '김민수 시간차', '2026-09-16', '휴가대상: 김민수\n휴가종류: 시간차', { startAtUtc: utc('2026-09-16T13:00'), endAtUtc: utc('2026-09-16T15:00') }),
     ], settings, now)
-    expect(answer.text).toBe('9월 16일 오후 1시~오후 3시 김민수 시간차')
+    expect(answer.text).toBe('9월 16일 김민수 시간차(오후 1시~오후 3시)')
   })
-  it('keeps missing-time information for hourly leave', () => {
+  it('never labels hourly leave as all-day when its time is absent', () => {
     const answer = answerVoiceQuery(voiceQuerySchema.parse({ text: '민수씨 시간차 언제야?' }), [
       event('leave', '휴가', '김민수 시간차', '2026-09-16', '휴가대상: 김민수\n휴가종류: 시간차'),
     ], settings, now)
-    expect(answer.text).toContain('시각 미등록')
+    expect(answer.text).toBe('9월 16일 김민수 시간차')
+    expect(answer.speech).not.toMatch(/종일|미등록/)
   })
   it('does not suggest midnight when distinguishing non-hourly leave events', () => {
     const answer = answerVoiceQuery(voiceQuerySchema.parse({ text: '내일 휴가 언제야?' }), [

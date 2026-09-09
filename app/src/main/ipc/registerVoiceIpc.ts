@@ -6,6 +6,7 @@ import { listCalendarEvents } from '../db/eventRepository'
 import { getShiftSettings } from '../db/settingRepository'
 import { VoiceServer } from '../voice/voiceServer'
 import { VoiceCommandService } from '../voice/voiceCommandService'
+import { PcSpeechPlayback } from '../voice/pcSpeechPlayback'
 import { executeCalendarDelete, executeCalendarUpsert } from './registerCalendarIpc'
 import { runSyncNow } from '../sync/syncEngine'
 
@@ -38,7 +39,8 @@ const commands = new VoiceCommandService({
     return '동기화를 요청했습니다. PC의 동기화 화면에서 결과를 확인해 주세요.'
   },
 })
-export const voiceServer = new VoiceServer((query) => commands.query(query), 43827, (id, confirm) => commands.confirm(id, confirm))
+const pcSpeech = new PcSpeechPlayback()
+export const voiceServer = new VoiceServer((query) => commands.query(query), 43827, (id, confirm) => commands.confirm(id, confirm), pcSpeech)
 
 export function registerVoiceIpc(): void {
   ipcMain.removeAllListeners(VOICE_CHANNELS.controlResult)

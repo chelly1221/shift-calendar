@@ -3,6 +3,7 @@ package kr.shiftcalendar.voice
 import android.Manifest
 import android.app.Activity
 import android.app.AlertDialog
+import android.app.StatusBarManager
 import android.content.Intent
 import android.content.ComponentName
 import android.content.ServiceConnection
@@ -10,16 +11,14 @@ import android.content.pm.PackageManager
 import android.graphics.Color
 import android.graphics.Typeface
 import android.graphics.drawable.GradientDrawable
+import android.graphics.drawable.Icon
 import android.os.Build
 import android.os.Bundle
 import android.os.IBinder
 import android.os.Handler
 import android.os.Looper
-import android.os.SystemClock
 import android.provider.Settings
 import android.net.Uri
-import android.speech.tts.TextToSpeech
-import android.speech.tts.UtteranceProgressListener
 import android.text.InputFilter
 import android.text.InputType
 import android.view.View
@@ -28,7 +27,6 @@ import android.view.WindowInsets
 import android.view.inputmethod.EditorInfo
 import android.widget.*
 import org.json.JSONObject
-import java.util.Locale
 import java.util.concurrent.Executors
 
 class MainActivity : Activity() {
@@ -50,14 +48,8 @@ class MainActivity : Activity() {
     private var pendingConfirmation: String? = null
     private var confirmationConnection: Connection? = null
     private val recognizer by lazy { LiveQuestionRecognizer(this) }
-    private var tts: TextToSpeech? = null
-    private var ttsReady = false
     private val handler = Handler(Looper.getMainLooper())
-    private val speechPlayback by lazy { SpeechPlayback(SystemClock::elapsedRealtime,
-        { task, delay -> handler.postDelayed(task, delay); Unit }, { handler.removeCallbacks(it) },
-        { runCatching { tts?.isSpeaking == true }.getOrDefault(false) }, { tts?.stop() },
-        { text, id -> ttsReady && tts?.speak(text, TextToSpeech.QUEUE_FLUSH, null, id) == TextToSpeech.SUCCESS },
-        TextToSpeech::getMaxSpeechInputLength) }
+    private val speechPlayback by lazy { PcSpeechPlayback(executor, handler, { connection }) }
     private var listening = false
     private var active = false
     private var working = false
@@ -102,7 +94,8 @@ class MainActivity : Activity() {
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
         prefs.edit().remove("localOnly").apply()
-        val wide = resources.configuration.screenWidthDp >= 760
+        val layout = VoiceScreenLayout(availableWidthDp(), resources.configuration.smallestScreenWidthDp, resources.configuration.fontScale)
+        val wide = layout.tablet
         val root = column().apply { setBackgroundColor(Color.rgb(243, 245, 239)); isFocusableInTouchMode = true }
         root.setOnApplyWindowInsetsListener { view, insets ->
             if (Build.VERSION.SDK_INT >= 30) {
@@ -114,13 +107,15 @@ class MainActivity : Activity() {
             }
             insets
         }
-        val content = column().apply { setPadding(dp(24), dp(12), dp(24), dp(16)) }
+        val content = column().apply { setPadding(dp(layout.pagePadding), dp(12), dp(layout.pagePadding), dp(16)) }
         root.addView(content, LinearLayout.LayoutParams(-1, -1))
         setContentView(root)
         val header = LinearLayout(this).apply { gravity = Gravity.CENTER_VERTICAL }
-        header.addView(text("까치야", 28f).apply { setTypeface(null, Typeface.BOLD) }, LinearLayout.LayoutParams(-2, -2))
-        header.addView(text("근무 · 일정 도우미", 14f, muted), LinearLayout.LayoutParams(0, -2, 1f).apply { marginStart = dp(16) })
-        header.addView(button("설정") { showSettings() }, LinearLayout.LayoutParams(dp(88), -2))
+        val heading = column()
+        heading.add(text("까치야", if (wide) 28f else 24f).apply { setTypeface(null, Typeface.BOLD) }, 0)
+        if (wide) heading.add(text("근무 · 일정 도우미", 13f, muted), 0)
+        header.addView(heading, LinearLayout.LayoutParams(0, -2, 1f))
+        header.addView(button("설정") { showSettings() }, LinearLayout.LayoutParams(-2, -2))
         content.add(header, 0)
 
         val body = LinearLayout(this).apply { orientation = if (wide) LinearLayout.HORIZONTAL else LinearLayout.VERTICAL }
@@ -132,18 +127,17 @@ class MainActivity : Activity() {
         }
         val sidebar = column()
         if (wide) {
-            val sidebarWidth = if (resources.configuration.screenWidthDp >= 1000) 304 else 264
-            body.addView(ScrollView(this).apply { isFillViewport = true; addView(sidebar) }, LinearLayout.LayoutParams(dp(sidebarWidth), -1).apply { marginEnd = dp(20) })
+            body.addView(ScrollView(this).apply { isFillViewport = true; addView(sidebar) }, LinearLayout.LayoutParams(dp(layout.sidebarWidth), -1).apply { marginEnd = dp(16) })
         } else body.add(sidebar, 0)
 
         handsFreeEnabled = prefs.getBoolean("wakeEnabled", true)
-        val voiceCard = column().apply { background = rounded(Color.rgb(226, 237, 227)); setPadding(dp(20), dp(18), dp(20), dp(20)) }
+        val voiceCard = column().apply { background = rounded(Color.rgb(226, 237, 227)); setPadding(dp(16), dp(14), dp(16), dp(14)) }
         sidebar.add(voiceCard, 0)
         voiceCard.add(text("음성 대기", 13f, green).apply { setTypeface(null, Typeface.BOLD) }, 0)
-        status = text("음성 대기를 준비하는 중…", 21f).apply { accessibilityLiveRegion = View.ACCESSIBILITY_LIVE_REGION_POLITE }
+        status = text("음성 대기를 준비하는 중…", if (wide) 21f else 18f).apply { accessibilityLiveRegion = View.ACCESSIBILITY_LIVE_REGION_POLITE }
         voiceCard.add(status, 12)
         voiceCard.add(text("“까치야, 내일 야간 누구야?”", 16f, green), 16)
-        voiceCard.add(text("호출어와 질문을 이어서 말하세요. 답변 중 질문도 순서대로 답합니다.", 13f, muted), 4)
+        voiceCard.add(text("답변은 PC에서 읽습니다. 답변 중에도 ‘까치야’로 질문하세요.", 13f, muted), 4)
         wakeButton = button(if (handsFreeEnabled) "음성 대기 끄기" else "음성 대기 켜기") {
             if (handsFreeEnabled) disableHandsFree() else enableHandsFree()
         }
@@ -155,21 +149,21 @@ class MainActivity : Activity() {
         connectionLabel = text("PC를 찾고 있습니다…", 15f)
         connectionCard.add(connectionLabel, 8)
         connectionCard.add(button("PC 다시 찾기") { if (!working) discoverPc() }, 12)
-        sidebar.add(text("PC에는 변환된 질문 텍스트만 보냅니다.", 12f, muted), 12)
 
         val conversation = column()
         if (wide) body.addView(conversation, LinearLayout.LayoutParams(0, -1, 1f))
         else body.add(conversation, 16)
-        val answerCard = column().apply { background = rounded(Color.WHITE); setPadding(dp(24), dp(18), dp(24), dp(18)) }
+        val answerCard = column().apply { background = rounded(Color.WHITE); setPadding(dp(16), dp(16), dp(16), dp(16)) }
         if (wide) conversation.addView(answerCard, LinearLayout.LayoutParams(-1, 0, 1f))
         else conversation.add(answerCard, 0)
-        val answerHeader = LinearLayout(this).apply { gravity = Gravity.CENTER_VERTICAL }
-        answerHeader.addView(text("답변", 15f, green).apply { setTypeface(null, Typeface.BOLD) }, LinearLayout.LayoutParams(0, -2, 1f))
-        answerHeader.addView(button("다시 읽기") { speak() }, LinearLayout.LayoutParams(-2, -2).apply { marginEnd = dp(8) })
-        answerHeader.addView(button("읽기 중지") { if (handsFreeEnabled) handsFree?.stopSpeech() else stopSpeech() }, LinearLayout.LayoutParams(-2, -2))
-        answerCard.add(answerHeader, 0)
+        answerCard.add(text("답변", 15f, green).apply { setTypeface(null, Typeface.BOLD) }, 0)
+        val answerActions = LinearLayout(this).apply { orientation = if (layout.stackedActions && resources.configuration.fontScale >= 1.3f) LinearLayout.VERTICAL else LinearLayout.HORIZONTAL }
+        val replay = button("다시 읽기") { speak() }
+        val stopReading = button("읽기 중지") { if (handsFreeEnabled) handsFree?.stopSpeech() else stopSpeech() }
+        addActions(answerActions, replay, stopReading)
+        answerCard.add(answerActions, 8)
         val answerContent = column()
-        answer = text(savedInstanceState?.getString("answer") ?: "무엇이 궁금하세요?\n근무와 일정을 물어보세요.", 24f).apply {
+        answer = text(savedInstanceState?.getString("answer") ?: "무엇이 궁금하세요?\n근무와 일정을 물어보세요.", if (wide) 24f else 22f).apply {
             setTextIsSelectable(true); accessibilityLiveRegion = View.ACCESSIBILITY_LIVE_REGION_POLITE
         }
         answerContent.add(answer, 12)
@@ -177,11 +171,10 @@ class MainActivity : Activity() {
         answerContent.add(source, 12)
         if (wide) answerCard.addView(ScrollView(this).apply { addView(answerContent) }, LinearLayout.LayoutParams(-1, 0, 1f))
         else answerCard.add(answerContent, 0)
-        actionRow = LinearLayout(this).apply { visibility = View.GONE }
+        actionRow = LinearLayout(this).apply { visibility = View.GONE; orientation = if (layout.stackedActions) LinearLayout.VERTICAL else LinearLayout.HORIZONTAL }
         confirmButton = button("확인 · 실행", true) { confirmAction(true) }
         cancelButton = button("취소") { confirmAction(false) }
-        actionRow.addView(confirmButton, LinearLayout.LayoutParams(0, -2, 1f).apply { marginEnd = dp(6) })
-        actionRow.addView(cancelButton, LinearLayout.LayoutParams(0, -2, 1f).apply { marginStart = dp(6) })
+        addActions(actionRow, confirmButton, cancelButton)
         answerCard.add(actionRow, 12)
 
         val queryCard = column().apply { background = rounded(Color.rgb(232, 240, 231)); setPadding(dp(18), dp(12), dp(18), dp(14)) }
@@ -194,11 +187,10 @@ class MainActivity : Activity() {
             setOnEditorActionListener { _, actionId, _ -> if (actionId == EditorInfo.IME_ACTION_SEND) { ask(); true } else false }
         }
         queryCard.add(input, 0)
-        val queryActions = LinearLayout(this)
+        val queryActions = LinearLayout(this).apply { orientation = if (layout.stackedActions) LinearLayout.VERTICAL else LinearLayout.HORIZONTAL }
         microphone = button("눌러서 질문", true) { if (listening) stopListening() else startListening() }
         submit = button("질문 보내기") { stopListening(); ask() }
-        queryActions.addView(microphone, LinearLayout.LayoutParams(0, -2, 1f).apply { marginEnd = dp(6) })
-        queryActions.addView(submit, LinearLayout.LayoutParams(0, -2, 1f).apply { marginStart = dp(6) })
+        addActions(queryActions, microphone, submit)
         queryCard.add(queryActions, 8)
         val examples = LinearLayout(this)
         for (example in listOf("오늘 주간 누구야?", "내일 야간 누구야?", "다음 달 보여줘")) {
@@ -215,20 +207,23 @@ class MainActivity : Activity() {
         lastSpeech = savedInstanceState?.getString("speech") ?: ""
         input.setText(savedInstanceState?.getString("question") ?: "")
         root.requestFocus()
-        tts = TextToSpeech(this) { result ->
-            if (result == TextToSpeech.SUCCESS) {
-                val language = tts?.setLanguage(Locale.KOREAN)
-                ttsReady = language != null && language >= TextToSpeech.LANG_AVAILABLE
-            }
-        }
-        tts?.setOnUtteranceProgressListener(object : UtteranceProgressListener() {
-            override fun onStart(id: String?) { handler.post { speechPlayback.started(id) } }
-            override fun onDone(id: String?) { handler.post { speechPlayback.completed(id) } }
-            override fun onStop(id: String?, interrupted: Boolean) { handler.post { speechPlayback.failed(id) } }
-            override fun onError(id: String?, code: Int) { handler.post { speechPlayback.failed(id) } }
-            @Deprecated("Android callback") override fun onError(id: String?) { handler.post { speechPlayback.failed(id) } }
-        })
         refreshConnectionLabel()
+    }
+
+    private fun availableWidthDp(): Int {
+        if (Build.VERSION.SDK_INT < 30) return resources.configuration.screenWidthDp
+        val metrics = windowManager.currentWindowMetrics
+        val insets = metrics.windowInsets.getInsetsIgnoringVisibility(WindowInsets.Type.systemBars() or WindowInsets.Type.displayCutout())
+        return ((metrics.bounds.width() - insets.left - insets.right) / resources.displayMetrics.density).toInt()
+    }
+
+    private fun addActions(row: LinearLayout, first: View, second: View) {
+        if (row.orientation == LinearLayout.VERTICAL) {
+            row.add(first, 0); row.add(second, 8)
+        } else {
+            row.addView(first, LinearLayout.LayoutParams(0, -2, 1f).apply { marginEnd = dp(4) })
+            row.addView(second, LinearLayout.LayoutParams(0, -2, 1f).apply { marginStart = dp(4) })
+        }
     }
 
     private fun refreshConnectionLabel() {
@@ -286,6 +281,7 @@ class MainActivity : Activity() {
             else handsFree?.observe(::renderHandsFree)
         } catch (_: RuntimeException) {
             handsFreeEnabled = false; prefs.edit().putBoolean("wakeEnabled", false).apply()
+            VoiceListeningTileService.setListening(this, false)
             wakeButton.text = "음성 대기 켜기"; setWorking(false)
             status.text = "앱을 화면에 연 상태에서 마이크 권한을 확인하고 대기를 다시 켜 주세요."
         }
@@ -300,6 +296,7 @@ class MainActivity : Activity() {
         stopService(Intent(this, HandsFreeService::class.java))
         unbindHandsFree()
         handsFreeEnabled = false; prefs.edit().putBoolean("wakeEnabled", false).apply()
+        VoiceListeningTileService.setListening(this, false)
         wakeButton.text = "음성 대기 켜기"
         setWorking(false); clearConfirmation(); discoverPc()
     }
@@ -307,6 +304,8 @@ class MainActivity : Activity() {
     private fun showSettings() {
         val options = column().apply { setPadding(dp(24), dp(8), dp(24), dp(20)) }
         options.add(button("내 이름 설정") { showSelfName() }, 0)
+        options.add(button("빠른 설정에 상시 듣기 추가") { addListeningTile() }, 12)
+        options.add(text("상단을 내려 새 모양의 ‘까치야 상시 듣기’로 켜고 끌 수 있습니다. 켤 때는 마이크 준비를 위해 앱이 열립니다.", 13f, muted), 4)
         options.add(text("음성 대기를 켜면 호출어와 질문을 기본 음성인식으로 듣습니다. 음성 서비스가 인터넷을 사용할 수 있으며 PC에는 호출어 뒤 질문 텍스트만 보냅니다.", 13f, muted), 4)
         options.add(button("배터리 설정 열기") {
             startActivity(Intent(Settings.ACTION_APPLICATION_DETAILS_SETTINGS, Uri.parse("package:$packageName")))
@@ -315,6 +314,28 @@ class MainActivity : Activity() {
         AlertDialog.Builder(this).setTitle("설정")
             .setView(ScrollView(this).apply { addView(options) })
             .setPositiveButton("닫기", null).show()
+    }
+
+    private fun addListeningTile() {
+        if (Build.VERSION.SDK_INT < 33) {
+            AlertDialog.Builder(this).setTitle("상시 듣기 타일 추가")
+                .setMessage("화면 상단을 두 번 내리고 빠른 설정의 편집 버튼을 누른 뒤, 새 모양의 ‘까치야 상시 듣기’를 끌어서 추가하세요.")
+                .setPositiveButton("확인", null).show()
+            return
+        }
+        runCatching {
+            getSystemService(StatusBarManager::class.java).requestAddTileService(
+                ComponentName(this, VoiceListeningTileService::class.java), VoiceListeningTileService.LABEL,
+                Icon.createWithResource(this, R.drawable.ic_listening_bird), mainExecutor) { result ->
+                val message = when (result) {
+                    StatusBarManager.TILE_ADD_REQUEST_RESULT_TILE_ADDED -> "빠른 설정에 상시 듣기를 추가했습니다."
+                    StatusBarManager.TILE_ADD_REQUEST_RESULT_TILE_ALREADY_ADDED -> "이미 빠른 설정에 추가되어 있습니다."
+                    StatusBarManager.TILE_ADD_REQUEST_RESULT_TILE_NOT_ADDED -> "빠른 설정의 편집 화면에서도 추가할 수 있습니다."
+                    else -> "빠른 설정을 편집해 ‘까치야 상시 듣기’를 추가해 주세요."
+                }
+                Toast.makeText(this, message, Toast.LENGTH_LONG).show()
+            }
+        }.onFailure { Toast.makeText(this, "빠른 설정을 편집해 ‘까치야 상시 듣기’를 추가해 주세요.", Toast.LENGTH_LONG).show() }
     }
 
     private fun showSelfName() {
@@ -383,7 +404,8 @@ class MainActivity : Activity() {
 
     private fun displayAnswer(value: JSONObject) {
         answer.text = ConciseSpeech.forDisplay(value.getString("text"), value.optString("status"))
-        lastSpeech = ConciseSpeech.format(value.getString("speech"), value.optString("status"))
+        val playback = value.optJSONObject("playback")
+        lastSpeech = playback?.optString("text") ?: value.optString("speech")
         context = value.optJSONObject("context")
         source.text = "${value.optString("source")} · 방금 처리"
         clearConfirmation()
@@ -393,7 +415,19 @@ class MainActivity : Activity() {
             actionRow.visibility = if (pendingConfirmation == null) View.GONE else View.VISIBLE
             status.text = "내용을 확인한 뒤 ‘확인’ 또는 ‘취소’라고 말해 주세요."
         } else status.text = if (value.optString("status") == "CLARIFY") "질문을 조금 더 구체적으로 말씀해 주세요." else "처리했습니다."
-        speak()
+        if (playback != null) {
+            recognizer.prepare()
+            speechPlayback.watch(playback) { success ->
+                if (!success && active) status.text = speechPlayback.error ?: "PC에서 음성을 읽지 못했습니다. 화면에서 답변을 확인해 주세요."
+            }
+        } else status.text = "PC 프로그램을 업데이트하면 PC에서 답변을 읽습니다."
+    }
+
+    private fun discardAnswer(target: Connection, value: JSONObject?) {
+        val id = value?.optJSONObject("playback")?.optString("id")?.takeIf { it.isNotBlank() } ?: return
+        runCatching {
+            executor.execute { runCatching { CalendarClient.speech(target, JSONObject().put("action", "stop").put("id", id)) } }
+        }
     }
 
     private fun confirmAction(confirmed: Boolean) {
@@ -407,7 +441,7 @@ class MainActivity : Activity() {
         executor.execute {
             val result = runCatching { CalendarClient.request(target, JSONObject().put("confirmationId", id).put("confirm", confirmed), true) }
             runOnUiThread {
-                if (!active || generation != requestGeneration) return@runOnUiThread
+                if (!active || generation != requestGeneration) { discardAnswer(target, result.getOrNull()); return@runOnUiThread }
                 setWorking(false)
                 result.onSuccess { displayAnswer(it) }.onFailure {
                     status.text = "결과를 확인하지 못했습니다. 실행 버튼을 다시 누르면 같은 작업의 결과를 확인합니다."
@@ -445,7 +479,7 @@ class MainActivity : Activity() {
                 require(it.optString("status") in listOf("ANSWER", "CLARIFY", "UNSUPPORTED", "UNAVAILABLE", "PREVIEW") && it.has("text") && it.has("speech")) { "PC 응답 형식을 확인해 주세요." }
             } }
             runOnUiThread {
-                if (!active || generation != requestGeneration) return@runOnUiThread
+                if (!active || generation != requestGeneration) { discardAnswer(target, result.getOrNull()); return@runOnUiThread }
                 setWorking(false)
                 result.onSuccess { value ->
                     displayAnswer(value)
@@ -467,9 +501,9 @@ class MainActivity : Activity() {
         if (lastSpeech.isEmpty()) return
         stopListening()
         recognizer.prepare()
-        if (!ttsReady) { status.text = "한국어 음성 읽기를 사용할 수 없습니다. 화면에서 답변을 확인해 주세요."; return }
+        if (connection == null) { status.text = "답변을 읽으려면 PC에 연결해 주세요."; return }
         speechPlayback.play(lastSpeech) { success ->
-            if (!success && active) status.text = "음성 읽기가 중단되었습니다. 다시 읽기를 눌러 주세요."
+            if (!success && active) status.text = speechPlayback.error ?: "PC에서 음성을 읽지 못했습니다. 화면에서 답변을 확인해 주세요."
         }
     }
 
@@ -502,6 +536,7 @@ class MainActivity : Activity() {
             requestingWakePermissions = false
             if (requestCode == 20 && grantResults.firstOrNull() != PackageManager.PERMISSION_GRANTED) {
                 handsFreeEnabled = false; prefs.edit().putBoolean("wakeEnabled", false).apply()
+                VoiceListeningTileService.setListening(this, false)
                 wakeButton.text = "음성 대기 켜기"
                 setWorking(false); status.text = "상시 대기에 마이크 권한이 필요합니다. 직접 입력도 사용할 수 있습니다."
                 discoverPc()
@@ -513,12 +548,28 @@ class MainActivity : Activity() {
             else status.text = "마이크 권한이 필요합니다. 직접 입력도 사용할 수 있습니다."
         }
     }
-    override fun onStart() { super.onStart(); active = true; handsFreeEnabled = prefs.getBoolean("wakeEnabled", true); if (handsFreeEnabled) enableHandsFree() else discoverPc() }
+    private fun consumeTileEnable(): Boolean {
+        if (intent?.action != VoiceListeningTileService.ACTION_ENABLE) return false
+        intent.action = null
+        prefs.edit().putBoolean("wakeEnabled", true).apply()
+        return true
+    }
+    override fun onNewIntent(intent: Intent) {
+        super.onNewIntent(intent)
+        setIntent(intent)
+        if (active && consumeTileEnable()) enableHandsFree()
+    }
+    override fun onStart() { super.onStart(); active = true; consumeTileEnable(); handsFreeEnabled = prefs.getBoolean("wakeEnabled", true); if (handsFreeEnabled) enableHandsFree() else discoverPc() }
     override fun onStop() { active = false; requestGeneration++; stopListening(); stopSpeech(); unbindHandsFree(); setWorking(false); super.onStop() }
     override fun onSaveInstanceState(outState: Bundle) {
         outState.putString("answer", answer.text.toString()); outState.putString("source", source.text.toString())
         outState.putString("question", input.text.toString()); outState.putString("speech", lastSpeech)
         super.onSaveInstanceState(outState)
     }
-    override fun onDestroy() { stopSpeech(); recognizer.close(); tts?.shutdown(); executor.shutdownNow(); super.onDestroy() }
+    override fun onDestroy() {
+        speechPlayback.close(); recognizer.close()
+        // Let delayed replies be cancelled by ID before closing their network executor.
+        executor.execute { handler.post { executor.shutdown() } }
+        super.onDestroy()
+    }
 }
